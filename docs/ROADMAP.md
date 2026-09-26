@@ -12,6 +12,16 @@ scope; reuse existing authority when it covers the work. This roadmap does not i
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
 
+## Unreleased — gate Git and path-policy hardening
+
+The gate now neutralizes fsmonitor and caller Git configuration, and fails closed
+on effective clean/process/required filter definitions before reading candidate
+content. This includes Git LFS configurations. Gate `--only` and `--allow` now use
+segment-aware patterns: `*` and `?` no longer span directories, narrowing prior
+matches; `**` matches zero or more whole segments, so patterns such as
+`src/**/*.py` newly include `src/x.py` as well as nested files. Review existing
+policies for both effects. These changes have not been released.
+
 ## v0.22.0 — AGY 1.2.11 compatibility and workflow usability
 
 The v0.22.0 version manifest records AGY 1.2.11 as the current active compatibility binding. The exact unchanged 14-slug model matrix, its SHA-256, reviewed release revision, inventory binding, and bounded behavior limits live in `../compat/reviews/agy-1.2.11-activation.md`. The official 1.2.11 release page identifies commit `6dadd6227a49905f475d22b7f0afe59493229595`. 1.2.7 is now the previous historical binding.

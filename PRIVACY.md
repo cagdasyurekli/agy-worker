@@ -186,6 +186,11 @@ hash approvals, but deliberately retains the cleaned private state tombstone. Pa
 or ambiguous states are retained for manual recovery rather than automatically
 deleted.
 
+Gate-owned Git reads also ignore caller Git variables and system/global config,
+disable fsmonitor/hooks and external diff/textconv, and reject effective repository
+clean/process/required content-filter definitions before comparison or snapshots.
+Filter rejection diagnostics omit configured commands and values.
+
 Lifecycle-owned Git execution ignores system/global and caller Git configuration,
 uses a private empty hooks directory, and disables prompts, pagers, fsmonitor,
 external diff, protocols, and recursive submodules. Before worktree creation it

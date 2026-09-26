@@ -121,8 +121,19 @@ The canonical gate has these core controls:
 - `--only PATHGLOB` is repeatable and constrains every changed path.
 - `--allow PATHGLOB` permits a known undeclared artifact but does not override
   `--only`.
+- `PATHGLOB` uses repository-relative segments: `*` and `?` stay within one
+  segment, while `**` matches zero or more whole segments.
 - `--expect-edits` turns a completed no-op into exit `13`.
 - Exit `15` routes questions to a human; it is never acceptance.
+
+Gate Git reads ignore inherited `GIT_*` variables and system/global configuration,
+disable fsmonitor, hooks, untracked-cache shortcuts, external diff and textconv,
+and reject any effective repository `filter.*.clean`, `.process`, or `.required`
+definition, including empty/false values and included/worktree configuration. Repos
+using Git LFS or another configured content filter must use a reviewed worktree
+without those definitions; the gate reports this restriction without running the
+filter. Provider-scope entries remain literal file/tree entries, user denylist paths
+remain worker instructions, and the workflow facade forwards gate patterns unchanged.
 
 For a direct gate invocation, capture the base before dispatch and review the diff
 after the gate accepts the exact state:
@@ -162,7 +173,8 @@ It is not a provider-success or acceptance claim. `extend` and `cancel` require 
 current state SHA. Eligible `resume` preserves the exact stored conversation;
 `restart` starts a fresh attempt. Neither happens automatically.
 
-Lifecycle state v10 uses these controller phases:
+The current lifecycle state uses these controller phases (see `CURRENT_STATE_SCHEMA`
+in `skills/agy-worker/runtime/scripts/agy_dispatch.py`):
 
 | Phase | Meaning |
 |---|---|
@@ -214,7 +226,7 @@ For new bound jobs, `provider_isolation` names `session` or `native`, and
 bound command: scoped command V1–V8 jobs do not acquire native containment, while
 scoped V9 jobs retain it. Unbound jobs may have no execution facts yet.
 
-Controller-private V14 state also persists a sanitized
+Current controller-private state also persists a sanitized
 `provider_terminal_status`: `unknown`, `success`, `error`, or `cancelled`, derived
 only from the exact attempt's structurally valid outer terminal event. The public
 `status`, `wait`, and `result` JSON intentionally omit it. It is not candidate
@@ -223,7 +235,7 @@ acceptance, or billing evidence. A terminal without a recognized structured repo
 can retain that private enum while public `candidate_recognized` is false and
 `failure_stage` is `missing_structured_output`.
 
-V11 introduced this private diagnostic field. Current V14 preserves prior bound
+V11 introduced this private diagnostic field. Current state preserves prior bound
 transitions while adding explicitly opted-in scoped repair and local verification;
 migration never grants those opt-ins or creates new acceptance authority. See the
 [optional checks and scoped repair guide](../skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#optional-checks-and-scoped-repair).

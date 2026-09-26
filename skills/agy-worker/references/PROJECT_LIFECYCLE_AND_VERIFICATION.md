@@ -170,7 +170,8 @@ Legacy isolation labels remain null: use the bound execution facts, which preser
 scoped command V1–V8 behavior without native containment and V9 behavior with it.
 Unbound jobs may have no execution facts yet.
 
-Current V14 uses `dispatching` for an active initial, resume, or restart attempt;
+The current state (defined by `CURRENT_STATE_SCHEMA` in
+`runtime/scripts/agy_dispatch.py`) uses `dispatching` for an active initial, resume, or restart attempt;
 `attempt-failed` for a pre-candidate failure; `awaiting-verification` for a recognized
 candidate; `repairing` for an active continuation; and `repair-failed` for a failed
 continuation. `self-verifying` denotes the optional local check action. Terminal controller phases are `completed` and `blocked`. Driver

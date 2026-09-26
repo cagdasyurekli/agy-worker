@@ -3386,7 +3386,8 @@ required = {
         "No initial facade or raw dispatch has an implicit provider-read mode",
         "Whole-worktree mode exposes the entire disposable `--workdir`",
         "Recommended provider-scope mode binds exact reviewed read entries",
-        "Current V14/command V11",
+        "The current state/command contract supports",
+        "`CURRENT_STATE_SCHEMA`",
     ),
     "docs/index.md": (
         "No initial launch path has an implicit provider-read mode.",
@@ -3531,11 +3532,11 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
         && grep -Fq 'V5/V6 retains its exact legacy digest' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses the caller-resolved' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
-        && grep -Fq 'Controller-private V14 state also persists a sanitized' \
+        && grep -Fq 'Current controller-private state also persists a sanitized' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
         && grep -Fq '`status`, `wait`, and `result` JSON intentionally omit it' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
-        && grep -Fq 'Current V14 uses `dispatching`' \
+        && grep -Fq '`runtime/scripts/agy_dispatch.py`) uses `dispatching`' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
         && grep -Fq '| `--allow-slash-commands` |' "$ROOT/docs/USAGE.md" \
         && grep -Fq 'Leave slash expansion disabled when any prompt content comes from a repository or' \
@@ -3566,9 +3567,9 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
         && ! grep -Eq '`tests/test-agy-worker.sh` \((338|348) cases\)' "$ROOT/docs/REPO_MAP.md" \
         && ! grep -Fq 'resolution remains blocked until installed agy exactly matches' \
             "$ROOT/docs/INSTALLATION.md"; then
-    ok "dispatcher docs describe mode-bound selection, V14 lifecycle state, no-bytecode legacy import, and registered focused coverage"
+    ok "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode legacy import, and registered focused coverage"
 else
-    bad "dispatcher docs describe mode-bound selection, V14 lifecycle state, no-bytecode legacy import, and registered focused coverage"
+    bad "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode legacy import, and registered focused coverage"
 fi
 
 bootstrap_preflight_line="$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, '$ROOT/scripts'); import ci_stages; print([i for i, s in enumerate(ci_stages.STAGES) if s.id == 'version-bootstrap-preflight'][0])")"

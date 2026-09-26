@@ -313,6 +313,12 @@ check "invalid base fails closed" 64 honest.json --base does-not-exist --verify-
 check "symbolic HEAD is rejected as a mutable base" 64 honest.json --base HEAD --verify-argv '["true"]'
 
 echo
+if python3 -I -S -B "$HERE/gate_git_hardening_cases.py" --root "$HERE/.." --mode direct; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
 if (( fail )); then
     echo "FAILED: $fail failed, $pass passed"
     exit 1

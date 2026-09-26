@@ -223,8 +223,13 @@ repo="$(cd "$repo" && pwd -P)"
 [[ -f "$SCHEMA" ]] || { echo "qa-gate.sh: schema not found: $SCHEMA" >&2; exit 64; }
 SCHEMA="$(cd "$(dirname "$SCHEMA")" && pwd)/$(basename "$SCHEMA")"
 
-git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-    echo "qa-gate.sh: not a git worktree: $repo" >&2; exit 64;
+gate_git() {
+    "$verifier_python" -I -S -B "$SCRIPT_DIR/scripts/candidate_state.py" \
+        --repo "$repo" --git "$@"
+}
+
+gate_git rev-parse --is-inside-work-tree >/dev/null || {
+    echo "qa-gate.sh: cannot establish trusted Git worktree: $repo" >&2; exit 64;
 }
 case "$base" in
     ''|*[!0-9a-f]*)
@@ -235,7 +240,7 @@ if [[ ${#base} -ne 40 && ${#base} -ne 64 ]]; then
     echo "qa-gate.sh: --base must be a full 40- or 64-character commit ID" >&2
     exit 64
 fi
-resolved_base="$(git -C "$repo" rev-parse --verify "$base^{commit}" 2>/dev/null)" || {
+resolved_base="$(gate_git rev-parse --verify "$base^{commit}")" || {
     echo "qa-gate.sh: invalid base commit: $base" >&2; exit 64;
 }
 [[ "$resolved_base" == "$base" ]] || {
@@ -429,14 +434,19 @@ gate_finish() {
 }
 
 scope_check() {
-    gate_python - "$envelope" "$repo" "$base" "${#allow[@]}" "${#only[@]}" \
+    gate_python - "$SCRIPT_DIR/scripts" "$envelope" "$repo" "$base" "${#allow[@]}" "${#only[@]}" \
         ${allow[@]+"${allow[@]}"} ${only[@]+"${only[@]}"} <<'PY'
 import fnmatch
+from functools import lru_cache
+from pathlib import Path
 import json
 import os
 import posixpath
-import subprocess
 import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv.pop(1))
+from candidate_state import _git
 
 envelope_path, repo, base = sys.argv[1:4]
 allow_count, only_count = map(int, sys.argv[4:6])
@@ -444,15 +454,28 @@ allow = sys.argv[6:6 + allow_count]
 only = sys.argv[6 + allow_count:6 + allow_count + only_count]
 
 def git_output(*args):
-    return subprocess.run(
-        ["git", "-C", repo, *args], check=True,
-        stdout=subprocess.PIPE).stdout
+    return _git(Path(repo), *args)
 
 def git_paths(*args):
     return {
         part.decode("utf-8", "surrogateescape")
         for part in git_output(*args).split(b"\0") if part
     }
+
+def path_matches(path, pattern):
+    parts, patterns = path.split("/"), pattern.split("/")
+
+    @lru_cache(maxsize=None)
+    def match(i, j):
+        if j == len(patterns):
+            return i == len(parts)
+        if patterns[j] == "**":
+            return match(i, j + 1) or (i < len(parts) and match(i + 1, j))
+        return (i < len(parts) and fnmatch.fnmatchcase(parts[i], patterns[j])
+                and match(i + 1, j + 1))
+
+    return match(0, 0)
+
 
 def normalize_claim(path):
     if not isinstance(path, str):
@@ -502,7 +525,7 @@ try:
         "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--")
     for path in untracked | ignored:
         actual_changes.setdefault(path, "created")
-except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+except (OSError, ValueError) as exc:
     print(f"qa-gate: cannot establish scope: {exc}", file=sys.stderr)
     sys.exit(1)
 
@@ -510,12 +533,12 @@ claimed = set(claimed_changes)
 actual = set(actual_changes)
 undeclared = {
     path for path in actual - claimed
-    if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allow)
+    if not any(path_matches(path, pattern) for pattern in allow)
 }
 phantom = claimed - actual
 outside_policy = {
     path for path in actual
-    if only and not any(fnmatch.fnmatchcase(path, pattern) for pattern in only)
+    if only and not any(path_matches(path, pattern) for pattern in only)
 }
 kind_mismatches = {
     path: (claimed_changes[path], actual_changes[path])

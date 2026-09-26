@@ -3,6 +3,16 @@
 These are durable prevention rules for `codex-agy-worker`. This file is not a
 release log, task diary, or list of completed work.
 
+## The acceptance gate must not trust repository Git configuration
+
+Scope reads and before/after candidate snapshots must share hardened Git execution.
+Scrub caller Git variables, disable helper execution and index shortcuts, and reject
+effective content-filter definitions before content-sensitive reads. A stale index
+with a lying fsmonitor can conceal undeclared changes; a clean filter can rewrite
+comparison bytes. Test direct and receipt paths without refreshing the index between
+fixture setup and the gate. Match path policy by segments so a wildcard cannot
+silently authorize deeper directories.
+
 ## Reap an exited leader before binding its surviving process group
 
 A terminated child may remain a zombie in Darwin process-group enumeration while

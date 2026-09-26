@@ -173,6 +173,12 @@ requires the first init frame to report `agent=Boost` and
 Boost dispatches have no resume, restart, or continuation path, so a new attempt needs
 a new job ID, a new transmission decision, and a fresh risk acknowledgement.
 
+Gate scope reads and candidate snapshots ignore inherited Git variables and
+system/global Git configuration, neutralize fsmonitor/hooks and external
+diff/textconv, and reject effective repository clean/process/required filter
+definitions before content comparison. This restriction includes configured Git LFS
+filters; rejection diagnostics do not expose filter commands or values.
+
 ## Model and interface compatibility
 
 Model and effort selection are caller-owned. Recommendations are advisory and cannot

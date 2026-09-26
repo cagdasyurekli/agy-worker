@@ -1230,6 +1230,12 @@ else
 fi
 
 echo
+if python3 -I -S -B "$HERE/gate_git_hardening_cases.py" --root "$HERE/.." --mode receipt; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1))
+fi
+
 if (( fail )); then
     echo "FAILED: $fail failed, $pass passed"
     exit 1
