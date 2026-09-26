@@ -34,6 +34,7 @@ if str(SCRIPTS) not in sys.path:
 
 from candidate_state import (  # noqa: E402
     CandidateStateError,
+    GIT_EXECUTABLE,
     candidate_state_digest,
 )
 from evidence_receipt import (  # noqa: E402
@@ -88,7 +89,6 @@ MAX_DELETE_NODES = 100_000
 MAX_GIT_OUTPUT = 32 * 1024 * 1024
 MAX_ATTRIBUTE_PATH_BYTES = 16 * 1024 * 1024
 GIT_TIMEOUT_SECONDS = 30.0
-GIT_EXECUTABLE = "/usr/bin/git"
 EMPTY_CANDIDATE_STATE_SHA256 = hashlib.sha256(b"\0" * 8).hexdigest()
 UNSAFE_GIT_CONFIG_RE = re.compile(
     rb"^(?:filter\..*\.(?:clean|smudge|process|required)|core\.(?:fsmonitor|hooksPath|pager)"

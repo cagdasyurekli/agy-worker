@@ -111,6 +111,22 @@ class GateGitHardening(unittest.TestCase):
             with self.subTest(environment=next(iter(environment))):
                 self.assert_code(0, self.gate((("tracked.txt", "modified"),), environment=environment))
 
+    def test_caller_path_cannot_select_git_executable(self):
+        shadow_directory = self.directory / "shadow-bin"
+        shadow_directory.mkdir()
+        shadow = shadow_directory / "git"
+        shadow.write_text(
+            f'#!/bin/sh\nprintf "invoked\\n" >> "{self.marker}"\n'
+            'exec /usr/bin/git "$@"\n'
+        )
+        shadow.chmod(0o700)
+        (self.repo / "tracked.txt").write_text("changed\n")
+        result = self.gate((("tracked.txt", "modified"),), environment={
+            "PATH": str(shadow_directory) + os.pathsep + self.environment.get("PATH", ""),
+        })
+        self.assert_code(0, result)
+        self.assertFalse(self.marker.exists(), "gate executed caller PATH Git")
+
     def test_caller_git_directory_cannot_hide_edit_in_another_repository(self):
         other = self.directory / "other"
         shutil.copytree(self.repo, other)
@@ -271,8 +287,9 @@ class GateGitHardening(unittest.TestCase):
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from candidate_state import candidate_state_digest
-from job_lifecycle import git
+from candidate_state import GIT_EXECUTABLE, candidate_state_digest
+from job_lifecycle import GIT_EXECUTABLE as LIFECYCLE_GIT_EXECUTABLE, git
+assert GIT_EXECUTABLE == LIFECYCLE_GIT_EXECUTABLE == "/usr/bin/git"
 repo, base = Path(sys.argv[2]), sys.argv[3]
 assert candidate_state_digest(repo, base) == candidate_state_digest(repo, base, git_reader=git)
 """

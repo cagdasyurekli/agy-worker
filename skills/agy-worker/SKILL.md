@@ -1,6 +1,6 @@
 ---
 name: agy-worker
-description: Use when the driver should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.
+description: Use when Codex or Claude Code should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.
 license: MIT
 compatibility: "OpenAI Codex CLI; Claude Code experimental: pending live verification. Requires Bash, Python 3, git, and agy with provider network access."
 metadata:

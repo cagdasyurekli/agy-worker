@@ -15,6 +15,9 @@ from typing import Callable
 
 sys.dont_write_bytecode = True
 
+# Shared with lifecycle: caller PATH must not select the candidate authority.
+GIT_EXECUTABLE = "/usr/bin/git"
+
 COMMIT_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 
@@ -39,7 +42,7 @@ def _git(repo: Path, *arguments: str) -> bytes:
         "GIT_NO_REPLACE_OBJECTS": "1",
     })
     command = [
-        "git", "--no-pager", "-C", str(repo),
+        GIT_EXECUTABLE, "--no-pager", "-C", str(repo),
         "-c", "core.fsmonitor=false",
         "-c", f"core.hooksPath={os.devnull}",
         "-c", "core.untrackedCache=false",

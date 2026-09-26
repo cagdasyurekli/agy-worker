@@ -1385,7 +1385,7 @@ assert 'license: MIT' in skill
 assert f'  version: "{manifest["version"]}"' in skill
 assert 'OpenAI Codex CLI; Claude Code experimental: pending live verification.' in skill
 assert 'Requires Bash, Python 3, git, and agy with provider network access.' in skill
-assert 'Use when ' in re.search(r"^description: (.+)$", skill, re.M).group(1)
+assert re.search(r"^description: (.+)$", skill, re.M).group(1) == 'Use when Codex or Claude Code should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.'
 assert len(skill.splitlines()) <= 180
 frontmatter = skill.split("---", 2)[1]
 assert set(re.findall(r"^([a-z-]+):", frontmatter, re.M)) == {
@@ -1560,7 +1560,8 @@ def validate(root: Path) -> None:
     assert claude["repository"] == manifest["repository"]
     assert claude["homepage"] == manifest["homepage"]
     assert claude["license"] == "MIT"
-    assert set(catalog) == {"name", "owner", "plugins"}
+    assert set(catalog) == {"name", "description", "owner", "plugins"}
+    assert catalog["description"] == claude["description"]
     assert catalog["owner"] == claude["author"]
     assert catalog["plugins"] == [{
         "name": "agy-worker", "source": "./", "description": claude["description"],
