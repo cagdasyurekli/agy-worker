@@ -13,7 +13,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
-import importlib.util
+from functools import partial
 import json
 import math
 import os
@@ -37,7 +37,54 @@ if str(SCRIPT_DIR) not in sys.path:
 import legacy_dispatch_state as LEGACY  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_verification as SELF_VERIFICATION  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import agy_dispatch_worktree as WORKTREE  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
+
+# Compatibility names share the implementation and exception identities owned by WORKTREE.
+MODEL_SELECTION = WORKTREE.MODEL_SELECTION
+DispatchError = WORKTREE.DispatchError
+WorktreeBaselineError = WORKTREE.WorktreeBaselineError
+ResolveUndoPresentError = WORKTREE.ResolveUndoPresentError
+canonical = WORKTREE.canonical
+digest = WORKTREE.digest
+_identity = WORKTREE._identity
+_parse_resolve_undo = WORKTREE._parse_resolve_undo
+_bound_git_worktree_root = WORKTREE._bound_git_worktree_root
+_bounded_git_read = WORKTREE._bounded_git_read
+_build_selected_content_manifest = WORKTREE._build_selected_content_manifest
+_canonical_digest = WORKTREE._canonical_digest
+_cleanup_stage = WORKTREE._cleanup_stage
+_compute_provider_launch_approval_sha256 = WORKTREE._compute_provider_launch_approval_sha256
+_compute_transmission_sha256 = WORKTREE._compute_transmission_sha256
+_compute_v11_launch_approval_sha256 = WORKTREE._compute_v11_launch_approval_sha256
+_confirm_safe_git_executable = WORKTREE._confirm_safe_git_executable
+_fixed_git_read_argv = WORKTREE._fixed_git_read_argv
+_full_stat_binding = WORKTREE._full_stat_binding
+_git_boundary_identity = WORKTREE._git_boundary_identity
+_manifest_digest = WORKTREE._manifest_digest
+_marker_only_preflight = WORKTREE._marker_only_preflight
+_materialize_stage = WORKTREE._materialize_stage
+_parse_provider_scope = WORKTREE._parse_provider_scope
+_project_boundary = WORKTREE._project_boundary
+_read_provider_scope_file = partial(WORKTREE._read_provider_scope_file, error_type=WORKTREE.DispatchError)
+_reconcile_stage_to_source = WORKTREE._reconcile_stage_to_source
+_recover_reconciliation = WORKTREE._recover_reconciliation
+_resolved_path_is_git_administration = WORKTREE._resolved_path_is_git_administration
+_safe_git_executable = WORKTREE._safe_git_executable
+_safe_git_is_outside_worktree = WORKTREE._safe_git_is_outside_worktree
+_safe_git_owner_mode = WORKTREE._safe_git_owner_mode
+_scan_readable_worktree = WORKTREE._scan_readable_worktree
+_scan_stage_mutations = WORKTREE._scan_stage_mutations
+_selected_content_digest = WORKTREE._selected_content_digest
+_stable_git_authority = WORKTREE._stable_git_authority
+_validate_manifest = WORKTREE._validate_manifest
+_validate_scope_against_worktree = WORKTREE._validate_scope_against_worktree
+_worktree_git_admin_alias_boundary = WORKTREE._worktree_git_admin_alias_boundary
+_worktree_snapshot = WORKTREE._worktree_snapshot
+_worktree_symlink_boundary = WORKTREE._worktree_symlink_boundary
+whole_worktree_content_manifest = WORKTREE.whole_worktree_content_manifest
+_MarkerPreflightLimit = WORKTREE._MarkerPreflightLimit
+_FIXED_GIT_READ_ARGV = WORKTREE._FIXED_GIT_READ_ARGV
 
 class _DispatchAPI:
     """Expose this module's private helpers to the legacy compatibility adapter."""
@@ -58,12 +105,12 @@ MAX_VERIFICATION_BYTES = 16 * 1024
 MAX_CHECK_ITEMS = 32
 MAX_CHECK_LABEL = 160
 MAX_CHECK_SUMMARY = 512
-MAX_BOUNDARY_ENTRIES = 100000
+MAX_BOUNDARY_ENTRIES = WORKTREE.MAX_BOUNDARY_ENTRIES
 MAX_INLINE_PROMPT_BYTES = 100000
-MAX_STREAM_BYTES = 32 * 1024 * 1024
+MAX_STREAM_BYTES = WORKTREE.MAX_STREAM_BYTES
 MAX_EVENT_BYTES = 1024 * 1024
 MAX_STATUS_WAIT = 60.0
-TERM_GRACE = 1.0
+TERM_GRACE = WORKTREE.TERM_GRACE
 CONTROL_POLL = 0.20
 CONVERSATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 JOB_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
@@ -208,31 +255,8 @@ QUOTA_RESULT_FIELDS = {
 MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
 
-class DispatchError(ValueError):
-    pass
-
-
 class SelectionPreflightError(DispatchError):
     """A direct caller selection could not be safely reprobed for one launch."""
-
-
-class WorktreeBaselineError(DispatchError):
-    """The queued worktree baseline is unavailable or no longer exact."""
-
-class ResolveUndoPresentError(WorktreeBaselineError):
-    """A valid, non-empty REUC observation is present in the worktree index."""
-
-_selection_spec = importlib.util.spec_from_file_location(
-    "agy_dispatch_model_selection", Path(__file__).with_name("model_selection.py"),
-)
-if _selection_spec is None or _selection_spec.loader is None:  # pragma: no cover - package invariant
-    raise RuntimeError("model selection runtime is unavailable")
-# Loading this sibling as a module (rather than a subprocess) keeps the re-probe
-# path private.  Its local compatibility dependency is package-owned too.
-if str(Path(__file__).parent) not in sys.path:
-    sys.path.insert(0, str(Path(__file__).parent))
-MODEL_SELECTION = importlib.util.module_from_spec(_selection_spec)
-_selection_spec.loader.exec_module(MODEL_SELECTION)
 
 
 class Parser(argparse.ArgumentParser):
@@ -240,19 +264,6 @@ class Parser(argparse.ArgumentParser):
         del message
         self.print_usage(sys.stderr)
         self.exit(64, "agy-dispatch: invalid arguments\n")
-
-
-def canonical(value: Any) -> bytes:
-    try:
-        return json.dumps(
-            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-        ).encode("ascii") + b"\n"
-    except RecursionError as exc:
-        raise DispatchError("JSON structure is invalid") from exc
-
-
-def digest(raw: bytes) -> str:
-    return hashlib.sha256(raw).hexdigest()
 
 
 def _provider_isolation_for_command(command: dict[str, Any]) -> str:
@@ -322,47 +333,6 @@ def _repair_authority_for_command(command: dict[str, Any]) -> str | None:
     )
 
 
-def _parse_resolve_undo(
-    raw: bytes, object_length: int,
-) -> dict[tuple[bytes, int], tuple[int, bytes]] | None:
-    """Strictly parse ``ls-files --resolve-undo -z`` records.
-
-    V7 does not persist REUC records: any well-formed record makes the semantic
-    snapshot unavailable.  Parsing first keeps malformed, duplicate, and
-    unsupported output fail-closed instead of treating it as an empty result.
-    """
-    if object_length not in {40, 64}:
-        return None
-    if not raw:
-        return {}
-    if not raw.endswith(b"\0"):
-        return None
-    parsed: dict[tuple[bytes, int], tuple[int, bytes]] = {}
-    for record in raw.split(b"\0")[:-1]:
-        try:
-            header, relative = record.split(b"\t", 1)
-            mode_raw, oid, stage_raw = header.split(b" ")
-            mode = int(mode_raw, 8)
-            stage = int(stage_raw, 10)
-        except (ValueError, TypeError):
-            return None
-        parts = relative.split(b"/")
-        key = (relative, stage)
-        if (
-            mode not in {0o100644, 0o100755, 0o120000, 0o160000}
-            or len(oid) != object_length
-            or any(char not in b"0123456789abcdef" for char in oid)
-            or stage not in {1, 2, 3}
-            or not relative or relative.startswith(b"/")
-            or any(part in {b"", b".", b".."} for part in parts)
-            or parts[0] == b".git"
-            or key in parsed
-        ):
-            return None
-        parsed[key] = (mode, oid)
-    return parsed
-
-
 def _duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -394,13 +364,6 @@ def _valid_max_cycles(workflow: str, value: Any) -> bool:
     if workflow in {"explore", "task"}:
         return 1 <= value <= 2
     return workflow == "project" and 1 <= value <= 5
-
-
-def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
-    return (
-        info.st_dev, info.st_ino, info.st_uid, info.st_gid,
-        stat.S_IMODE(info.st_mode),
-    )
 
 
 def canonical_job(path: Path) -> Path:
@@ -1443,7 +1406,7 @@ def initial_state(
     workflow = command.get("workflow", "legacy")
     max_cycles = command.get("max_cycles", 1)
     try:
-        worktree_baseline = _worktree_snapshot(
+        worktree_baseline = WORKTREE._worktree_snapshot(
             command["workdir"], legacy=state_schema == 6, explain_unsupported=explain_worktree_rejection)
     except ResolveUndoPresentError:
         worktree_baseline = None
@@ -1503,7 +1466,7 @@ def initial_state(
         "last_success_identity": None,
         "project_boundary": (
             project_boundary if project_boundary is not None
-            else _project_boundary(command["workdir"]) if workflow == "project"
+            else WORKTREE._project_boundary(command["workdir"]) if workflow == "project"
             else None
         ),
         "provider_retry_after_seconds": None,
@@ -1566,15 +1529,15 @@ def initial_state(
             if list(_identity(scope_info)) != command["provider_scope_identity"]:
                 raise DispatchError("provider scope file identity changed since dispatch")
             try:
-                scope = _parse_provider_scope(raw_scope)
+                scope = WORKTREE._parse_provider_scope(raw_scope)
             except ValueError as exc:
                 raise DispatchError(f"invalid provider scope: {exc}") from exc
-            readable_manifest = _scan_readable_worktree(command["workdir"])
-            manifest_sha = _manifest_digest(readable_manifest)
-            _validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
-            selected_manifest = _build_selected_content_manifest(command["workdir"], scope)
-            selected_sha = _selected_content_digest(selected_manifest)
-            policy_sha = _canonical_digest(scope)
+            readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
+            manifest_sha = WORKTREE._manifest_digest(readable_manifest)
+            WORKTREE._validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
+            selected_manifest = WORKTREE._build_selected_content_manifest(command["workdir"], scope)
+            selected_sha = WORKTREE._selected_content_digest(selected_manifest)
+            policy_sha = WORKTREE._canonical_digest(scope)
             transmission_sha = _bound_transmission_sha256(
                 command, policy_sha, manifest_sha, selected_sha,
             )
@@ -1603,21 +1566,21 @@ def initial_state(
             approved_whole_sha = command.get("approved_whole_worktree_sha256")
             if approved_whole_sha is not None and origin == "initial":
                 if command["schema_version"] == 11:
-                    content = whole_worktree_content_manifest(command["workdir"])
+                    content = WORKTREE.whole_worktree_content_manifest(command["workdir"])
                     content_sha = content["manifest_sha256"]
-                    readable_manifest = _scan_readable_worktree(command["workdir"])
-                    expected_approval = _compute_v11_launch_approval_sha256(
+                    readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
+                    expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
                         _provider_isolation_for_command(command), command["native_grant_profile"],
                         whole_worktree_content_sha256=content_sha,
-                        readable_manifest_sha256=_manifest_digest(readable_manifest),
+                        readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
                     )
                     if content_sha != command["whole_worktree_content_sha256"]:
                         raise DispatchError("whole-worktree content binding changed")
                 else:
-                    readable_manifest = _scan_readable_worktree(command["workdir"])
-                    expected_approval = _compute_provider_launch_approval_sha256(
-                        _provider_isolation_for_command(command), _manifest_digest(readable_manifest),
-                    ) if command["schema_version"] == 10 else _manifest_digest(readable_manifest)
+                    readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
+                    expected_approval = WORKTREE._compute_provider_launch_approval_sha256(
+                        _provider_isolation_for_command(command), WORKTREE._manifest_digest(readable_manifest),
+                    ) if command["schema_version"] == 10 else WORKTREE._manifest_digest(readable_manifest)
                 if expected_approval != approved_whole_sha:
                     raise DispatchError(
                         "approved whole-worktree manifest does not match current worktree"
@@ -2985,216 +2948,23 @@ def _bound_verification(job: Path, state: dict[str, Any]) -> Path | None:
     return path
 
 
-# Worktree/Git snapshot implementation is path-pinned to the sibling helper.
-# Each façade call supplies this module's current globals so test and controller
-# monkeypatches remain observable while the portable runtime has no package import.
-_worktree_helper_path = Path(__file__).with_name("agy_dispatch_worktree.py")
-_worktree_helper_spec = importlib.util.spec_from_file_location(
-    "agy_dispatch_worktree", _worktree_helper_path,
-)
-if _worktree_helper_spec is None or _worktree_helper_spec.loader is None:  # pragma: no cover - bundle invariant
-    raise RuntimeError("dispatch worktree helper is unavailable")
-_WORKTREE_HELPER = importlib.util.module_from_spec(_worktree_helper_spec)
-exec(
-    compile(_worktree_helper_path.read_bytes(), str(_worktree_helper_path), "exec"),
-    _WORKTREE_HELPER.__dict__,
-)
-
-
-class _MarkerPreflightLimit(Exception):
-    """The marker-only scan hit its documented bounded entry cap."""
-
-
-_FIXED_GIT_READ_ARGV = _WORKTREE_HELPER._FIXED_GIT_READ_ARGV
-_WORKTREE_FACADE_DEFAULTS: dict[str, Any] = {}
-
-
-def _worktree_call(name: str, *args: Any, **kwargs: Any) -> Any:
-    dependencies = dict(globals())
-    for dependency in _WORKTREE_HELPER._IMPLEMENTATION_FUNCTIONS:
-        if dependencies.get(dependency) is _WORKTREE_FACADE_DEFAULTS.get(dependency):
-            dependencies[dependency] = _WORKTREE_HELPER._IMPLEMENTATION_DEFAULTS[dependency]
-    return _WORKTREE_HELPER.call(name, dependencies, *args, **kwargs)
-
-
-def _marker_only_preflight(root_fd: int, *, deadline: float | None = None) -> bool:
-    return _worktree_call("_marker_only_preflight", root_fd, deadline=deadline)
-
-
-def _resolved_path_is_git_administration(root: str, resolved: str) -> bool:
-    return _worktree_call("_resolved_path_is_git_administration", root, resolved)
-
-
-def _worktree_symlink_boundary(workdir: str) -> bool:
-    return _worktree_call("_worktree_symlink_boundary", workdir)
-
-
-def _worktree_git_admin_alias_boundary(workdir: str) -> bool:
-    return _worktree_call("_worktree_git_admin_alias_boundary", workdir)
-
-
-def _project_boundary(workdir: str) -> dict[str, Any]:
-    return _worktree_call("_project_boundary", workdir)
-
-
-def _safe_git_owner_mode(metadata: os.stat_result, *, directory: bool) -> bool:
-    return _worktree_call("_safe_git_owner_mode", metadata, directory=directory)
-
-
-def _safe_git_executable() -> tuple[str, dict[str, Any]] | None:
-    return _worktree_call("_safe_git_executable")
-
-
-def _confirm_safe_git_executable(executable: str, expected: dict[str, Any]) -> bool:
-    return _worktree_call("_confirm_safe_git_executable", executable, expected)
-
-
-def _safe_git_is_outside_worktree(executable: str, worktree_root: str) -> bool:
-    return _worktree_call("_safe_git_is_outside_worktree", executable, worktree_root)
-
-
-def _stable_git_authority(info: os.stat_result) -> dict[str, int]:
-    return _worktree_call("_stable_git_authority", info)
-
-
-def _full_stat_binding(info: os.stat_result) -> tuple[int, ...]:
-    return _worktree_call("_full_stat_binding", info)
-
-
-def _bound_git_worktree_root(
-    raw: bytes | None, canonical_root: str, root_binding: tuple[int, ...],
-) -> bool:
-    return _worktree_call("_bound_git_worktree_root", raw, canonical_root, root_binding)
-
-
-def _fixed_git_read_argv(arguments: list[str]) -> bool:
-    return _worktree_call("_fixed_git_read_argv", arguments)
-
-
-def _bounded_git_read(
-    executable: str, executable_authority: dict[str, Any], root: str,
-    arguments: list[str], *, deadline: float, payload: bytes = b"",
-    allowed: tuple[int, ...] = (0,), stdout_limit: int | None = None,
-) -> tuple[int, bytes] | None:
-    return _worktree_call(
-        "_bounded_git_read", executable, executable_authority, root, arguments,
-        deadline=deadline, payload=payload, allowed=allowed, stdout_limit=stdout_limit,
-    )
-
-
-def _git_boundary_identity(workdir: str) -> dict[str, Any] | None:
-    return _worktree_call("_git_boundary_identity", workdir)
-
-
-def _worktree_snapshot(
-    workdir: str, *, legacy: bool = False, explain_unsupported: bool = False,
-) -> dict[str, Any] | None:
-    try:
-        return _worktree_call(
-            "_worktree_snapshot", workdir, legacy=legacy,
-            explain_unsupported=explain_unsupported,
-        )
-    except _WORKTREE_HELPER._ResolveUndoPresentError as exc:
-        raise ResolveUndoPresentError(str(exc)) from None
-    except _WORKTREE_HELPER._UnsupportedWorktreeError as exc:
-        raise WorktreeBaselineError(str(exc)) from None
-
-def _scan_readable_worktree(worktree: str | Path) -> list[dict[str, str]]:
-    return _worktree_call("_scan_readable_worktree", worktree)
-
-
-def _validate_manifest(manifest: Any) -> list[dict[str, str]]:
-    return _worktree_call("_validate_manifest", manifest)
-
-
-def _manifest_digest(manifest: list[dict[str, str]]) -> str:
-    return _worktree_call("_manifest_digest", manifest)
-
-
-def _read_provider_scope_file(
-    path: str | Path, limit: int,
-) -> tuple[str, bytes, os.stat_result]:
-    return _worktree_call("_read_provider_scope_file", path, limit)
-
-
-def _parse_provider_scope(raw_bytes: bytes) -> dict[str, Any]:
-    return _worktree_call("_parse_provider_scope", raw_bytes)
-
-
-def _validate_scope_against_worktree(
-    scope: dict[str, Any], worktree_root: str | Path, readable_manifest: list[dict[str, str]],
-) -> None:
-    return _worktree_call("_validate_scope_against_worktree", scope, worktree_root, readable_manifest)
-
-
-def _build_selected_content_manifest(
-    root_dir: str | Path, scope: dict[str, Any], *, is_stage: bool = False,
-) -> list[dict[str, Any]]:
-    return _worktree_call("_build_selected_content_manifest", root_dir, scope, is_stage=is_stage)
-
-
-def _selected_content_digest(manifest: list[dict[str, Any]]) -> str:
-    return _worktree_call("_selected_content_digest", manifest)
-
-
-def _canonical_digest(value: Any) -> str:
-    return _worktree_call("_canonical_digest", value)
-
-
-def _compute_transmission_sha256(
-    policy_sha256: str, readable_manifest_sha256: str, selected_content_sha256: str,
-) -> str:
-    return _worktree_call(
-        "_compute_transmission_sha256", policy_sha256, readable_manifest_sha256, selected_content_sha256,
-    )
-
-
-def _compute_provider_launch_approval_sha256(
-    provider_isolation: str, readable_manifest_sha256: str,
-    transmission_sha256: str | None = None,
-) -> str:
-    return _worktree_call(
-        "_compute_provider_launch_approval_sha256",
-        provider_isolation, readable_manifest_sha256, transmission_sha256,
-    )
-
-
-def whole_worktree_content_manifest(worktree: str | Path) -> dict[str, Any]:
-    return _worktree_call("whole_worktree_content_manifest", worktree)
-
-
-def _compute_v11_launch_approval_sha256(
-    provider_isolation: str, native_grant_profile: str, *,
-    whole_worktree_content_sha256: str | None = None,
-    readable_manifest_sha256: str | None = None,
-    transmission_sha256: str | None = None,
-) -> str:
-    return _worktree_call(
-        "_compute_v11_launch_approval_sha256",
-        provider_isolation, native_grant_profile,
-        whole_worktree_content_sha256=whole_worktree_content_sha256,
-        readable_manifest_sha256=readable_manifest_sha256,
-        transmission_sha256=transmission_sha256,
-    )
-
-
 def _bound_transmission_sha256(
     command: dict[str, Any], policy_sha256: str,
     readable_manifest_sha256: str, selected_content_sha256: str,
 ) -> str:
     """Keep legacy scoped approval bytes while binding V10 mode authority."""
 
-    base = _compute_transmission_sha256(
+    base = WORKTREE._compute_transmission_sha256(
         policy_sha256, readable_manifest_sha256, selected_content_sha256,
     )
     if command["schema_version"] < 10:
         return base
     if command["schema_version"] == 11:
-        return _compute_v11_launch_approval_sha256(
+        return WORKTREE._compute_v11_launch_approval_sha256(
             _provider_isolation_for_command(command), command["native_grant_profile"],
             transmission_sha256=base,
         )
-    return _compute_provider_launch_approval_sha256(
+    return WORKTREE._compute_provider_launch_approval_sha256(
         _provider_isolation_for_command(command), readable_manifest_sha256, base,
     )
 
@@ -3254,45 +3024,6 @@ def _require_scoped_transmission_authority(
         raise DispatchError("scoped repair transmission lineage is unavailable")
 
 
-def _materialize_stage(
-    source_root: str | Path, stage_dir: str | Path, scope: dict[str, Any],
-    selected_manifest: list[dict[str, Any]],
-) -> tuple[tuple[int, int, int, int, int], str]:
-    return _worktree_call(
-        "_materialize_stage", source_root, stage_dir, scope, selected_manifest,
-    )
-
-
-def _scan_stage_mutations(
-    stage_dir: str | Path, scope: dict[str, Any], pre_launch_manifest: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], str]:
-    return _worktree_call(
-        "_scan_stage_mutations", stage_dir, scope, pre_launch_manifest,
-    )
-
-
-def _reconcile_stage_to_source(
-    source_root: str | Path, stage_dir: str | Path, operation_manifest: list[dict[str, Any]],
-    job_dir: Path,
-) -> str:
-    return _worktree_call(
-        "_reconcile_stage_to_source", source_root, stage_dir, operation_manifest, job_dir,
-    )
-
-
-def _recover_reconciliation(source_root: str | Path, job_dir: Path) -> bool:
-    return _worktree_call("_recover_reconciliation", source_root, job_dir)
-
-
-def _cleanup_stage(stage_dir: str | Path, recorded_identity: tuple[int, int, int, int, int]) -> None:
-    return _worktree_call("_cleanup_stage", stage_dir, recorded_identity)
-
-
-_WORKTREE_FACADE_DEFAULTS = {
-    name: globals()[name] for name in _WORKTREE_HELPER._IMPLEMENTATION_FUNCTIONS
-}
-
-
 def _dispatch_root_identity(workdir: str) -> dict[str, Any] | None:
     """Return V9's stable root/Git-administration authority record.
 
@@ -3301,7 +3032,7 @@ def _dispatch_root_identity(workdir: str) -> dict[str, Any] | None:
     HEAD/ref moves, and object maintenance.  Those remain candidate-binding
     facts; this record detects a substituted repository boundary.
     """
-    return _git_boundary_identity(workdir)
+    return WORKTREE._git_boundary_identity(workdir)
 
 
 def _state_worktree_snapshot(state: dict[str, Any], workdir: str) -> dict[str, Any] | None:
@@ -3319,9 +3050,9 @@ def _state_worktree_snapshot(state: dict[str, Any], workdir: str) -> dict[str, A
     else:
         algorithm = state.get("worktree_snapshot_algorithm")
     if algorithm == WORKTREE_SNAPSHOT_LEGACY_V6:
-        return _worktree_snapshot(workdir, legacy=True)
+        return WORKTREE._worktree_snapshot(workdir, legacy=True)
     if algorithm == WORKTREE_SNAPSHOT_SEMANTIC_V1:
-        return _worktree_snapshot(workdir)
+        return WORKTREE._worktree_snapshot(workdir)
     raise DispatchError("dispatch worktree snapshot algorithm is unavailable")
 
 
@@ -3345,7 +3076,7 @@ def _reconciliation_from_snapshot(
 def _reconcile_worktree(
     workdir: str, baseline: dict[str, Any] | None, *, state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    current = _worktree_snapshot(workdir) if state is None else _state_worktree_snapshot(state, workdir)
+    current = WORKTREE._worktree_snapshot(workdir) if state is None else _state_worktree_snapshot(state, workdir)
     return _reconciliation_from_snapshot(current, baseline)
 
 
@@ -3434,7 +3165,7 @@ def _bound_candidate_worktree(state: dict[str, Any], command: dict[str, Any]) ->
     # direct candidate-binding caller cannot turn a substituted Git boundary
     # into a content-only comparison.
     if state.get("schema_version") in {9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA} and (
-        _git_boundary_identity(command["workdir"])
+        WORKTREE._git_boundary_identity(command["workdir"])
         != state.get("worktree_root_identity")
     ):
         raise DispatchError("dispatch worktree root binding changed")
@@ -3625,7 +3356,7 @@ def _copy_bound_candidate(worktree: Path, destination: Path) -> None:
             contained = False
         if (
             not contained or not os.path.exists(resolved)
-            or _resolved_path_is_git_administration(str(root), resolved)
+            or WORKTREE._resolved_path_is_git_administration(str(root), resolved)
         ):
             raise DispatchError("verification copy source link is unsafe")
         # A relative source spelling can still escape a sibling copy (for
@@ -3764,7 +3495,7 @@ def _bound_legacy_unknown_result(job: Path, state: dict[str, Any]) -> bytes:
     command = _load_bound_command(bound_job, state, stage_readonly=False)
     command, state = _bound_lifecycle_inputs(bound_job, state, command, read_legacy=True)
     if state["workflow"] != "project" or (
-        _project_boundary(command["workdir"]) != state["project_boundary"]
+        WORKTREE._project_boundary(command["workdir"]) != state["project_boundary"]
     ):
         raise DispatchError("legacy dispatch result boundary is unavailable")
     schema_paths = _schema_paths(command)
@@ -3796,7 +3527,7 @@ def _bound_worktree_baseline(state: dict[str, Any], command: dict[str, Any]) -> 
     current = _state_worktree_snapshot(state, command["workdir"])
     if expected is None or current is None:
         if state.get("schema_version", CURRENT_STATE_SCHEMA) >= 7:
-            _worktree_snapshot(command["workdir"], explain_unsupported=True)
+            WORKTREE._worktree_snapshot(command["workdir"], explain_unsupported=True)
         raise WorktreeBaselineError("queued worktree baseline is unavailable")
     if (
         current["sha256"] != expected["sha256"]
@@ -3952,7 +3683,7 @@ def _bound_lifecycle_inputs(
             raise DispatchError("dispatch worktree root binding changed")
     except OSError as exc:
         raise DispatchError("dispatch worktree root is unavailable") from exc
-    if not _worktree_symlink_boundary(command["workdir"]):
+    if not WORKTREE._worktree_symlink_boundary(command["workdir"]):
         raise DispatchError("dispatch worktree symlink boundary changed")
     _load_bound_selection(
         command, checked, legacy_command_binding=read_legacy,
@@ -3962,7 +3693,7 @@ def _bound_lifecycle_inputs(
     elif not read_legacy or _schema_paths(command) is None:
         raise DispatchError("legacy dispatch schema binding cannot be proved")
     if checked["workflow"] == "project" and (
-        _project_boundary(command["workdir"]) != checked["project_boundary"]
+        WORKTREE._project_boundary(command["workdir"]) != checked["project_boundary"]
     ):
         raise DispatchError("project worktree boundary changed")
     if checked["schema_version"] >= 12 and (
@@ -3986,7 +3717,7 @@ def _bound_lifecycle_inputs(
         if list(_identity(scope_info)) != checked["provider_scope_identity"]:
             raise DispatchError("provider scope file identity changed since dispatch")
         try:
-            scope = _parse_provider_scope(raw_scope)
+            scope = WORKTREE._parse_provider_scope(raw_scope)
         except ValueError as exc:
             raise DispatchError(f"invalid provider scope: {exc}") from exc
         if bind_terminal_candidate:
@@ -4003,12 +3734,12 @@ def _bound_lifecycle_inputs(
             ):
                 raise DispatchError("terminal candidate binding is unavailable")
         else:
-            readable_manifest = _scan_readable_worktree(command["workdir"])
-            manifest_sha = _manifest_digest(readable_manifest)
-            _validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
-            selected_manifest = _build_selected_content_manifest(command["workdir"], scope)
-            selected_sha = _selected_content_digest(selected_manifest)
-            policy_sha = _canonical_digest(scope)
+            readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
+            manifest_sha = WORKTREE._manifest_digest(readable_manifest)
+            WORKTREE._validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
+            selected_manifest = WORKTREE._build_selected_content_manifest(command["workdir"], scope)
+            selected_sha = WORKTREE._selected_content_digest(selected_manifest)
+            policy_sha = WORKTREE._canonical_digest(scope)
             transmission_sha = _bound_transmission_sha256(
                 command, policy_sha, manifest_sha, selected_sha,
             )
@@ -4113,10 +3844,10 @@ def _revalidate_scoped_provider_stage(
         or stat.S_ISLNK(current.st_mode)
         or current.st_uid != os.getuid()
         or stat.S_IMODE(current.st_mode) != 0o700
-        or _selected_content_digest(selected_manifest) != stage_manifest_sha
+        or WORKTREE._selected_content_digest(selected_manifest) != stage_manifest_sha
     ):
         raise DispatchError("provider stage binding changed before launch")
-    mutations, _operation_sha = _scan_stage_mutations(
+    mutations, _operation_sha = WORKTREE._scan_stage_mutations(
         stage_dir, scope, selected_manifest,
     )
     if mutations:
@@ -4716,13 +4447,13 @@ def controller(job: Path, ownership_fd: int) -> int:
         schema_paths: tuple[Path, Path] | None = None
         try:
             command = _load_bound_command(job, state, stage_readonly=False)
-            MODEL_SELECTION.ACTIVE_CHILD_ENV = list(command["provider_env"])  # type: ignore[attr-defined]  # Loaded model_selection defines this exact child-environment list.
+            MODEL_SELECTION.ACTIVE_CHILD_ENV = list(command["provider_env"])
             _load_bound_selection(command, state)
             schema_paths = _bound_schemas(command, state)
-            if not _worktree_symlink_boundary(command["workdir"]):
+            if not WORKTREE._worktree_symlink_boundary(command["workdir"]):
                 raise DispatchError("dispatch worktree symlink boundary changed")
             if state["workflow"] == "project":
-                if _project_boundary(command["workdir"]) != state["project_boundary"]:
+                if WORKTREE._project_boundary(command["workdir"]) != state["project_boundary"]:
                     raise DispatchError("project worktree boundary changed")
             if state["attempt_origin"] == "conversation-continue":
                 feedback = _bound_verification(job, state)
@@ -4876,7 +4607,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                 # pins the safe, freshly-probed target for this one process.
                 executable_binding = _reprobe_direct_selection(command, state, argv)
                 _bound_worktree_baseline(state, command)
-                if not _worktree_symlink_boundary(command["workdir"]):
+                if not WORKTREE._worktree_symlink_boundary(command["workdir"]):
                     raise DispatchError("dispatch worktree symlink boundary changed")
                 launch_cwd = command["workdir"]
                 if state.get("provider_scope_path") is not None:
@@ -4887,13 +4618,13 @@ def controller(job: Path, ownership_fd: int) -> int:
                         raise DispatchError("provider scope file changed since dispatch")
                     if list(_identity(scope_info)) != state["provider_scope_identity"]:
                         raise DispatchError("provider scope file identity changed since dispatch")
-                    scope = _parse_provider_scope(raw_scope)
-                    readable_manifest = _scan_readable_worktree(command["workdir"])
-                    manifest_sha = _manifest_digest(readable_manifest)
-                    _validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
-                    selected_manifest = _build_selected_content_manifest(command["workdir"], scope)
-                    selected_sha = _selected_content_digest(selected_manifest)
-                    policy_sha = _canonical_digest(scope)
+                    scope = WORKTREE._parse_provider_scope(raw_scope)
+                    readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
+                    manifest_sha = WORKTREE._manifest_digest(readable_manifest)
+                    WORKTREE._validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
+                    selected_manifest = WORKTREE._build_selected_content_manifest(command["workdir"], scope)
+                    selected_sha = WORKTREE._selected_content_digest(selected_manifest)
+                    policy_sha = WORKTREE._canonical_digest(scope)
                     transmission_sha = _bound_transmission_sha256(
                         command, policy_sha, manifest_sha, selected_sha,
                     )
@@ -4903,9 +4634,9 @@ def controller(job: Path, ownership_fd: int) -> int:
                         transmission_sha256=transmission_sha,
                         provider_origin=state["attempt_origin"],
                     )
-                    narrow_source_snapshot = _worktree_snapshot(command["workdir"])
+                    narrow_source_snapshot = WORKTREE._worktree_snapshot(command["workdir"])
                     stage_dir = job / f"stage-{attempt:03d}"
-                    stage_identity, stage_manifest_sha = _materialize_stage(command["workdir"], stage_dir, scope, selected_manifest)
+                    stage_identity, stage_manifest_sha = WORKTREE._materialize_stage(command["workdir"], stage_dir, scope, selected_manifest)
                     launch_cwd = str(stage_dir)
                     if executable_binding is None:
                         try:
@@ -4927,21 +4658,21 @@ def controller(job: Path, ownership_fd: int) -> int:
                             )
                         )
                     ):
-                        readable_manifest = _scan_readable_worktree(command["workdir"])
+                        readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
                         if command["schema_version"] == 11:
-                            content = whole_worktree_content_manifest(command["workdir"])
+                            content = WORKTREE.whole_worktree_content_manifest(command["workdir"])
                             content_sha = content["manifest_sha256"]
                             if content_sha != command["whole_worktree_content_sha256"]:
                                 raise DispatchError("whole-worktree content binding changed")
-                            expected_approval = _compute_v11_launch_approval_sha256(
+                            expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
                                 _provider_isolation_for_command(command), command["native_grant_profile"],
                                 whole_worktree_content_sha256=content_sha,
-                                readable_manifest_sha256=_manifest_digest(readable_manifest),
+                                readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
                             )
                         else:
-                            expected_approval = _compute_provider_launch_approval_sha256(
-                                _provider_isolation_for_command(command), _manifest_digest(readable_manifest),
-                            ) if command["schema_version"] == 10 else _manifest_digest(readable_manifest)
+                            expected_approval = WORKTREE._compute_provider_launch_approval_sha256(
+                                _provider_isolation_for_command(command), WORKTREE._manifest_digest(readable_manifest),
+                            ) if command["schema_version"] == 10 else WORKTREE._manifest_digest(readable_manifest)
                         if expected_approval != approved_whole_sha:
                             raise DispatchError("whole-worktree transmission binding changed")
                 _bind_workspace_prompt(
@@ -5445,7 +5176,7 @@ def controller(job: Path, ownership_fd: int) -> int:
             boundary_failed = False
             if command["workflow"] == "project":
                 try:
-                    if _project_boundary(command["workdir"]) != state["project_boundary"]:
+                    if WORKTREE._project_boundary(command["workdir"]) != state["project_boundary"]:
                         raise DispatchError("project worktree boundary changed")
                 except DispatchError:
                     boundary_failed = True
@@ -5486,12 +5217,12 @@ def controller(job: Path, ownership_fd: int) -> int:
                 try:
                     if (
                         narrow_source_snapshot is None
-                        or _worktree_snapshot(command["workdir"]) != narrow_source_snapshot
+                        or WORKTREE._worktree_snapshot(command["workdir"]) != narrow_source_snapshot
                     ):
                         raise DispatchError(
                             "source worktree changed while the narrow provider stage was active"
                         )
-                    mutations, op_manifest = _scan_stage_mutations(stage_dir, cast(dict[str, Any], scope), cast(list[dict[str, Any]], selected_manifest))
+                    mutations, op_manifest = WORKTREE._scan_stage_mutations(stage_dir, cast(dict[str, Any], scope), cast(list[dict[str, Any]], selected_manifest))
                     if result_binding is not None and not _declared_scoped_mutations_match(
                         envelope_path, result_binding, mutations, stage_dir,
                     ):
@@ -5501,26 +5232,26 @@ def controller(job: Path, ownership_fd: int) -> int:
                     if result_binding is not None and outer_status in {
                         "SUCCESS", "ERROR", "CANCELLED",
                     }:
-                        reconciliation_manifest_sha = _reconcile_stage_to_source(
+                        reconciliation_manifest_sha = WORKTREE._reconcile_stage_to_source(
                             command["workdir"], stage_dir, mutations, job,
                         )
-                        if _build_selected_content_manifest(
+                        if WORKTREE._build_selected_content_manifest(
                             command["workdir"], cast(dict[str, Any], scope),
-                        ) != _build_selected_content_manifest(
+                        ) != WORKTREE._build_selected_content_manifest(
                             stage_dir, cast(dict[str, Any], scope), is_stage=True,
                         ):
                             raise DispatchError(
                                 "source reconciliation does not match the provider stage"
                             )
                     else:
-                        reconciliation_manifest_sha = _selected_content_digest([])
+                        reconciliation_manifest_sha = WORKTREE._selected_content_digest([])
                 except Exception:
                     cleanup_failed = True
                 finally:
                     try:
                         if stage_identity is None:
                             raise DispatchError("stage cleanup identity is unavailable")
-                        _cleanup_stage(stage_dir, stage_identity)
+                        WORKTREE._cleanup_stage(stage_dir, stage_identity)
                     except (OSError, DispatchError):
                         cleanup_failed = True
             try:
@@ -5603,14 +5334,14 @@ def controller(job: Path, ownership_fd: int) -> int:
                 and scope is not None
             ):
                 try:
-                    derived_readable = _scan_readable_worktree(command["workdir"])
-                    _validate_scope_against_worktree(
+                    derived_readable = WORKTREE._scan_readable_worktree(command["workdir"])
+                    WORKTREE._validate_scope_against_worktree(
                         scope, command["workdir"], derived_readable,
                     )
-                    derived_selected = _build_selected_content_manifest(
+                    derived_selected = WORKTREE._build_selected_content_manifest(
                         command["workdir"], scope,
                     )
-                    derived_selected_sha = _selected_content_digest(derived_selected)
+                    derived_selected_sha = WORKTREE._selected_content_digest(derived_selected)
                     derived_selected_files = sum(
                         1 for item in derived_selected if item["kind"] == "file"
                     )
@@ -5618,8 +5349,8 @@ def controller(job: Path, ownership_fd: int) -> int:
                         1 for item in derived_selected if item["kind"] == "directory"
                     )
                     derived_transmission_sha = _bound_transmission_sha256(
-                        command, _canonical_digest(scope),
-                        _manifest_digest(derived_readable), derived_selected_sha,
+                        command, WORKTREE._canonical_digest(scope),
+                        WORKTREE._manifest_digest(derived_readable), derived_selected_sha,
                     )
                 except Exception:
                     derived_selected_sha = None

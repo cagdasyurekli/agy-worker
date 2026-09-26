@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""Path-pinned worktree and Git snapshot implementation for agy_dispatch.
+"""Worktree observations and staging with explicit, module-owned dependencies.
 
-This module deliberately does not import agy_dispatch.  Its caller passes the
-current dispatcher globals for each invocation, preserving the dispatcher's
-exception identity and its mutable test seams when two copied runtimes coexist.
+The dispatcher and standalone preview share these implementations through normal
+sibling imports. Tests patch dependencies where this module looks them up.
 """
 from __future__ import annotations
 
 import contextlib
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -23,31 +21,35 @@ import subprocess
 import sys
 import time
 import unicodedata
-from typing import Any, Mapping, TYPE_CHECKING, cast
+from typing import Any, cast
 
-# call() receives these exact dispatcher bindings; no runtime import/cycle is added.
-if TYPE_CHECKING:
-    from agy_dispatch import (
-        MAX_BOUNDARY_ENTRIES as MAX_BOUNDARY_ENTRIES,
-        MAX_STREAM_BYTES as MAX_STREAM_BYTES,
-        MODEL_SELECTION as MODEL_SELECTION,
-        TERM_GRACE as TERM_GRACE,
-        _identity as _identity,
-        _parse_resolve_undo as _parse_resolve_undo,
-        canonical as canonical,
-        digest as digest,
-    )
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
+import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- standalone sibling imports follow path setup
+import model_selection as MODEL_SELECTION  # noqa: E402 -- standalone sibling imports follow path setup
 
-_CONTAINMENT_SPEC = importlib.util.spec_from_file_location(
-    "agy_dispatch_containment_for_worktree",
-    Path(__file__).resolve().with_name("agy_dispatch_containment.py"),
-)
-if _CONTAINMENT_SPEC is None or _CONTAINMENT_SPEC.loader is None:
-    raise RuntimeError("native containment helper is unavailable")
-CONTAINMENT = importlib.util.module_from_spec(_CONTAINMENT_SPEC)
-sys.modules[_CONTAINMENT_SPEC.name] = CONTAINMENT
-_CONTAINMENT_SPEC.loader.exec_module(CONTAINMENT)
+MAX_BOUNDARY_ENTRIES = 100000
+MAX_STREAM_BYTES = 32 * 1024 * 1024
+TERM_GRACE = 1.0
+
+class DispatchError(ValueError):
+    pass
+
+class WorktreeBaselineError(DispatchError):
+    """The queued worktree baseline is unavailable or no longer exact."""
+
+class ResolveUndoPresentError(WorktreeBaselineError):
+    """A valid, non-empty REUC observation is present in the worktree index."""
+
+def canonical(value: Any) -> bytes:
+    try:
+        return json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("ascii") + b"\n"
+    except RecursionError as exc:
+        raise DispatchError("JSON structure is invalid") from exc
 
 
 READABLE_MANIFEST_MAX_ENTRIES = 100000
@@ -74,9 +76,54 @@ class ReadableManifestError(ValueError):
     """The provider-readable path boundary could not be observed completely."""
 
 
-# Standalone preview/parser imports do not have the dispatcher dependency map.
-# ``call`` replaces this binding with the dispatcher's exact exception class.
-DispatchError = ReadableManifestError
+def digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        info.st_dev, info.st_ino, info.st_uid, info.st_gid,
+        stat.S_IMODE(info.st_mode),
+    )
+
+def _parse_resolve_undo(
+    raw: bytes, object_length: int,
+) -> dict[tuple[bytes, int], tuple[int, bytes]] | None:
+    """Strictly parse ``ls-files --resolve-undo -z`` records.
+
+    V7 does not persist REUC records: any well-formed record makes the semantic
+    snapshot unavailable.  Parsing first keeps malformed, duplicate, and
+    unsupported output fail-closed instead of treating it as an empty result.
+    """
+    if object_length not in {40, 64}:
+        return None
+    if not raw:
+        return {}
+    if not raw.endswith(b"\0"):
+        return None
+    parsed: dict[tuple[bytes, int], tuple[int, bytes]] = {}
+    for record in raw.split(b"\0")[:-1]:
+        try:
+            header, relative = record.split(b"\t", 1)
+            mode_raw, oid, stage_raw = header.split(b" ")
+            mode = int(mode_raw, 8)
+            stage = int(stage_raw, 10)
+        except (ValueError, TypeError):
+            return None
+        parts = relative.split(b"/")
+        key = (relative, stage)
+        if (
+            mode not in {0o100644, 0o100755, 0o120000, 0o160000}
+            or len(oid) != object_length
+            or any(char not in b"0123456789abcdef" for char in oid)
+            or stage not in {1, 2, 3}
+            or not relative or relative.startswith(b"/")
+            or any(part in {b"", b".", b".."} for part in parts)
+            or parts[0] == b".git"
+            or key in parsed
+        ):
+            return None
+        parsed[key] = (mode, oid)
+    return parsed
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -112,24 +159,24 @@ def _manifest_binding(info: os.stat_result) -> tuple[int, ...]:
 
 
 def _read_provider_scope_file(
-    path: str | Path, limit: int,
+    path: str | Path, limit: int, *, error_type: type[ValueError] = ReadableManifestError,
 ) -> tuple[str, bytes, os.stat_result]:
     """Read a stable, owner-private provider-scope policy without aliases."""
     try:
         path_text = os.fsdecode(path)
         if "\0" in path_text or os.path.islink(path_text):
-            raise DispatchError("provider scope path is invalid")
+            raise error_type("provider scope path is invalid")
         resolved = os.path.realpath(path_text)
         if not os.path.isabs(resolved) or os.path.islink(resolved):
-            raise DispatchError("provider scope path is invalid")
+            raise error_type("provider scope path is invalid")
         named_before = os.lstat(resolved)
         if not stat.S_ISREG(named_before.st_mode):
-            raise DispatchError("provider scope authority is invalid")
+            raise error_type("provider scope authority is invalid")
         descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     except (OSError, TypeError, UnicodeError, ValueError) as exc:
-        if isinstance(exc, DispatchError):
+        if isinstance(exc, error_type):
             raise
-        raise DispatchError("provider scope is unavailable") from exc
+        raise error_type("provider scope is unavailable") from exc
     try:
         before = os.fstat(descriptor)
         if (
@@ -139,7 +186,7 @@ def _read_provider_scope_file(
             or stat.S_IMODE(before.st_mode) != 0o600
             or _manifest_binding(before) != _manifest_binding(named_before)
         ):
-            raise DispatchError("provider scope authority is invalid")
+            raise error_type("provider scope authority is invalid")
         chunks: list[bytes] = []
         total = 0
         while total <= limit:
@@ -154,13 +201,13 @@ def _read_provider_scope_file(
     try:
         named_after = os.lstat(resolved)
     except OSError as exc:
-        raise DispatchError("provider scope changed during read") from exc
+        raise error_type("provider scope changed during read") from exc
     if (
         total > limit
         or _manifest_binding(before) != _manifest_binding(after)
         or _manifest_binding(after) != _manifest_binding(named_after)
     ):
-        raise DispatchError("provider scope changed during read")
+        raise error_type("provider scope changed during read")
     return resolved, b"".join(chunks), after
 
 
@@ -973,17 +1020,6 @@ def _preview_main(argv: list[str]) -> int:
         return 20
     sys.stdout.buffer.write(_canonical_json(result) + b"\n")
     return 0
-
-
-def call(name: str, dependencies: Mapping[str, Any], *args: Any, **kwargs: Any) -> Any:
-    """Run one façade target with its caller's current dependency bindings."""
-    for key, value in dependencies.items():
-        # Keep the invoked implementation local so a façade cannot recurse
-        # into itself. Other implementation names are dependencies: callers
-        # intentionally monkeypatch them in controller and regression tests.
-        if not key.startswith("__") and key != name:
-            globals()[key] = value
-    return _IMPLEMENTATION_DEFAULTS[name](*args, **kwargs)
 
 
 class _MarkerPreflightLimit(Exception):
@@ -2067,7 +2103,7 @@ def _git_boundary_identity(workdir: str) -> dict[str, Any] | None:
             os.close(root_fd)
 
 
-def _worktree_snapshot(
+def _worktree_snapshot_raw(
     workdir: str, *, legacy: bool = False, explain_unsupported: bool = False,
 ) -> dict[str, Any] | None:
     """Hash a bounded worktree fact set without executing repository programs.
@@ -2861,6 +2897,20 @@ def _worktree_snapshot(
     finally:
         if root_fd >= 0:
             os.close(root_fd)
+
+
+def _worktree_snapshot(
+    workdir: str, *, legacy: bool = False, explain_unsupported: bool = False,
+) -> dict[str, Any] | None:
+    """Translate internal snapshot failures to the controller's stable contract."""
+    try:
+        return _worktree_snapshot_raw(
+            workdir, legacy=legacy, explain_unsupported=explain_unsupported,
+        )
+    except _ResolveUndoPresentError as exc:
+        raise ResolveUndoPresentError(str(exc)) from None
+    except _UnsupportedWorktreeError as exc:
+        raise WorktreeBaselineError(str(exc)) from None
 
 
 def _parse_provider_scope(raw_bytes: bytes) -> dict[str, Any]:
@@ -4520,47 +4570,6 @@ def _cleanup_stage(stage_dir: str | Path, recorded_identity: tuple[int, int, int
         os.close(stage_root_fd)
 
     os.rmdir(stg_str)
-
-
-_IMPLEMENTATION_FUNCTIONS = frozenset({
-    "_marker_only_preflight",
-    "_resolved_path_is_git_administration",
-    "_worktree_symlink_boundary",
-    "_worktree_git_admin_alias_boundary",
-    "_project_boundary",
-    "_safe_git_owner_mode",
-    "_safe_git_executable",
-    "_confirm_safe_git_executable",
-    "_safe_git_is_outside_worktree",
-    "_stable_git_authority",
-    "_full_stat_binding",
-    "_bound_git_worktree_root",
-    "_fixed_git_read_argv",
-    "_bounded_git_read",
-    "_git_boundary_identity",
-    "_worktree_snapshot",
-    "_scan_readable_worktree",
-    "whole_worktree_content_manifest",
-    "_validate_manifest",
-    "_manifest_digest",
-    "_read_provider_scope_file",
-    "_parse_provider_scope",
-    "_validate_scope_against_worktree",
-    "_build_selected_content_manifest",
-    "_canonical_digest",
-    "_selected_content_digest",
-    "_compute_transmission_sha256",
-    "_compute_provider_launch_approval_sha256",
-    "_compute_v11_launch_approval_sha256",
-    "_materialize_stage",
-    "_scan_stage_mutations",
-    "_recover_reconciliation",
-    "_reconcile_stage_to_source",
-    "_cleanup_stage",
-})
-_IMPLEMENTATION_DEFAULTS = {
-    name: globals()[name] for name in _IMPLEMENTATION_FUNCTIONS
-}
 
 
 if __name__ == "__main__":

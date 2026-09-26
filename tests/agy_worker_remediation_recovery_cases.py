@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     import contextlib
     def current_candidate_fixture(label: str, *, selection: bool=False, staged: bool=False, wrapper_addressable: bool=False, workflow: str='task', linked: bool=False, inside_worktree: bool=False) -> tuple[Path, dict, str, Path]: ...
     import hashlib
-    import importlib.util
     import io
     import json
     import os
@@ -277,13 +276,13 @@ def run(context: dict[str, object]) -> None:
         }
         selected = MODULE._build_selected_content_manifest(source, scope)
         original_fchmod = MODULE.os.fchmod
-        original_cleanup = MODULE._cleanup_stage
+        original_cleanup = MODULE.WORKTREE._cleanup_stage
         def fail_stage_chmod(_descriptor, _mode):
             raise OSError("injected pre-chmod failure")
         def fail_cleanup(_stage, _identity):
             raise OSError("injected cleanup failure")
         MODULE.os.fchmod = fail_stage_chmod
-        MODULE._cleanup_stage = fail_cleanup
+        MODULE.WORKTREE._cleanup_stage = fail_cleanup
         try:
             try:
                 MODULE._materialize_stage(source, stage, scope, selected)
@@ -295,7 +294,7 @@ def run(context: dict[str, object]) -> None:
                 raise AssertionError("materialization hid an injected cleanup failure")
         finally:
             MODULE.os.fchmod = original_fchmod
-            MODULE._cleanup_stage = original_cleanup
+            MODULE.WORKTREE._cleanup_stage = original_cleanup
         assert stage.is_dir()
         shutil.rmtree(fixture)
 
@@ -1236,15 +1235,15 @@ def run(context: dict[str, object]) -> None:
                 check=True,
             )
             linked = linked.resolve()
-            direct_reader = MODULE._WORKTREE_HELPER._IMPLEMENTATION_DEFAULTS["_bounded_git_read"]
-            facade_reader = MODULE._bounded_git_read
+            direct_reader = MODULE.WORKTREE._bounded_git_read
+            facade_reader = MODULE.WORKTREE._bounded_git_read
 
             def with_reader(reader, action):
-                MODULE._bounded_git_read = reader
+                MODULE.WORKTREE._bounded_git_read = reader
                 try:
                     return action()
                 finally:
-                    MODULE._bounded_git_read = facade_reader
+                    MODULE.WORKTREE._bounded_git_read = facade_reader
 
             aliases: set[tuple[str, ...]] = set()
             def var_alias_reader(*args, **kwargs):
@@ -1293,8 +1292,8 @@ def run(context: dict[str, object]) -> None:
     # is its plumbing-alias integration branch, not a new suite count.
     check("normal standard and linked worktrees persist a bound V14 dispatch state", normal_standard_and_linked_worktrees_create_bound_v14_state)
 
-    def extracted_worktree_facade_preserves_all_signatures_and_patch_seams() -> None:
-        """The split keeps the old module surface and its intentional test seams."""
+    def worktree_module_preserves_single_ownership_and_patch_seams() -> None:
+        """Compatibility names preserve signatures while the owner keeps every lookup."""
         import ast
         import inspect
 
@@ -1326,15 +1325,64 @@ def run(context: dict[str, object]) -> None:
             node.name: node for node in helper_tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        assert set(extracted) <= set(facade_nodes) & set(helper_nodes)
+        assert set(extracted) <= set(helper_nodes)
+        assert not set(facade_nodes) & set(helper_nodes)
         assert len(extracted) == 16
         for name in extracted:
-            assert ast.dump(facade_nodes[name].args, include_attributes=False) == ast.dump(
-                helper_nodes[name].args, include_attributes=False,
-            ), name
+            assert getattr(MODULE, name) is getattr(MODULE.WORKTREE, name), name
             assert inspect.signature(getattr(MODULE, name)) == inspect.signature(
-                getattr(MODULE._WORKTREE_HELPER, name),
+                getattr(MODULE.WORKTREE, name),
             ), name
+            assert getattr(MODULE.WORKTREE, name).__globals__ is vars(MODULE.WORKTREE), name
+        assert MODULE.MODEL_SELECTION is MODULE.WORKTREE.MODEL_SELECTION
+        assert MODULE.CONTAINMENT is MODULE.WORKTREE.CONTAINMENT
+        assert MODULE.DispatchError is MODULE.WORKTREE.DispatchError
+        assert MODULE.WorktreeBaselineError is MODULE.WORKTREE.WorktreeBaselineError
+        assert MODULE.ResolveUndoPresentError is MODULE.WORKTREE.ResolveUndoPresentError
+        assert not issubclass(MODULE.DispatchError, MODULE.WORKTREE.ReadableManifestError)
+        assert not issubclass(MODULE.WORKTREE.ReadableManifestError, MODULE.DispatchError)
+        assert not hasattr(MODULE.WORKTREE, "call")
+        assert not hasattr(MODULE.WORKTREE, "_IMPLEMENTATION_DEFAULTS")
+        assert MODULE.canonical is MODULE.WORKTREE.canonical
+        assert MODULE.canonical({"unicode": "é"}) == b'{"unicode":"\\u00e9"}\n'
+        recursive = []
+        for _ in range(2000):
+            recursive = [recursive]
+        try:
+            MODULE.canonical(recursive)
+        except MODULE.DispatchError as exc:
+            assert str(exc) == "JSON structure is invalid"
+            assert isinstance(exc.__cause__, RecursionError)
+        else:
+            raise AssertionError("canonical encoding lost its classified recursion failure")
+        for reader, error_type in (
+            (MODULE.WORKTREE._read_provider_scope_file, MODULE.WORKTREE.ReadableManifestError),
+            (MODULE._read_provider_scope_file, MODULE.DispatchError),
+        ):
+            try:
+                reader("invalid\0scope", 1024)
+            except error_type as exc:
+                assert str(exc) == "provider scope path is invalid"
+            else:
+                raise AssertionError("scope reader lost its classified error family")
+        original_raw_snapshot = MODULE.WORKTREE._worktree_snapshot_raw
+        try:
+            for internal, public, message in (
+                (MODULE.WORKTREE._UnsupportedWorktreeError, MODULE.WorktreeBaselineError, "unsupported"),
+                (MODULE.WORKTREE._ResolveUndoPresentError, MODULE.ResolveUndoPresentError, "resolve_undo_present"),
+            ):
+                def unavailable(*_args, **_kwargs):
+                    raise internal(message)  # noqa: B023 -- invoked synchronously within this iteration
+                MODULE.WORKTREE._worktree_snapshot_raw = unavailable
+                try:
+                    MODULE.WORKTREE._worktree_snapshot("unused")
+                except public as exc:
+                    assert str(exc) == message
+                    assert exc.__cause__ is None
+                else:
+                    raise AssertionError("snapshot adapter lost its public error contract")
+        finally:
+            MODULE.WORKTREE._worktree_snapshot_raw = original_raw_snapshot
 
         repo = root / "extracted-facade-seams"; repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1343,17 +1391,17 @@ def run(context: dict[str, object]) -> None:
         subprocess.run(["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "base"], check=True)
         baseline = MODULE._worktree_snapshot(str(repo))
         assert baseline is not None
-        original_marker = MODULE._marker_only_preflight
-        original_safe_git = MODULE._safe_git_executable
+        original_marker = MODULE.WORKTREE._marker_only_preflight
+        original_safe_git = MODULE.WORKTREE._safe_git_executable
         try:
-            MODULE._marker_only_preflight = lambda *_args, **_kwargs: False
+            MODULE.WORKTREE._marker_only_preflight = lambda *_args, **_kwargs: False
             assert MODULE._worktree_snapshot(str(repo)) is None
-            MODULE._marker_only_preflight = original_marker
-            MODULE._safe_git_executable = lambda: None
+            MODULE.WORKTREE._marker_only_preflight = original_marker
+            MODULE.WORKTREE._safe_git_executable = lambda: None
             assert MODULE._worktree_snapshot(str(repo)) is None
         finally:
-            MODULE._marker_only_preflight = original_marker
-            MODULE._safe_git_executable = original_safe_git
+            MODULE.WORKTREE._marker_only_preflight = original_marker
+            MODULE.WORKTREE._safe_git_executable = original_safe_git
 
     def nested_git_entries_fail_closed_without_opening_them() -> None:
         """Only the root marker may be bound; nested markers are never content."""
@@ -3077,7 +3125,7 @@ def run(context: dict[str, object]) -> None:
     check("independent non-empty per-path reference preserves frozen v6 v7 and named v8 snapshot digests", independent_nonempty_snapshot_reference_preserves_v6_v7_and_v8)
 
     def current_snapshot_algorithm_is_explicit_and_v7_remains_exact() -> None:
-        extracted_worktree_facade_preserves_all_signatures_and_patch_seams()
+        worktree_module_preserves_single_ownership_and_patch_seams()
         job, state, _sha, _envelope = current_candidate_fixture("snapshot-algorithm")
         assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
         assert state["worktree_snapshot_algorithm"] == MODULE.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -3105,17 +3153,40 @@ def run(context: dict[str, object]) -> None:
 
         copied_scripts = root / "copied-runtime-scripts"
         shutil.copytree(SOURCE.parent, copied_scripts)
-        copied_source = copied_scripts / "agy_dispatch.py"
-        copied_spec = importlib.util.spec_from_file_location("agy_dispatch_copied", copied_source)
-        assert copied_spec is not None and copied_spec.loader is not None
-        copied_module = importlib.util.module_from_spec(copied_spec)
-        copied_spec.loader.exec_module(copied_module)
-        assert Path(copied_module._WORKTREE_HELPER.__file__).resolve() == (
-            copied_scripts / "agy_dispatch_worktree.py"
-        ).resolve()
-        assert Path(copied_module._WORKTREE_HELPER.__file__).resolve() != Path(
-            MODULE._WORKTREE_HELPER.__file__
-        ).resolve()
+        imported_roots = []
+        for scripts in (SOURCE.parent, copied_scripts):
+            # Each installed runtime owns its ordinary imports in a fresh process;
+            # Python's shared sys.modules cache is not an isolation boundary.
+            observed = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", """
+import json, os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import agy_dispatch as dispatch
+assert dispatch.MODEL_SELECTION is dispatch.WORKTREE.MODEL_SELECTION
+assert dispatch.CONTAINMENT is dispatch.WORKTREE.CONTAINMENT
+selection = dispatch.MODEL_SELECTION
+assert selection.ACTIVE_CHILD_ENV == []
+os.environ['AGY_TEST_FIRST'] = 'first'
+os.environ['AGY_TEST_SECOND'] = 'second'
+selection.ACTIVE_CHILD_ENV = ['AGY_TEST_FIRST']
+assert selection.child_environment()['AGY_TEST_FIRST'] == 'first'
+assert 'AGY_TEST_FIRST' not in selection.child_environment([])
+selection.ACTIVE_CHILD_ENV = ['AGY_TEST_SECOND']
+assert 'AGY_TEST_FIRST' not in selection.child_environment()
+assert selection.child_environment()['AGY_TEST_SECOND'] == 'second'
+selection.ACTIVE_CHILD_ENV = []
+assert 'AGY_TEST_SECOND' not in selection.child_environment()
+print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
+    (dispatch, dispatch.WORKTREE, dispatch.CONTAINMENT, dispatch.MODEL_SELECTION)]))
+""", str(scripts)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            paths = json.loads(observed.stdout)
+            assert paths == [str((scripts / name).resolve()) for name in (
+                "agy_dispatch.py", "agy_dispatch_worktree.py",
+                "agy_dispatch_containment.py", "model_selection.py",
+            )]
+            imported_roots.append(paths)
+        assert all(first != second for first, second in zip(*imported_roots))
 
     check("new states persist one snapshot algorithm while v7 readback remains semantic-v1", current_snapshot_algorithm_is_explicit_and_v7_remains_exact)
 

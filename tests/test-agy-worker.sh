@@ -6436,7 +6436,7 @@ root = Path(sys.argv[2]).resolve(); root.mkdir(mode=0o700)
 (root / ".git").write_text("gitdir: bounded\n", encoding="ascii")
 (root / "one").write_text("1", encoding="ascii")
 (root / "two").write_text("2", encoding="ascii")
-module.MAX_BOUNDARY_ENTRIES = 2
+module.WORKTREE.MAX_BOUNDARY_ENTRIES = 2
 module._project_boundary(str(root))
 (root / "three").write_text("3", encoding="ascii")
 try:

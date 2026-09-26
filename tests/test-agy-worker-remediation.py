@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import contextlib
 import fcntl
@@ -33,6 +34,16 @@ spec = importlib.util.spec_from_file_location("agy_dispatch_remediation", SOURCE
 MODULE = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(MODULE)
+
+def worktree_function_source(name: str) -> str:
+    """Return exactly one owner function for source-level security assertions."""
+    source = WORKTREE_SOURCE.read_text(encoding="utf-8")
+    node = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == name)
+    segment = ast.get_source_segment(source, node)
+    assert segment is not None
+    return segment
+
 
 EXPECTED_CHECKS = 116
 CHECKS_RUN = 0
@@ -295,17 +306,17 @@ class TestOnlyNonDarwinContainment:
 adapter = TestOnlyNonDarwinContainment(job)
 original_containment = dispatch.CONTAINMENT
 dispatch.CONTAINMENT = adapter
-original_materialize = dispatch._materialize_stage
+original_materialize = dispatch.WORKTREE._materialize_stage
 if fixture_kind == "copy-drift":
     def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest):
         (Path(source_root) / "payload.bin").write_bytes(b"copy-window-source-drift\n")
         (job / "copy-drift-injected").write_text("injected\n", encoding="ascii")
         return original_materialize(source_root, stage_dir, scope, selected_manifest)
-    dispatch._materialize_stage = drift_immediately_before_copy
+    dispatch.WORKTREE._materialize_stage = drift_immediately_before_copy
 try:
     raise SystemExit(dispatch.controller(job, ownership_fd))
 finally:
-    dispatch._materialize_stage = original_materialize
+    dispatch.WORKTREE._materialize_stage = original_materialize
     dispatch.CONTAINMENT = original_containment
 '''
     lock = job / MODULE.LOCK_NAME
@@ -348,18 +359,18 @@ def run_scoped_controller(
         return _run_scoped_controller_linux_fixture(job, bin_dir, fixture_kind=fixture_kind)
     if fixture_kind != "copy-drift":
         return run_controller(job, bin_dir)
-    original_materialize = MODULE._materialize_stage
+    original_materialize = MODULE.WORKTREE._materialize_stage
 
     def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest):
         (Path(source_root) / "payload.bin").write_bytes(b"copy-window-source-drift\n")
         (job / "copy-drift-injected").write_text("injected\n", encoding="ascii")
         return original_materialize(source_root, stage_dir, scope, selected_manifest)
 
-    MODULE._materialize_stage = drift_immediately_before_copy
+    MODULE.WORKTREE._materialize_stage = drift_immediately_before_copy
     try:
         return run_controller(job, bin_dir)
     finally:
-        MODULE._materialize_stage = original_materialize
+        MODULE.WORKTREE._materialize_stage = original_materialize
 
 
 with tempfile.TemporaryDirectory() as temporary:
@@ -1257,12 +1268,12 @@ with tempfile.TemporaryDirectory() as temporary:
                 for process in processes
             )
 
-        original_limit = MODULE.MAX_STREAM_BYTES
-        MODULE.MAX_STREAM_BYTES = 1
+        original_limit = MODULE.WORKTREE.MAX_STREAM_BYTES
+        MODULE.WORKTREE.MAX_STREAM_BYTES = 1
         try:
             closed_after_failure(lambda: MODULE._worktree_snapshot(str(repo)))
         finally:
-            MODULE.MAX_STREAM_BYTES = original_limit
+            MODULE.WORKTREE.MAX_STREAM_BYTES = original_limit
         original_selector = MODULE.selectors.DefaultSelector
         class TimedOutSelector:
             def __init__(self): self.items = {}
@@ -1276,13 +1287,8 @@ with tempfile.TemporaryDirectory() as temporary:
             closed_after_failure(lambda: MODULE._worktree_snapshot(str(repo)))
         finally:
             MODULE.selectors.DefaultSelector = original_selector
-        source = WORKTREE_SOURCE.read_bytes()
-        start = source.index(b"def _worktree_snapshot")
-        end = source.index(b"\n\n_IMPLEMENTATION_FUNCTIONS", start)
-        body = source[start:end]
-        runner_start = source.index(b"def _bounded_git_read")
-        runner_end = source.index(b"\ndef _git_boundary_identity", runner_start)
-        runner = source[runner_start:runner_end]
+        body = worktree_function_source("_worktree_snapshot_raw").encode("utf-8")
+        runner = worktree_function_source("_bounded_git_read").encode("utf-8")
         assert b"_bounded_git_read(" in body
         assert b'"GIT_OPTIONAL_LOCKS": "0"' in runner
         assert b'"GIT_CONFIG_NOSYSTEM": "1"' in runner
@@ -1511,9 +1517,9 @@ with tempfile.TemporaryDirectory() as temporary:
         )
         fake.chmod(0o700)
         prior_path = os.environ.get("PATH", "")
-        prior_limit = MODULE.MAX_STREAM_BYTES
+        prior_limit = MODULE.WORKTREE.MAX_STREAM_BYTES
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{prior_path}"
-        MODULE.MAX_STREAM_BYTES = 1024
+        MODULE.WORKTREE.MAX_STREAM_BYTES = 1024
         child = None
         try:
             safe_git = MODULE._safe_git_executable(); assert safe_git is not None
@@ -1536,7 +1542,7 @@ with tempfile.TemporaryDirectory() as temporary:
             else:
                 raise AssertionError("bounded Git stdout flooder remained alive")
         finally:
-            MODULE.MAX_STREAM_BYTES = prior_limit
+            MODULE.WORKTREE.MAX_STREAM_BYTES = prior_limit
             os.environ["PATH"] = prior_path
             if child is not None:
                 with contextlib.suppress(ProcessLookupError):
@@ -2094,7 +2100,7 @@ with tempfile.TemporaryDirectory() as temporary:
         observed = {"provider": 0, "terminated": False, "snapshot_after_terminate": []}
         original_popen = MODULE.subprocess.Popen
         original_terminate = MODULE._terminate
-        original_snapshot = MODULE._worktree_snapshot
+        original_snapshot = MODULE.WORKTREE._worktree_snapshot
 
         def inspect_popen(arguments, *args, **kwargs):
             if isinstance(arguments, list) and arguments and arguments[0] == "agy":
@@ -2115,13 +2121,13 @@ with tempfile.TemporaryDirectory() as temporary:
 
         MODULE.subprocess.Popen = inspect_popen
         MODULE._terminate = terminate_then_mutate
-        MODULE._worktree_snapshot = observe_snapshot
+        MODULE.WORKTREE._worktree_snapshot = observe_snapshot
         try:
             assert run_controller(job, bin_dir) == 0
         finally:
             MODULE.subprocess.Popen = original_popen
             MODULE._terminate = original_terminate
-            MODULE._worktree_snapshot = original_snapshot
+            MODULE.WORKTREE._worktree_snapshot = original_snapshot
         state, _raw, state_sha = MODULE.load_state(job)
         current = MODULE._worktree_snapshot(str(repo))
         assert observed["provider"] == 1 and observed["terminated"]
@@ -2186,17 +2192,17 @@ with tempfile.TemporaryDirectory() as temporary:
             }
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
-            original_snapshot = MODULE._worktree_snapshot
+            original_snapshot = MODULE.WORKTREE._worktree_snapshot
             snapshots = 0
             def drop_terminal_snapshot(workdir: str):
                 nonlocal snapshots
                 snapshots += 1
                 return original_snapshot(workdir) if snapshots == 1 else None  # noqa: B023 -- callback is invoked and restored within this loop iteration
-            MODULE._worktree_snapshot = drop_terminal_snapshot
+            MODULE.WORKTREE._worktree_snapshot = drop_terminal_snapshot
             try:
                 assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["status_unavailable"]
             finally:
-                MODULE._worktree_snapshot = original_snapshot
+                MODULE.WORKTREE._worktree_snapshot = original_snapshot
             state, _raw, sha = MODULE.load_state(job)
             assert snapshots == 2
             assert (state["status"], state["reason"], state["exit_code"], state["failure_stage"]) == (
@@ -4515,7 +4521,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 # may use only a separately bound system Git fallback.
                 original_which = MODULE.shutil.which
                 original_lstat = MODULE.os.lstat
-                original_git_read = MODULE._bounded_git_read
+                original_git_read = MODULE.WORKTREE._bounded_git_read
                 homebrew_marker = root / "rejected-homebrew-git-marker"
                 homebrew_paths = {
                     "/opt/homebrew": bin_dir,
@@ -4537,7 +4543,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
                 MODULE.shutil.which = lambda name: "/opt/homebrew/bin/git" if name == "git" else original_which(name)
                 MODULE.os.lstat = rejected_homebrew_lstat
-                MODULE._bounded_git_read = observed_git_read
+                MODULE.WORKTREE._bounded_git_read = observed_git_read
                 fake.chmod(0o777)
                 try:
                     fallback = MODULE._safe_git_executable()
@@ -4547,7 +4553,7 @@ with tempfile.TemporaryDirectory() as temporary:
                     assert not homebrew_marker.exists(), "a rejected Homebrew launcher executed"
                 finally:
                     fake.chmod(0o700)
-                    MODULE._bounded_git_read = original_git_read
+                    MODULE.WORKTREE._bounded_git_read = original_git_read
                     MODULE.os.lstat = original_lstat
                     MODULE.shutil.which = original_which
             fake.chmod(0o777)
@@ -5395,14 +5401,8 @@ with tempfile.TemporaryDirectory() as temporary:
             for malformed in (b"relative\n", b"/tmp/has\0nul\n", b"\xff\n", b"/tmp/one\nsecond\n"):
                 assert not MODULE._bound_git_worktree_root(malformed, str(fixture), binding)
 
-            helper_source = WORKTREE_SOURCE.read_text(encoding="utf-8")
-            boundary = helper_source[
-                helper_source.index("def _git_boundary_identity"):
-                helper_source.index("\ndef _worktree_snapshot")
-            ]
-            snapshot = helper_source[
-                helper_source.index("def _worktree_snapshot"):helper_source.index("\n\n_IMPLEMENTATION_FUNCTIONS")
-            ]
+            boundary = worktree_function_source("_git_boundary_identity")
+            snapshot = worktree_function_source("_worktree_snapshot_raw")
             assert "_bound_git_worktree_root(top_level, root, root_binding)" in boundary
             assert "_bound_git_worktree_root(top_level[1], root, root_binding)" in snapshot
 
@@ -5705,7 +5705,7 @@ with tempfile.TemporaryDirectory() as temporary:
         fake.chmod(0o755)
         previous_path = os.environ.get("PATH", "")
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{previous_path}"
-        original_reader = MODULE._bounded_git_read
+        original_reader = MODULE.WORKTREE._bounded_git_read
         calls: list[tuple[tuple[str, ...], tuple[str, tuple[int, ...]] | None]] = []
 
         def count_reader(*args, **kwargs):
@@ -5713,13 +5713,13 @@ with tempfile.TemporaryDirectory() as temporary:
             calls.append((tuple(arguments), getattr(arguments, "git_directory", None)))
             return original_reader(*args, **kwargs)
 
-        MODULE._bounded_git_read = count_reader
+        MODULE.WORKTREE._bounded_git_read = count_reader
         try:
             snapshot = MODULE._worktree_snapshot(str(repo))
             assert snapshot is not None and snapshot["entries"] == 0
         finally:
             os.environ["PATH"] = previous_path
-            MODULE._bounded_git_read = original_reader
+            MODULE.WORKTREE._bounded_git_read = original_reader
         commands = log.read_text(encoding="utf-8").splitlines()
         # A committed empty repository used to make 83 bounded subprocesses:
         # 25 enumerations each repeated two root facts.  The pinned context
