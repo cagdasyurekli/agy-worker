@@ -2460,11 +2460,11 @@ def print_text_status(value: dict[str, Any], sha: str, *, job: Path | None = Non
         }
     )
     candidate_decision = (
-        "then Codex—not the controller—chooses an eligible continue or finalize."
+        "then the driver chooses an eligible continue or finalize."
         if {"continue", "finalize"} <= action_names else
-        "then Codex—not the controller—may choose the eligible continue action."
+        "then the driver may choose the eligible continue action."
         if "continue" in action_names else
-        "then Codex—not the controller—may choose the eligible finalize action."
+        "then the driver may choose the eligible finalize action."
         if "finalize" in action_names else
         "then no further driver decision is currently listed."
     )
@@ -2514,7 +2514,7 @@ def print_text_status(value: dict[str, Any], sha: str, *, job: Path | None = Non
         f"Driver evidence: {counts['passed']} passed, {counts['failed']} failed, {counts['advisory']} advisory, {counts['missing']} missing; cycle: {public['cycle']}/{public['max_cycles']}.",
         (
             (
-                f"Next safe action: retrieve current bound result JSON with {result_command}; review it and run driver checks, then Codex—not the controller—may finalize after review. No provider-launching same-job recovery is available."
+                f"Next safe action: retrieve current bound result JSON with {result_command}; review it and run driver checks, then the driver may finalize after review. No provider-launching same-job recovery is available."
                 if result_command is not None and "finalize" in action_names else
                 f"Next safe action: retrieve current bound result JSON with {result_command}; no provider-launching same-job recovery is available."
                 if result_command is not None else

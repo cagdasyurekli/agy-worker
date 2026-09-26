@@ -170,7 +170,7 @@ def evaluate_policy(data: dict[str, Any]) -> dict[str, Any]:
             "required_pre_steps": ["scope_privacy_approval", "disposable_worktree_setup", "verification_planning"],
             "reason_code": "direct-codex-override",
             "direct_codex_authorized": True,
-            "rationale": "Direct Codex implementation explicitly selected by caller policy override; provider transmission is not required.",
+            "rationale": "Direct driver implementation explicitly selected by caller policy override; provider transmission is not required.",
         })
         return decision_record
 
@@ -199,7 +199,7 @@ def evaluate_policy(data: dict[str, Any]) -> dict[str, Any]:
             "first_substantive_actor": "none",
             "reason_code": "preflight-failed",
             "direct_codex_authorized": False,
-            "rationale": "AGY preflight checks failed; silent fallback to Codex is prohibited.",
+            "rationale": "AGY preflight checks failed; silent fallback to the driver is prohibited.",
         })
         return decision_record
 
@@ -210,7 +210,7 @@ def evaluate_policy(data: dict[str, Any]) -> dict[str, Any]:
             "first_substantive_actor": "none",
             "reason_code": "provider-quota-exhausted",
             "direct_codex_authorized": False,
-            "rationale": "Provider quota is exhausted; silent fallback to Codex is prohibited.",
+            "rationale": "Provider quota is exhausted; silent fallback to the driver is prohibited.",
         })
         return decision_record
 
@@ -220,7 +220,7 @@ def evaluate_policy(data: dict[str, Any]) -> dict[str, Any]:
             "first_substantive_actor": "none",
             "reason_code": "provider-unavailable",
             "direct_codex_authorized": False,
-            "rationale": f"Provider state is {provider_state!r}; silent fallback to Codex is prohibited.",
+            "rationale": f"Provider state is {provider_state!r}; silent fallback to the driver is prohibited.",
         })
         return decision_record
 
@@ -235,7 +235,7 @@ def evaluate_policy(data: dict[str, Any]) -> dict[str, Any]:
             ],
             "reason_code": "second-eye-override",
             "direct_codex_authorized": True,
-            "rationale": "Second-eye policy active: Codex implements candidate, AGY reviews/verifies.",
+            "rationale": "Second-eye policy active: the driver implements candidate, AGY reviews/verifies.",
         })
         return decision_record
 

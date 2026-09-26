@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 ONBOARDING_MARKERS = (
-    ("positioning", "A Codex Agent Skill for bounded Antigravity CLI delegation"),
+    ("positioning", "An Agent Skill for bounded Antigravity CLI delegation"),
     (
         "workflow badge",
         "[![Offline test workflow](https://github.com/cagdasyurekli/codex-agy-worker/"
@@ -28,7 +28,7 @@ ONBOARDING_MARKERS = (
     ("quick-start heading", "## Quick start"),
     ("prerequisites", "Requires a POSIX-compatible environment"),
     ("marketplace add", "codex plugin marketplace add cagdasyurekli/codex-agy-worker"),
-    ("plugin add", "codex plugin add codex-agy-worker@codex-agy-worker"),
+    ("plugin add", "codex plugin add agy-worker@agy-worker"),
     ("GitHub fallback", "git clone https://github.com/cagdasyurekli/codex-agy-worker.git"),
     (
         "installation authorization boundary",

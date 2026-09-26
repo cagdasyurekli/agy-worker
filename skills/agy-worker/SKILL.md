@@ -1,8 +1,8 @@
 ---
 name: agy-worker
-description: Use when Codex should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.
+description: Use when the driver should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.
 license: MIT
-compatibility: Requires OpenAI Codex CLI, Bash, Python 3, git, and agy with provider network access. Claude and Claude Code hosts are not supported.
+compatibility: "OpenAI Codex CLI; Claude Code experimental: pending live verification. Requires Bash, Python 3, git, and agy with provider network access."
 metadata:
   author: cagdasyurekli
   version: "0.22.0"
@@ -12,11 +12,13 @@ metadata:
 
 Use this skill when `agy` can usefully explore a repository, implement bounded work,
 or help with broader project changes. In normal use, delegate substantial exploration
-and implementation to `agy` before Codex duplicates it. Codex reads only scope and
+and implementation to `agy` before the driver duplicates it. The driver reads only scope and
 authority necessities, then spot-checks material findings and reviews the actual diff.
-Codex retains responsibility for scope, diff review, driver-owned checks, repair
+The driver retains responsibility for scope, diff review, driver-owned checks, repair
 decisions, and final independent acceptance.
 
+`SKILL_ROOT` is the directory containing this SKILL.md; in Claude Code it is
+`${CLAUDE_SKILL_DIR}` (substituted in these instructions, not a Bash environment variable).
 Resolve the installed package instead of guessing a checkout path:
 
 ```bash
@@ -57,9 +59,16 @@ For the required user-facing provider-launch notice, including defaults, preflig
 failures, resumes, and continuation, read [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices).
 Direct model and effort selection remain caller-owned; recommendations are advisory.
 
+Claude Code: run an approved long dispatch with Bash `run_in_background: true`, then
+use `workflow.sh status --state /absolute/path/to/workflow.json --format json`. Never
+start a duplicate dispatch or interpret a Bash timeout as provider failure. Bash
+permission approval is separate from SHA-bound provider-transmission approval. Read
+[Claude Code host operation](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#claude-code-host-operation)
+for process lifetime, path bindings, and sandbox guidance.
+
 ## Choose and run the workflow
 
-| User intent | Workflow | Default cycle budget | Codex responsibility |
+| User intent | Workflow | Default cycle budget | Driver responsibility |
 |---|---|---:|---|
 | Explore, understand, review, or plan | `explore` | 2 | Spot-check material claims and state coverage limits. |
 | Implement a feature, refactor, tests, or bounded repair | `task` | 2 | Inspect the diff and run relevant project checks. |
@@ -77,8 +86,8 @@ Purely mechanical changes are exempt.
 
 Explicit delegation-first requires running the `delegation-policy.sh` evaluator before substantive repository work.
 The controller records are local: the runtime cannot infer prior work or approval and
-must never silently authorize direct-Codex fallback after a missing approval, hard
-stop, preflight failure, provider failure, or exhausted budget. Direct-Codex and
+must never silently authorize direct-driver fallback after a missing approval, hard
+stop, preflight failure, provider failure, or exhausted budget. Direct-driver and
 second-eye work remain explicit policy choices.
 
 Prefer `workflow.sh` for `run --preview`, approved `run`, read-only `status`, and
@@ -94,7 +103,7 @@ bytes and relevant environment; after changes rerun affected checks and run the 
 suite once the final executable candidate is stable. Bind only sanitized driver findings to
 the current candidate; then finalize honestly or request a bounded same-conversation repair.
 Failed product checks return concrete sanitized feedback to the same AGY conversation for
-bounded repair; do not allow silent direct-Codex fallback after provider failure or exhausted
+bounded repair; do not allow silent direct-driver fallback after provider failure or exhausted
 budget. A scoped candidate can receive another provider turn only when initial dispatch included
 `--allow-scoped-repair`, which binds the same approved scope, selected model,
 conversation, and budgets. Preserve useful work when a check fails or the cycle budget
@@ -113,7 +122,7 @@ Unknown architecture, an unknown first test command, lack of a persona, or a fai
 first check are not hard stops. Existing self-verification is optional advisory feedback
 when a focused command is known; an unknown first command or architecture does not
 prohibit useful delegation. Discover what is needed, preserve the candidate, and
-report evidence limits. Keep final Codex independent acceptance. Before changing agy-facing flags or claims, run
+report evidence limits. Keep final driver independent acceptance. Before changing agy-facing flags or claims, run
 `"$PIPELINE/ground-truth.sh"` and inspect its current `agy --help`; consume
 `result.structured_output` when ordinary agy output is empty. Its default phase is
 version/help only; `--account` is a separate explicit action.

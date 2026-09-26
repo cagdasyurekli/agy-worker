@@ -1,4 +1,4 @@
-# Codex marketplace contract
+# Host marketplace contracts
 
 This repository carries a repo-scoped Codex marketplace descriptor at
 `.agents/plugins/marketplace.json`. It describes the existing
@@ -6,7 +6,7 @@ This repository carries a repo-scoped Codex marketplace descriptor at
 configuration or cache, publish a listing, or prove that any external marketplace is
 enabled.
 
-The sole entry is `codex-agy-worker`. Its `source.source` is `local` and its
+The sole Codex entry is `agy-worker`. Its `source.source` is `local` and its
 `source.path` is exactly `.`. The package is therefore the repository root: its name
 must equal `.codex-plugin/plugin.json`'s `name`, and it uses the one canonical
 `skills/agy-worker/` bundle and its bundled `runtime/`. Do not introduce a
@@ -19,12 +19,12 @@ installed runtime bytes. `install.sh` remains the explicit local skill-installat
 path; its copied skill bundle must remain byte-identical to the source bundle (apart
 from the local `.pipeline-root` marker).
 
-After reviewing the repository source, add its Git-backed marketplace and install the
-plugin with:
+After the new identity is published, review the repository source, add its Git-backed
+Codex marketplace, and install the plugin with:
 
 ```bash
 codex plugin marketplace add cagdasyurekli/codex-agy-worker
-codex plugin add codex-agy-worker@codex-agy-worker
+codex plugin add agy-worker@agy-worker
 ```
 
 Start a new Codex session after installation. This enables the local plugin only; it
@@ -55,3 +55,20 @@ above, the repository was also fetched at an immutable public Git commit in disp
 Codex state; marketplace add/list, plugin install/remove, resolver discovery, and
 source-installed skill parity passed. This does not prove future snapshots, provider
 behavior, task quality, or general correctness.
+
+## Claude Code catalog (experimental)
+
+`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` both name
+`agy-worker`, with versions synchronized to the Codex manifest and skill metadata.
+The Claude marketplace entry uses `source: "./"`, so the repository root supplies
+the same `skills/agy-worker/` bundle. No hooks, MCP servers, commands, or agent
+components are declared. Claude discovers the skill as `/agy-worker:agy-worker`.
+
+Claude Code is **experimental: pending live verification**. Packaging tests validate
+JSON shape and resolver layouts offline; they do not prove installation or live
+provider success. The reviewer must run `claude plugin validate .` and the local
+installation/live checks in [Installation](INSTALLATION.md#claude-code-experimental).
+The [Claude marketplace reference](https://code.claude.com/docs/en/plugin-marketplaces)
+describes root-relative sources and validation. No catalog submission is part of a
+repository edit. The new Codex identity also needs fresh installation verification;
+earlier immutable-snapshot Codex evidence above covers the old identity only.

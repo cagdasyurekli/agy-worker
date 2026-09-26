@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
-# Install the Codex skill that teaches Codex to use this pipeline.
+# Install the canonical skill for the selected driver host.
 #
 # Installs only the canonical skill bundle and a local pipeline pointer. It does not
-# touch agy settings, Codex config, or anything else — those changes are described in
+# touch agy settings, host config, or anything else — those changes are described in
 # the README so you can make them yourself, deliberately.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEST="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}/agy-worker"
+HOST=codex
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --host)
+            [[ $# -ge 2 ]] || { echo "install: --host requires codex or claude" >&2; exit 64; }
+            HOST="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: ./install.sh [--host codex|claude] (default: codex)"
+            exit 0
+            ;;
+        *) echo "install: unknown argument: $1" >&2; exit 64 ;;
+    esac
+done
+case "$HOST" in
+    codex) DEST="${CODEX_SKILLS_DIR:-$HOME/.codex/skills}/agy-worker" ;;
+    claude) DEST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}/agy-worker" ;;
+    *) echo "install: unsupported host: $HOST" >&2; exit 64 ;;
+esac
 
 command -v agy >/dev/null || {
     echo "warning: 'agy' not found on PATH. Install Antigravity CLI first." >&2
@@ -69,7 +88,12 @@ PY
 echo "installed: $DEST/SKILL.md"
 echo "pipeline:  $HERE"
 echo
-echo "Next: add the sandbox settings from the README to ~/.codex/config.toml,"
-echo "or agy will fail under Codex with exit 5 and an empty error."
-echo "Then start a new Codex session and ask:"
+if [[ "$HOST" == codex ]]; then
+    echo "Next: review Codex host permissions in docs/INSTALLATION.md."
+    echo "Then start a new Codex session and ask:"
+else
+    echo "Claude Code is experimental: pending live verification."
+    echo "Next: review Claude Code host permissions in docs/INSTALLATION.md."
+    echo "Then start a new Claude Code session and ask:"
+fi
 echo '  "Use agy-worker for a batched test task in <absolute repo path>; verify with python3 -m pytest -q tests/<module>."'

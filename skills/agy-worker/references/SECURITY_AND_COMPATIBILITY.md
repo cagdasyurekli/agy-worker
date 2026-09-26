@@ -1,7 +1,8 @@
 # Security and compatibility
 
-`agy-worker` is a Codex Agent Skill. It requires the OpenAI Codex CLI, Bash, Python 3,
-Git, and the Google Antigravity CLI (`agy`). It is not a Claude or Claude Code skill.
+`agy-worker` is an Agent Skill for OpenAI Codex CLI and Claude Code
+(experimental: pending live verification). Both hosts require Bash, Python 3, Git,
+and the Google Antigravity CLI (`agy`).
 Provider model slugs that contain `claude` describe a selectable provider model; they
 do not make a Claude host supported.
 
@@ -11,8 +12,8 @@ failure recovery, read [Troubleshooting](TROUBLESHOOTING.md).
 
 ## Execution boundaries
 
-The skill helps Codex delegate repository work to `agy`; it does not transfer final
-acceptance to the worker. Codex reviews the resulting diff and runs driver-owned
+The skill helps the driver delegate repository work to `agy`; it does not transfer final
+acceptance to the worker. The driver reviews the resulting diff and runs driver-owned
 verification before reporting a result. A passing check is evidence for the command
 that ran, not a general security or correctness guarantee.
 
@@ -188,7 +189,7 @@ a model slug or thinking level.
 
 The reviewed model/effort matrix is compatibility evidence for its exact accepted
 bytes and agy version. Before every reviewed direct dispatch, including an exact
-version match, Codex inspects current bounded raw `agy --help` and stops when the
+version match, the driver inspects current bounded raw `agy --help` and stops when the
 caller-selected model or effort cannot be honored. Installed-version drift requires
 an explicit compatibility disposition bound to the reviewed help SHA; structural help
 acceptance alone is not semantic approval or a provider-availability claim.
@@ -212,7 +213,7 @@ user configuration are never modified.
 ## Supported distribution
 
 The canonical runtime lives in `skills/agy-worker/runtime/`. Repository-root scripts
-are compatibility wrappers. The Codex marketplace package and GitHub installation path
+are compatibility wrappers. The host marketplace packages and GitHub installation path
 refer to that one bundle; they do not create a second runtime or authorize a provider
 dispatch.
 
@@ -221,3 +222,12 @@ are part of the standalone bundle. They intentionally require no decorative imag
 repository-root documentation to explain safe use. Release state, external catalog
 state, and an installed local bundle are separate facts and must be verified
 independently.
+
+## Host-specific compatibility surfaces
+
+The stable policy value `direct-codex` means direct driver implementation on either
+host; its spelling and JSON fields are compatibility identifiers. Codex usage reports
+(`codex-usage-report.sh` / `codex_usage_report.py`) and Codex sandbox configuration
+remain Codex-only. The normal workflow and offline doctor do not require a Codex
+binary when Claude Code is the driver. Checkout update/notifier tools retain their
+Codex maintenance scope and do not look up installed plugins by their old identity.

@@ -571,6 +571,12 @@ model slug is not host compatibility. Put the fuller execution-boundary explanat
 a focused skill reference, and do not add empty assets or unsupported integrations to
 raise a directory score.
 
+Claude metadata was previously removed because an untested catalog surface implied
+host support. Reintroducing it requires one runtime, positive and negative layout
+tests, portable driver instructions, and an explicit experimental label until live
+installation, background dispatch, and sandbox checks pass. Offline package tests
+do not replace that host evidence.
+
 An inherited shell environment is also a trust boundary. Provider processes and local
 interface probes start from a small operational baseline; driver-owned verification
 uses a stricter baseline without `HOME`. Additional variables require exact-name opt-in,

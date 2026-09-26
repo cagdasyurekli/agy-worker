@@ -12,6 +12,15 @@ scope; reuse existing authority when it covers the work. This roadmap does not i
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
 
+## Unreleased — dual-host package identity
+
+The plugin and marketplace identity becomes `agy-worker` on Codex and Claude Code;
+the repository name and URLs remain unchanged. Existing Codex installations need the
+[post-publication migration](INSTALLATION.md#codex-plugin-identity-migration).
+Claude Code is experimental: pending live verification. The local candidate adds
+shared-runtime layouts and instructions, not a released support claim. SkillStore,
+catalog updates, and release publication require separate owner approval.
+
 ## Unreleased — gate Git and path-policy hardening
 
 The gate now neutralizes fsmonitor and caller Git configuration, and fails closed

@@ -1,7 +1,7 @@
 # Installation and compatibility
 
 Use this guide when installing `agy-worker`, checking its local prerequisites, or
-diagnosing a compatibility or Codex sandbox failure. The GitHub repository is the
+diagnosing a compatibility or host sandbox failure. The GitHub repository is the
 source of truth: review the exact commit or reviewed release tag before installing.
 Installation enables the local skill only. It does **not** authorize a provider call
 or transmission of repository content through `agy` to Google/Gemini.
@@ -9,7 +9,7 @@ or transmission of repository content through `agy` to Google/Gemini.
 ## Prerequisites
 
 The maintained entrypoints require a POSIX-compatible environment with Bash, Python
-3, git with worktree support, Codex CLI, and `agy` (Antigravity CLI) on `PATH`.
+3, git with worktree support, Codex CLI or Claude Code (experimental: pending live verification), and `agy` (Antigravity CLI) on `PATH`.
 Native Windows is untested; WSL or another compatible environment may work on a
 best-effort basis. Some evidence commands use fixed POSIX paths, and the optional
 daily notifier is specifically a macOS LaunchAgent.
@@ -35,7 +35,7 @@ and it repairs nothing.
 | `3` | `not-ready` | A prerequisite, repository, bundle, or metadata check failed. |
 | `64` | no report | Invocation or format is invalid. |
 
-`ready` does not certify authentication, provider availability, Codex/agy sandbox
+`ready` does not certify authentication, provider availability, host/agy sandbox
 permission, task quality, or a future dispatch. `review-required` never updates
 metadata and is not a blanket dispatch lock: agy's own default and an explicitly
 approved literal-model pass-through remain separate caller-owned surfaces.
@@ -53,6 +53,46 @@ is created.
 
 After installation, start a new Codex session so the skill is rediscovered.
 
+### Codex plugin identity migration
+
+The new plugin and marketplace identity is `agy-worker`; the repository stays
+`cagdasyurekli/codex-agy-worker`. The old installed identity will not migrate itself.
+Only after the new identity is published and available, run:
+
+```bash
+codex plugin remove codex-agy-worker@codex-agy-worker
+codex plugin marketplace remove codex-agy-worker
+codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin add agy-worker@agy-worker
+```
+
+Then start a new Codex session. These commands are supported by local
+`codex plugin --help` and `codex plugin marketplace --help`; they remove the old
+installation/cache and its marketplace source before installing the new identity.
+This unreleased candidate does not establish remote availability.
+
+### Claude Code (experimental)
+
+Claude Code is **experimental: pending live verification**. It uses the same skill
+and runtime. To review this candidate locally, from its repository root run:
+
+```bash
+claude plugin validate .
+claude plugin marketplace add .
+claude plugin install agy-worker@agy-worker
+```
+
+Start a new session and invoke `/agy-worker:agy-worker`, or describe a repository
+exploration/implementation task that matches the skill description. Once published,
+use the GitHub marketplace commands in the README. See the official
+[plugin installation](https://code.claude.com/docs/en/discover-plugins) and
+[manifest validation](https://code.claude.com/docs/en/plugins-reference) references.
+
+For a standalone skill, run `./install.sh --host claude`, or copy the complete
+`skills/agy-worker/` folder to `~/.claude/skills/agy-worker`. The installer honors
+`CLAUDE_SKILLS_DIR`; its default is `~/.claude/skills`. No host configuration is edited.
+Do not install both forms unless you intend to expose both skill names.
+
 ### GitHub clone
 
 Review the selected source commit, then install the canonical skill bundle:
@@ -63,7 +103,8 @@ cd codex-agy-worker
 ./install.sh
 ```
 
-`install.sh` installs the Codex skill only. It copies the canonical bundle and writes
+`install.sh` defaults to the Codex skill (`--host codex`); `--host claude` selects
+Claude Code. `CODEX_SKILLS_DIR` defaults to `~/.codex/skills`. It copies the canonical bundle and writes
 a local pointer so checkout-only maintenance commands remain available; it does not
 rewrite the public `SKILL.md` or install an additional runtime.
 
@@ -91,6 +132,30 @@ DO_NOT_TRACK=1 npx skills add cagdasyurekli/codex-agy-worker \
 
 `npx` is only an optional installer. The installed skill has no Node runtime
 dependency. Review the copied files before use.
+
+## Claude Code host permissions
+
+If the Claude Code sandbox is enabled, approve only the filesystem/network access
+needed by this job. AGY's existing session needs state writes under `~/.gemini`;
+the controller also needs its exact private state, staging, and disposable-worktree
+paths when they are outside cwd/tmp. Use `sandbox.filesystem.allowWrite` for narrowly
+reviewed paths and `sandbox.network.allowedDomains` for observed hosts. Discover
+additional paths and domains through sandbox violation reports; no fixed AGY domain
+allowlist has been established by offline tests. See the official
+[sandbox guide](https://code.claude.com/docs/en/sandboxing).
+
+Never disable the sandbox for AGY or add an `excludedCommands` exemption. A Bash
+permission prompt is not provider-transmission approval. The same content/SHA,
+execution-mode, model, and budget approvals apply. For background dispatch, process
+lifetime, and status commands, read the packaged
+[Claude Code host operation](../skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#claude-code-host-operation).
+Live review must establish authentication, required network destinations, state and
+socket access, and interaction with optional native containment before removing the
+experimental label. Offline resolver tests cannot establish those facts.
+
+The checkout `update.sh apply` flow remains Codex-only and reinstalls the default
+Codex skill. It does not migrate plugin identities or update a Claude installation;
+review a new checkout and explicitly reinstall with `--host claude` for that host.
 
 ## Codex host permissions
 
@@ -161,7 +226,7 @@ grants neither dispatch nor model-selection authority.
 Every reviewed direct selection first checks a safe executable with bounded semantic
 `agy --version` and a strict critical `agy --help` structure probe. An exact
 matrix-version match proceeds mechanically after that structural probe. Compatible
-version drift requires Codex's explicit
+version drift requires the driver's explicit
 `--compatibility-disposition proceed --approve-help-sha SHA256`; a structurally
 incompatible interface blocks reviewed direct selection.
 
@@ -179,7 +244,7 @@ A mismatch, changed help, or unavailable probe needs a fresh review; never reuse
 older digest.
 
 Structural acceptance is not semantic approval. Before every reviewed direct
-dispatch, including an exact-version match, Codex must inspect current bounded raw
+dispatch, including an exact-version match, the driver must inspect current bounded raw
 `agy --help` and stop if the exact caller-selected model or effort cannot be honored.
 The caller's resolved slug remains unchanged, model availability is
 `not_assessed`, and controller help prose is never availability evidence.
@@ -203,7 +268,7 @@ account-owned agy state such as models, agents, plugins, and local permissions.
 - agy's `--agent` disables `--json-schema`; personas are therefore injected as
   bounded prompt text instead of using that flag.
 - In explicit native mode, agy's sandbox shell tools run in its scratch directory rather than the target
-  repository. Worker prompts use file tools; Codex owns repository commands.
+  repository. Worker prompts use file tools; the driver owns repository commands.
 - Classify authentication, quota, timeout, or provider failures only from reviewed
   exact signatures. Never turn free-form error prose into an automatic retry.
 - The terminal answer is in `result.structured_output`.

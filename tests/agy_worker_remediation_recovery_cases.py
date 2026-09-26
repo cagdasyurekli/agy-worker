@@ -3745,7 +3745,7 @@ def run(context: dict[str, object]) -> None:
         assert current == [
             "Provider attempt: succeeded; reason: none; failure stage: none; bound result available: yes; driver disposition: unreviewed.",
             "Driver evidence: 0 passed, 0 failed, 0 advisory, 0 missing; cycle: 1/2.",
-            'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id current-text --format json; review it and run driver checks, construct Verification v2, then Codex—not the controller—may choose the eligible finalize action.',
+            'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id current-text --format json; review it and run driver checks, construct Verification v2, then the driver may choose the eligible finalize action.',
         ]
 
         cancelled = dict(state)
@@ -3759,7 +3759,7 @@ def run(context: dict[str, object]) -> None:
         cancelled_lines = render(cancelled, bound_job=job)
         assert cancelled_lines[2] == (
             'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id current-text --format json; '
-            "review it and run driver checks, construct Verification v2, then Codex—not the controller—may choose the eligible finalize action. "
+            "review it and run driver checks, construct Verification v2, then the driver may choose the eligible finalize action. "
             'Available fresh restart command: "$PIPELINE/agy-worker.sh" restart --job-id current-text --approve-state-sha ' + sha + " --format text."
         )
         assert "continue" not in cancelled_lines[2]
@@ -3914,7 +3914,7 @@ def run(context: dict[str, object]) -> None:
         assert lines[2] == (
             'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id '
             + state["job_id"]
-            + " --format json; review it and run driver checks, construct Verification v2, then Codex—not the controller—may choose the eligible finalize action."
+            + " --format json; review it and run driver checks, construct Verification v2, then the driver may choose the eligible finalize action."
         )
         for sentinel in (str(job), str(envelope), "/private/legacy-result.json", "candidate-public-candidate"):
             assert sentinel not in "\n".join(lines)

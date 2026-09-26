@@ -1,0 +1,15 @@
+{
+  "name": "agy-worker",
+  "owner": {
+    "name": "cagdasyurekli",
+    "url": "https://github.com/cagdasyurekli"
+  },
+  "plugins": [
+    {
+      "name": "agy-worker",
+      "source": "./",
+      "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results. Claude Code is experimental: pending live verification.",
+      "version": "0.22.0"
+    }
+  ]
+}

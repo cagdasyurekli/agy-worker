@@ -1373,7 +1373,7 @@ agents_flat = " ".join(agents.split())
 security_reference = package_root / "references/SECURITY_AND_COMPATIBILITY.md"
 lifecycle_reference = package_root / "references/PROJECT_LIFECYCLE_AND_VERIFICATION.md"
 troubleshooting_reference = package_root / "references/TROUBLESHOOTING.md"
-assert manifest["name"] == "codex-agy-worker"
+assert manifest["name"] == "agy-worker"
 assert manifest["version"] == "0.22.0"
 assert manifest["skills"] == "./skills/"
 assert manifest["license"] == "MIT"
@@ -1382,10 +1382,20 @@ assert manifest["interface"]["termsOfServiceURL"].startswith("https://")
 assert not ({"apps", "mcpServers", "hooks"} & manifest.keys())
 assert 'license: MIT' in skill
 assert f'  version: "{manifest["version"]}"' in skill
-assert 'compatibility: Requires OpenAI Codex CLI' in skill
-assert 'Claude and Claude Code hosts are not supported.' in skill
+assert 'OpenAI Codex CLI; Claude Code experimental: pending live verification.' in skill
+assert 'Requires Bash, Python 3, git, and agy with provider network access.' in skill
 assert 'Use when ' in re.search(r"^description: (.+)$", skill, re.M).group(1)
 assert len(skill.splitlines()) <= 180
+frontmatter = skill.split("---", 2)[1]
+assert set(re.findall(r"^([a-z-]+):", frontmatter, re.M)) == {
+    "name", "description", "license", "compatibility", "metadata"
+}
+assert '${CLAUDE_SKILL_DIR}' in skill
+assert 'run_in_background: true' in skill
+assert 'Bash timeout as provider failure' in skill
+assert 'permission approval is separate' in skill
+assert '## Claude Code host operation' in lifecycle_reference.read_text()
+assert 'direct driver implementation on either' in security_reference.read_text()
 assert '[Package README](README.md)' in skill
 assert '[Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md)' in skill
 assert '[Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md)' in skill
@@ -1465,7 +1475,7 @@ for required_case in (
 ):
     assert required_case in scope_recovery_tests, required_case
 reference_text = security_reference.read_text(encoding="utf-8")
-assert 'It is not a Claude or Claude Code skill.' in reference_text
+assert 'experimental: pending live verification' in reference_text
 assert '`verify-job.sh --verify-env NAME`' in reference_text
 assert 'dispatch-time `agy` version, help, and model-selection' in reference_text
 assert 'diagnostics and feedback-draft generation' in reference_text
@@ -1488,7 +1498,7 @@ assert 'After a green full run, classify later changes before rerunning it.' in 
 assert 'do not repeat the full local suite solely to attach it to a new commit SHA' in agents_flat
 assert 'Treat the required GitHub check as the exact PR-head full gate.' in agents_flat
 PY
-then ok "Codex-only skill metadata matches the plugin version and public legal links"; else bad "Codex-only skill metadata matches the plugin version and public legal links"; fi
+then ok "dual-host skill metadata matches the plugin version and public legal links"; else bad "dual-host skill metadata matches the plugin version and public legal links"; fi
 
 if python3 - "$ROOT" "$TMP/marketplace-contract" <<'PY'
 import json
@@ -1501,6 +1511,7 @@ source_root = Path(sys.argv[1])
 fixture = Path(sys.argv[2])
 shutil.copytree(source_root / ".agents", fixture / ".agents")
 shutil.copytree(source_root / ".codex-plugin", fixture / ".codex-plugin")
+shutil.copytree(source_root / ".claude-plugin", fixture / ".claude-plugin")
 shutil.copytree(source_root / "skills", fixture / "skills")
 
 
@@ -1523,18 +1534,37 @@ def validate(root: Path) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert set(marketplace) == {"name", "interface", "plugins"}
-    assert marketplace["name"] == "codex-agy-worker"
-    assert marketplace["interface"] == {"displayName": "Codex agy Worker"}
+    assert marketplace["name"] == "agy-worker"
+    assert marketplace["interface"] == {"displayName": "agy Worker"}
     assert isinstance(marketplace["plugins"], list) and len(marketplace["plugins"]) == 1
     entry = marketplace["plugins"][0]
     assert set(entry) == {"name", "source", "policy", "category"}
-    assert entry["name"] == manifest["name"] == "codex-agy-worker"
+    assert entry["name"] == manifest["name"] == "agy-worker"
     assert entry["source"] == {"source": "local", "path": "."}
     assert entry["policy"] == {
         "installation": "AVAILABLE", "authentication": "ON_INSTALL"
     }
     assert entry["category"] == "Developer Tools"
     assert manifest["skills"] == "./skills/"
+    claude_manifest_path = root / ".claude-plugin/plugin.json"
+    claude_marketplace_path = root / ".claude-plugin/marketplace.json"
+    require_regular(claude_manifest_path)
+    require_regular(claude_marketplace_path)
+    claude = json.loads(claude_manifest_path.read_text())
+    catalog = json.loads(claude_marketplace_path.read_text())
+    assert set(claude) == {"name", "version", "description", "author", "homepage", "repository", "license"}
+    assert claude["name"] == catalog["name"] == manifest["name"] == "agy-worker"
+    assert claude["version"] == manifest["version"]
+    assert "experimental: pending live verification" in claude["description"]
+    assert claude["repository"] == manifest["repository"]
+    assert claude["homepage"] == manifest["homepage"]
+    assert claude["license"] == "MIT"
+    assert set(catalog) == {"name", "owner", "plugins"}
+    assert catalog["owner"] == claude["author"]
+    assert catalog["plugins"] == [{
+        "name": "agy-worker", "source": "./", "description": claude["description"],
+        "version": claude["version"],
+    }]
 
     skill_root = root / "skills/agy-worker"
     runtime_root = skill_root / "runtime"
@@ -1570,6 +1600,29 @@ def rejected(root: Path) -> bool:
 
 
 validate(fixture)
+for relative, key, value in (
+    (".claude-plugin/plugin.json", "name", "wrong"),
+    (".claude-plugin/plugin.json", "version", "0.0.0"),
+    (".claude-plugin/plugin.json", "hooks", {}),
+    (".claude-plugin/marketplace.json", "owner", {}),
+    (".claude-plugin/marketplace.json", "plugins", [{"name": "agy-worker", "source": "../escape"}]),
+):
+    path = fixture / relative
+    original = path.read_bytes()
+    payload = json.loads(original)
+    payload[key] = value
+    path.write_text(json.dumps(payload))
+    assert rejected(fixture), (relative, key)
+    path.write_bytes(original)
+for relative in (".claude-plugin/plugin.json", ".claude-plugin/marketplace.json"):
+    path = fixture / relative
+    original = path.read_bytes()
+    path.unlink()
+    assert rejected(fixture), relative
+    path.symlink_to(source_root / relative)
+    assert rejected(fixture), relative
+    path.unlink()
+    path.write_bytes(original)
 marketplace_path = fixture / ".agents/plugins/marketplace.json"
 manifest_path = fixture / ".codex-plugin/plugin.json"
 original_marketplace = marketplace_path.read_bytes()
@@ -1605,7 +1658,7 @@ source_root_link = fixture.parent / "marketplace-root-symlink"
 source_root_link.symlink_to(fixture, target_is_directory=True)
 assert rejected(source_root_link), "marketplace must reject a symlinked root source"
 source_root_link.unlink()
-duplicate = fixture / "plugins/codex-agy-worker/skills"
+duplicate = fixture / "plugins/agy-worker/skills"
 duplicate.parent.mkdir(parents=True)
 shutil.copytree(fixture / "skills", duplicate)
 assert rejected(fixture), "marketplace must reject duplicate skill/runtime sources"
@@ -2783,9 +2836,38 @@ cp -R "$ROOT/skills/agy-worker" "$TMP/legacy-claude-only/skills/agy-worker"
 printf '{}\n' > "$TMP/legacy-claude-only/.claude-plugin/plugin.json"
 legacy_resolved="$(bash "$TMP/legacy-claude-only/skills/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
 if [[ "$legacy_resolved" == "$(cd "$TMP/legacy-claude-only/skills/agy-worker/runtime" && pwd -P)" ]]; then
-    ok "resolver ignores a removed Claude-only package marker"
+    ok "resolver rejects incomplete Claude root and uses complete bundled fallback"
 else
-    bad "resolver ignores a removed Claude-only package marker"
+    bad "resolver rejects incomplete Claude root and uses complete bundled fallback"
+fi
+
+# A Claude marker is only a locator; completeness still determines acceptance.
+cp -R "$ROOT/skills/agy-worker/runtime" "$TMP/claude-complete"
+mkdir -p "$TMP/claude-complete/.claude-plugin" "$TMP/claude-complete/skills"
+cp "$ROOT/.claude-plugin/plugin.json" "$TMP/claude-complete/.claude-plugin/plugin.json"
+cp -R "$ROOT/skills/agy-worker" "$TMP/claude-complete/skills/agy-worker"
+claude_root="$(cd "$TMP/claude-complete" && pwd -P)"
+if [[ "$(bash "$claude_root/skills/agy-worker/scripts/resolve-pipeline.sh")" == "$claude_root" ]]; then
+    ok "Claude-only complete package root resolves"
+else
+    bad "Claude-only complete package root resolves"
+fi
+mkdir -p "$claude_root/.codex-plugin"
+cp "$ROOT/.codex-plugin/plugin.json" "$claude_root/.codex-plugin/plugin.json"
+if [[ "$(bash "$claude_root/skills/agy-worker/scripts/resolve-pipeline.sh")" == "$claude_root" ]]; then
+    ok "both host markers resolve the same complete root"
+else
+    bad "both host markers resolve the same complete root"
+fi
+rm "$TMP/legacy-claude-only/skills/agy-worker/runtime/qa-gate.sh"
+if bash "$TMP/legacy-claude-only/skills/agy-worker/scripts/resolve-pipeline.sh" > "$TMP/incomplete-claude.out" 2>/dev/null; then
+    bad "incomplete Claude root and incomplete bundled runtime reject"
+else
+    if [[ ! -s "$TMP/incomplete-claude.out" ]]; then
+        ok "incomplete Claude root and incomplete bundled runtime reject"
+    else
+        bad "incomplete Claude layout must not emit a runtime"
+    fi
 fi
 
 mkdir -p "$TMP/skill-folder-copy" "$TMP/no-network-bin"
@@ -2795,6 +2877,17 @@ for command_name in agy curl wget git npm npx; do
         > "$TMP/no-network-bin/$command_name"
     chmod +x "$TMP/no-network-bin/$command_name"
 done
+mkdir -p "$TMP/claude home/.claude/skills"
+cp -R "$ROOT/skills/agy-worker" "$TMP/claude home/.claude/skills/agy-worker"
+claude_skill="$TMP/claude home/.claude/skills/agy-worker"
+claude_resolved="$(PATH="$TMP/no-network-bin:$PATH" NETWORK_MARKER="$TMP/claude-network-called" \
+    bash "$claude_skill/scripts/resolve-pipeline.sh")"
+if [[ "$claude_resolved" == "$(cd "$claude_skill/runtime" && pwd -P)" && ! -e "$TMP/claude-network-called" ]]; then
+    ok "Claude personal skill copy resolves offline without provider or network calls"
+else
+    bad "Claude personal skill copy resolves offline without provider or network calls"
+fi
+
 copied_pipeline="$(PATH="$TMP/no-network-bin:$PATH" \
     NETWORK_MARKER="$TMP/network-called" \
     bash "$TMP/skill-folder-copy/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
@@ -3021,6 +3114,38 @@ runtime.write_bytes(runtime.read_bytes() + b"\n# marketplace tamper fixture\n")
 assert source_snapshot != snapshot(tampered)
 PY
 }
+CLAUDE_SKILLS_DIR="$TMP/claude installed" CODEX_SKILLS_DIR="$TMP/untouched-codex" \
+    bash "$ROOT/install.sh" --host claude > "$TMP/claude-install.out" 2> "$TMP/claude-install.err"
+claude_install_rc=$?
+if [[ "$claude_install_rc" == 0 && ! -e "$TMP/untouched-codex" ]] \
+    && [[ "$(bash "$TMP/claude installed/agy-worker/scripts/resolve-pipeline.sh")" == "$(cd "$ROOT" && pwd -P)" ]] \
+    && marketplace_installed_parity "$ROOT" "$TMP/claude installed/agy-worker" "$TMP/claude-parity-mutant" \
+    && grep -Fq 'new Claude Code session' "$TMP/claude-install.out"; then
+    ok "Claude standalone install preserves bytes marker and host-specific destination"
+else
+    bad "Claude standalone install preserves bytes marker and host-specific destination"
+fi
+HOME="$TMP/claude default home" CLAUDE_SKILLS_DIR= bash "$ROOT/install.sh" --host claude > "$TMP/claude-default.out" 2>&1
+if [[ $? == 0 && -f "$TMP/claude default home/.claude/skills/agy-worker/.pipeline-root" ]]; then
+    ok "Claude default destination uses its host home"
+else
+    bad "Claude default destination uses its host home"
+fi
+for invalid in missing unsupported unknown; do
+    case "$invalid" in
+        missing) args=(--host) ;;
+        unsupported) args=(--host invalid) ;;
+        unknown) args=(--bogus) ;;
+    esac
+    HOME="$TMP/reject-$invalid" CODEX_SKILLS_DIR= CLAUDE_SKILLS_DIR= \
+        bash "$ROOT/install.sh" "${args[@]}" > "$TMP/reject-$invalid.out" 2>&1
+    if [[ $? == 64 && ! -e "$TMP/reject-$invalid" ]]; then
+        ok "invalid installer $invalid arguments reject before writes"
+    else
+        bad "invalid installer $invalid arguments reject before writes"
+    fi
+done
+
 if [[ "$installed_root" == "$(cd "$ROOT" && pwd -P)" ]]; then
     ok "standalone install resolves the checkout without rewriting SKILL.md"
 else
@@ -3517,7 +3642,7 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
         "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq 'matrix-version match proceeds mechanically after that structural probe.' \
             "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq "version drift requires Codex's explicit" \
+        && grep -Fq "version drift requires the driver's explicit" \
             "$ROOT/docs/INSTALLATION.md" \
         && ! grep -Fq 'only when its raw C-locale help SHA-256 is retained' "$ROOT/docs/INSTALLATION.md" \
         && ! grep -Fq 'An unseen exact-version digest, or compatible version drift' "$ROOT/docs/INSTALLATION.md" \
@@ -3826,10 +3951,10 @@ if [[ "$brand_valid_rc" == "0" ]] \
         && grep -Fq 'blob/main/docs/INSTALLATION.md' "$ROOT/docs/index.md" \
         && grep -Fq 'blob/main/docs/USAGE.md' "$ROOT/docs/index.md" \
         && grep -Fq 'canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/VERIFYING_AGENT_OUTPUT.html"' "$ROOT/docs/VERIFYING_AGENT_OUTPUT.md" \
-        && grep -Fq 'A Codex Agent Skill for bounded Antigravity CLI delegation' < <(sed -n '1,120p' "$ROOT/README.md") \
+        && grep -Fq 'An Agent Skill for bounded Antigravity CLI delegation' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq '## Quick start' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq 'codex plugin marketplace add cagdasyurekli/codex-agy-worker' < <(sed -n '1,120p' "$ROOT/README.md") \
-        && grep -Fq 'codex plugin add codex-agy-worker@codex-agy-worker' < <(sed -n '1,120p' "$ROOT/README.md") \
+        && grep -Fq 'codex plugin add agy-worker@agy-worker' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq 'git clone https://github.com/cagdasyurekli/codex-agy-worker.git' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq 'does not authorize a provider dispatch or repository transmission' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq './proof-demo.sh' < <(sed -n '1,120p' "$ROOT/README.md") \
@@ -4307,12 +4432,12 @@ if grep -Fq '24 quota exhausted' "$ROOT/skills/agy-worker/runtime/agy-worker.sh"
         && grep -Fq 'Classify authentication, quota, timeout, or provider failures only from reviewed' \
             "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq 'Before every reviewed direct' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'dispatch, including an exact-version match, Codex must inspect current bounded raw' \
+        && grep -Fq 'dispatch, including an exact-version match, the driver must inspect current bounded raw' \
             "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq 'Before every' "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && grep -Fq 'reviewed direct dispatch, including an exact-version match, Codex must inspect' \
+        && grep -Fq 'reviewed direct dispatch, including an exact-version match, the driver must inspect' \
             "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
-        && grep -Fq 'Codex inspects current bounded raw help before every reviewed direct dispatch' \
+        && grep -Fq 'The driver inspects current bounded raw help before every reviewed direct dispatch' \
             "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Exact-version structural acceptance is only mechanical' \
             "$ROOT/docs/lessons_learned.md"; then

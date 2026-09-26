@@ -755,7 +755,7 @@ def run(context: dict[str, object]) -> None:
         assert continue_status_lines[2] == (
             'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" '
             "result --job-id direct-selection-preflight-continue --format json; review it and run driver checks, "
-            "then Codex—not the controller—may finalize after review. "
+            "then the driver may finalize after review. "
             "No provider-launching same-job recovery is available."
         )
 

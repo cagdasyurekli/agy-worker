@@ -54,7 +54,7 @@ permissions, authentication, scope, and task unchanged while classifying the loc
 failure. A model change cannot repair a permission, missing executable, invalid
 worktree, approval, environment, quota, or human-decision blocker.
 
-Before every reviewed direct dispatch, including an exact-version match, Codex must inspect current bounded raw `agy --help` evidence. Structural acceptance is not proof
+Before every reviewed direct dispatch, including an exact-version match, the driver must inspect current bounded raw `agy --help` evidence. Structural acceptance is not proof
 that the caller-selected model or effort is semantically available. On installed
 version drift, review the bounded help bytes and approve their exact SHA only when
 the selection can still be honored. A final selection reprobe failure does not permit

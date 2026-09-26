@@ -2,7 +2,7 @@
 
 This guide owns the operational lifecycle after the repository, task, provider
 transmission, and caller-selected model inputs are approved. The worker envelope is
-input, never acceptance evidence. Codex reviews the bound candidate and supplies the
+input, never acceptance evidence. The driver reviews the bound candidate and supplies the
 verification evidence.
 
 Read [Security and compatibility](SECURITY_AND_COMPATIBILITY.md) before a first live
@@ -65,13 +65,15 @@ Read [Security and compatibility](SECURITY_AND_COMPATIBILITY.md) for the limits.
 
 ## Primary `run`, `status`, `verify-finalize` path
 
+`SKILL_ROOT` is the directory containing `SKILL.md`; in Claude Code, use its
+inline `${CLAUDE_SKILL_DIR}` substitution, not a Bash environment variable.
 Resolve the installed runtime first:
 
 ```bash
 PIPELINE="$(bash "$SKILL_ROOT/scripts/resolve-pipeline.sh")" || exit $?
 ```
 
-Codex creates and reviews the branch-backed disposable worktree. The following names
+The driver creates and reviews the branch-backed disposable worktree. The following names
 are illustrative local variables; the actual repository and state paths remain
 caller-owned:
 
@@ -240,7 +242,7 @@ that action. Manual Verification v2 input remains available. Existing self-verif
 is optional advisory feedback when a focused command is known; an unknown first command
 or architecture does not prohibit useful delegation. Self-verification never
 finalizes a candidate or substitutes for independent diff review and driver checks.
-Keep final Codex independent acceptance.
+Keep final driver independent acceptance.
 
 ## Isolated verification copy
 
@@ -328,7 +330,7 @@ Use the current `STATE_SHA` with eligible lower-level `continue` or `finalize`
 commands. A bounded repair request may cite failed checks, missing checks, advisory
 results, coverage gaps, or review findings. Failed product checks return concrete
 sanitized feedback to the same AGY conversation for bounded repair; do not allow
-silent direct-Codex fallback after provider failure or exhausted budget. It must
+silent direct-driver fallback after provider failure or exhausted budget. It must
 continue the same conversation while budget remains and must be preceded by the
 provider notice.
 
@@ -344,7 +346,7 @@ The final human-readable handoff must report the planner/reviewer separation.
 
 ## Assurance and preservation
 
-The controller validates and persists Codex's exact disposition; it does not infer a
+The controller validates and persists the driver's exact disposition; it does not infer a
 different label from counters.
 
 - `verified`: for `task` and `project`, at least one driver check passed, none failed
@@ -352,7 +354,7 @@ different label from counters.
   complete coverage and no unresolved gaps.
 - `partially_verified`: useful candidate with a failed, missing, unavailable, or
   incomplete check, or an unresolved coverage gap.
-- `rejected`: Codex has reviewed and declines the candidate.
+- `rejected`: the driver has reviewed and declines the candidate.
 - `blocked`: a real authority, repository-boundary, provider, or execution block.
 
 Keep accepted or useful partial work on its branch when a repair or time budget ends.
@@ -377,3 +379,46 @@ Exit zero means only that the gate accepted the exact exercised state and verifi
 commands. It is not a merge, security certification, or general correctness proof.
 Use `verify-job.sh` when a private unsigned receipt is required; receipt serialization
 does not create a second acceptance authority.
+
+## Claude Code host operation
+
+Claude Code is experimental: pending live verification. The Bash tool has a default
+two-minute foreground timeout and a ten-minute default ceiling. Run the approved
+`workflow.sh run` command above from the main driver conversation with Bash
+`run_in_background: true`; this is a host tool parameter, not a workflow flag or shell
+`&`. Use the same reviewed arguments and private envelope redirection. Do not launch
+a second dispatch for the same job. A Bash timeout/background notification is not a
+provider failure; inspect the existing task and bound workflow status.
+
+Bash variables do not persist between Claude tool calls. In every call, repeat the
+reviewed path/value assignments from the example or replace them with the reviewed
+absolute values. Status itself needs only the resolved runtime and saved state:
+
+```bash
+/absolute/path/to/runtime/workflow.sh status \
+  --state /absolute/private/state/workflow.json --format json
+```
+
+Read `dispatch.status`, `dispatch.reason`, `dispatch.state_sha256`, `phase`,
+`controller_phase`, and `available_actions`. A missing or unreadable dispatch record
+is unresolved, not success or permission to start another job. While queued/running,
+observe the same host task. Once it exits, inspect its output and the saved envelope,
+review the candidate, then run the existing `verify-finalize` command with fresh
+bound verification. Status never grants acceptance or further provider authority.
+
+Keep the main driver session active until completion. Foreground subagent background
+commands end when that subagent returns; non-interactive `claude -p` background tasks
+end shortly after its final result. Session exit also cleans up background tasks.
+If background tools are disabled or unavailable, report that host limitation rather
+than inventing a detach/restart path. See the official
+[Bash tools reference](https://code.claude.com/docs/en/tools-reference) and
+[background behavior](https://code.claude.com/docs/en/interactive-mode#background-bash-commands).
+
+Bash permission approval is separate from provider-transmission approval. If the
+host sandbox blocks execution, discover exact required paths/hosts through violation
+reports and grant narrowly with `sandbox.filesystem.allowWrite` and
+`sandbox.network.allowedDomains`. AGY session state under `~/.gemini`, private
+controller/staging paths, and the disposable worktree may need access outside cwd/tmp.
+Offline tests do not establish the complete write/domain allowlist. Do not disable
+sandboxing or exempt AGY via `excludedCommands`; see the official
+[sandbox guide](https://code.claude.com/docs/en/sandboxing).
