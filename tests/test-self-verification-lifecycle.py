@@ -2,7 +2,6 @@
 """Offline dispatcher lifecycle coverage for advisory self-verification."""
 from __future__ import annotations
 
-import hashlib
 import contextlib
 import io
 import importlib.util

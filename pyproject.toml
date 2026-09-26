@@ -1,0 +1,39 @@
+# Development tools only; the shipped runtime remains Python 3.9 + stdlib.
+[tool.ruff]
+required-version = "==0.16.9"
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    # Preserve established compact statements and long protocol/fixture literals.
+    "E501", "E701", "E702",
+    # Keep lambda callable identities/names used by injected callbacks.
+    "E731",
+    # Import reordering can cross startup isolation and deliberate loading seams.
+    "I001",
+    # Defer annotation, literal and subprocess spelling migrations; no runtime
+    # behavior or formatting changes belong in this quality-gate baseline.
+    "UP006", "UP007", "UP012", "UP022", "UP031", "UP035", "UP037", "UP045",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# These exact source/AST-bound historical modules retain their reviewed imports
+# and dead locals. Changing them breaks existing authority checks; byte-bound
+# files cannot gain inline noqa comments either. Historical bindings stay fixed.
+"scripts/version_attestation_runner.py" = ["F401"]  # one unused Mapping import
+"scripts/version_bootstrap_runner.py" = ["F401"]  # one AST-bound pathlib import
+"scripts/models_capture_profile.py" = ["F841"]  # one AST-bound cleanup_failed local
+"scripts/version_initial_bootstrap_runner.py" = ["F841"]  # one AST-bound temporary_path
+"scripts/version_manifest_version_evidence.py" = ["F841"]  # same shared algorithm
+"scripts/version_manifest_capture_runner.py" = ["B904"]  # one byte-bound existing exception context
+
+[tool.mypy]
+python_version = "3.9"
+files = ["skills/agy-worker/runtime/scripts"]
+check_untyped_defs = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+# Do not let a developer check add cache bytes to a candidate snapshot.
+cache_dir = "/dev/null"

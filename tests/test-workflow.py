@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Any, Callable
 from unittest import mock
 
@@ -35,9 +33,9 @@ SUBJECT_MODES_BEFORE_IMPORT = {
 }
 
 sys.path.insert(0, str(RUNTIME / "scripts"))
-import candidate_state as CANDIDATE
-import agy_dispatch_worktree as DISPATCH_WT
-import workflow as WORKFLOW_MODULE
+import candidate_state as CANDIDATE  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import agy_dispatch_worktree as DISPATCH_WT  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import workflow as WORKFLOW_MODULE  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 passed = 0
 failed = 0

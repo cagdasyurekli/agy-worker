@@ -82,7 +82,7 @@ sys.dont_write_bytecode = True
 SCRIPT_DIRECTORY = Path(__file__).resolve(strict=True).parent
 if str(SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIRECTORY))
-import version_attestation_runner as version
+import version_attestation_runner as version  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 
 class InitialBootstrapError(ValueError):

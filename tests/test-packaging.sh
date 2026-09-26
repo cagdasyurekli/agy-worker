@@ -183,7 +183,7 @@ path = Path(sys.argv[1])
 info = path.lstat()
 assert stat.S_ISREG(info.st_mode)
 data = path.read_bytes()
-assert sha256(data).hexdigest() == "47b0df87519d36901c9e084c16fa3b39fa8b81e177749f166d0374eaea8de415"
+assert sha256(data).hexdigest() == "67b5f4309e1f36898e8ca8f4b0a3ec165c5bd291f626a05dcb3ecffa0359c356"
 text = data.decode("utf-8")
 required = (
     "name: test\n",
@@ -216,12 +216,13 @@ required = (
     "    name: test\n",
     "    if: always()\n",
     "    needs: [preflight]\n",
-    "    needs: [preflight, shard]\n",
+    "    needs: [preflight, quality, shard]\n",
     "      - name: download shard receipts\n",
     "        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093\n",
     "          pattern: shard-receipt-*\n",
     "          path: ${{ runner.temp }}/downloaded-shard-receipts\n",
     "      - name: verify aggregate shard receipts\n",
+    "          QUALITY_RESULT: ${{ needs.quality.result }}\n",
     "          SHARD_RESULT: ${{ needs.shard.result }}\n",
     "          RECEIPTS_DIR: ${{ runner.temp }}/downloaded-shard-receipts\n",
     "          /usr/bin/python3 -I -S -B scripts/ci_sharding.py verify-aggregate \\\n            --receipts-dir \"${RECEIPTS_DIR}\" \\\n            --expected-head \"${AGY_WORKER_CI_HEAD_SHA}\" \\\n            --producer-result \"${SHARD_RESULT}\"\n",
@@ -240,7 +241,7 @@ assert "*policy" not in text
 assert "continue-on-error: true" not in text
 assert "mktemp -d -t agyworker-shard-receipt" not in text
 assert "/tmp/agyworker-shard-receipt" not in text
-assert text.count("timeout-minutes:") == 3
+assert text.count("timeout-minutes:") == 4
 PY
 }
 
@@ -282,7 +283,7 @@ EXPECTED_BLOCKS = {
 EXPECTED_COUNTS = {
     "compatibility-watch.yml": 1,
     "feedback-watch.yml": 1,
-    "test.yml": 3,
+    "test.yml": 4,
 }
 
 if target.is_dir():
@@ -573,7 +574,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 old = "          persist-credentials: false\n"
-assert text.count(old) == 3
+assert text.count(old) == 4
 path.write_text(text.replace(old, "", 1), encoding="utf-8")
 PY
 if ! ci_workflow_contract "$TMP/persisted-checkout-credentials.yml" 2>/dev/null; then
@@ -590,7 +591,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 old = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-assert text.count(old) == 3
+assert text.count(old) == 4
 path.write_text(text.replace(old, "actions/checkout@v4", 1), encoding="utf-8")
 PY
 if ! ci_workflow_contract "$TMP/mutable-checkout-tag.yml" 2>/dev/null \
@@ -608,7 +609,7 @@ import sys
 path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 old = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-assert text.count(old) == 3
+assert text.count(old) == 4
 path.write_text(text.replace(old, "actions/checkout@1111111111111111111111111111111111111111", 1), encoding="utf-8")
 PY
 if ! ci_workflow_contract "$TMP/different-checkout-sha.yml" 2>/dev/null \

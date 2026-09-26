@@ -16,11 +16,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 sys.dont_write_bytecode = True
 
-import compatibility
+import compatibility  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
@@ -189,7 +189,7 @@ CRITICAL_ENUM_VALUES: dict[str, frozenset[str]] = {
 }
 
 class UsageParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(64, f"model-selection: {message}\n")
 
@@ -712,8 +712,9 @@ def compatibility_review_evidence(
     user_effort: str | None, user_effort_source: str | None,
     compatibility_disposition: str | None, approve_help_sha: str | None,
 ) -> dict[str, Any]:
-    retry_arguments, retry_environment = [], {}
-    selectors = [(user_model_source, "--model", user_model, "AGY_WORKER_MODEL")]
+    retry_arguments: list[str] = []
+    retry_environment: dict[str, str] = {}
+    selectors: list[tuple[str | None, str, str, str]] = [(user_model_source, "--model", user_model, "AGY_WORKER_MODEL")]
     if user_effort is not None:
         selectors.append((user_effort_source, "--effort", user_effort, "AGY_WORKER_EFFORT"))
     for source, flag, value, environment_name in selectors:

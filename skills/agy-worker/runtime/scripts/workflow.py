@@ -21,16 +21,16 @@ import signal
 import stat
 import subprocess
 import sys
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence, cast
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve(strict=True).parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from candidate_state import CandidateStateError, candidate_state_digest
-import agy_dispatch as DISPATCH
-from delegation_policy import evaluate_policy
+from candidate_state import CandidateStateError, candidate_state_digest  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import agy_dispatch as DISPATCH  # noqa: E402 -- sibling imports follow startup isolation/path setup
+from delegation_policy import evaluate_policy  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 SCHEMA_VERSION = 3
 FACADE_SCHEMA_VERSION = 4
@@ -257,7 +257,7 @@ def validate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
         FACADE_SCHEMA_VERSION: facade_keys,
         BOUND_SCHEMA_VERSION: bound_keys,
         BOUND_FACADE_SCHEMA_VERSION: bound_facade_keys,
-    }.get(state.get("schema_version"))
+    }.get(cast(int, state.get("schema_version")))
     if set(state.keys()) != expected_keys:
         raise WorkflowError("workflow state fields mismatch")
     if state["schema_version"] not in {1, 2, SCHEMA_VERSION, FACADE_SCHEMA_VERSION, BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
@@ -1148,7 +1148,7 @@ class SingleValue(argparse.Action):
 
     def __call__(
         self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
-        values: str, option_string: str | None = None,
+        values: str | Sequence[Any] | None, option_string: str | None = None,
     ) -> None:
         if getattr(namespace, self.dest, None) is not None:
             parser.error(f"repeated {option_string}")

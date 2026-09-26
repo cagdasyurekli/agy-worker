@@ -76,7 +76,7 @@ sys.dont_write_bytecode = True
 SCRIPT_DIRECTORY = Path(__file__).resolve(strict=True).parent
 if str(SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIRECTORY))
-import version_attestation_runner
+import version_attestation_runner  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 
 version = version_attestation_runner
@@ -676,7 +676,7 @@ class OwnershipLedger:
                 raise BootstrapError("bootstrap root path changed")
         finally:
             os.close(root)
-        for relative, expected in self.directories.items():
+        for relative, expected in self.directories.items():  # noqa: B007 -- retain tuple binding; this pass uses only the other field
             controller.poll()
             descriptor = self.open_directory(relative)
             os.close(descriptor)
@@ -2200,7 +2200,7 @@ def run_bootstrap(
         signal.pthread_sigmask(signal.SIG_SETMASK, lifecycle.entry_mask)
         selected = lifecycle.controller.choose()
         if selected is not None:
-            raise BootstrapInterrupted(selected)
+            raise BootstrapInterrupted(selected)  # noqa: B904 -- preserve existing exception context and public diagnostics
         raise
     return _execute_bootstrap(
         profile,

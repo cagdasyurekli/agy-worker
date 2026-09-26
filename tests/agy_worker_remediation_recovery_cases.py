@@ -4,6 +4,45 @@ from __future__ import annotations
 
 import base64
 
+from typing import TYPE_CHECKING
+
+# run() receives these names from test-agy-worker-remediation.py globals.
+# These declarations are static only; the live objects still come from context.
+if TYPE_CHECKING:
+    from types import ModuleType
+    from typing import cast
+    from typing import Callable, Optional
+    FOCUSED_CHECK: Optional[str] = cast(Optional[str], ...)
+    MODULE: ModuleType = cast(ModuleType, ...)
+    from pathlib import Path
+    ROOT: Path = cast(Path, ...)
+    SOURCE: Path = cast(Path, ...)
+    WORKTREE_SOURCE: Path = cast(Path, ...)
+    def assert_symbolic_action_commands(actions: list[dict], expected: set[str]) -> None: ...
+    def candidate_snapshot_actions_reject(job: Path, state: dict, label: str, *, continuation_error: str='candidate worktree reconciliation is unavailable') -> None: ...
+    def check(label: str, action: Callable[[], object]) -> None: ...
+    import contextlib
+    def current_candidate_fixture(label: str, *, selection: bool=False, staged: bool=False, wrapper_addressable: bool=False, workflow: str='task', linked: bool=False, inside_worktree: bool=False) -> tuple[Path, dict, str, Path]: ...
+    import hashlib
+    import importlib.util
+    import io
+    import json
+    import os
+    def provider_schema(path: Path) -> None: ...
+    def report(**updates: object) -> dict: ...
+    root: Path = cast(Path, ...)
+    def run_controller(job: Path, bin_dir: Path) -> int: ...
+    def run_scoped_controller(job: Path, bin_dir: Path, *, fixture_kind: str='normal', native_containment: bool=True) -> int: ...
+    def scoped_controller_uses_portable_fixture() -> bool: ...
+    import shlex
+    import shutil
+    import signal
+    import stat
+    import subprocess
+    import sys
+    import threading
+    import time
+
 
 def run(context: dict[str, object]) -> None:
     """Run the retained tail with the canonical suite's exact context."""
@@ -1216,8 +1255,8 @@ def run(context: dict[str, object]) -> None:
                 return result
 
             for label, worktree in (("standard", source_repo), ("linked", linked)):
-                assert with_reader(var_alias_reader, lambda: MODULE._git_boundary_identity(str(worktree))) is not None, label
-                assert with_reader(var_alias_reader, lambda: MODULE._worktree_snapshot(str(worktree))) is not None, label
+                assert with_reader(var_alias_reader, lambda: MODULE._git_boundary_identity(str(worktree))) is not None, label  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                assert with_reader(var_alias_reader, lambda: MODULE._worktree_snapshot(str(worktree))) is not None, label  # noqa: B023 -- callback is invoked and restored within this loop iteration
             # The compatibility exception is deliberately only /var to
             # /private/var.  This fixture may instead live under /private/tmp
             # (whose /tmp alias is not accepted), so no /var observation is
@@ -1243,8 +1282,8 @@ def run(context: dict[str, object]) -> None:
                 (source_repo, ("rev-parse", "--absolute-git-dir"), b"/tmp/has\0nul\n"),
             ):
                 reader = replaced_reader(arguments, replacement)
-                assert with_reader(reader, lambda: MODULE._git_boundary_identity(str(worktree))) is None
-                assert with_reader(reader, lambda: MODULE._worktree_snapshot(str(worktree))) is None
+                assert with_reader(reader, lambda: MODULE._git_boundary_identity(str(worktree))) is None  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                assert with_reader(reader, lambda: MODULE._worktree_snapshot(str(worktree))) is None  # noqa: B023 -- callback is invoked and restored within this loop iteration
         finally:
             if linked.exists():
                 subprocess.run(["git", "-C", str(source_repo), "worktree", "remove", "--force", str(linked)], check=True)
@@ -1350,12 +1389,12 @@ def run(context: dict[str, object]) -> None:
             def no_nested_marker_open(name, flags, mode=0o777, *, dir_fd=None):
                 if (
                     name == ".git" and dir_fd is not None
-                    and os.fstat(dir_fd).st_dev == parent_info.st_dev
-                    and os.fstat(dir_fd).st_ino == parent_info.st_ino
+                    and os.fstat(dir_fd).st_dev == parent_info.st_dev  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                    and os.fstat(dir_fd).st_ino == parent_info.st_ino  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 ):
-                    denied.append(kind)
+                    denied.append(kind)  # noqa: B023 -- callback is invoked and restored within this loop iteration
                     raise AssertionError("nested Git marker was opened")
-                return original_open(name, flags, mode, dir_fd=dir_fd)
+                return original_open(name, flags, mode, dir_fd=dir_fd)  # noqa: B023 -- callback is invoked and restored within this loop iteration
             MODULE.os.open = no_nested_marker_open
             try:
                 assert MODULE._worktree_snapshot(str(linked)) is None, kind

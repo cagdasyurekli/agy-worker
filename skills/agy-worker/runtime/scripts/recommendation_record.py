@@ -162,6 +162,7 @@ def _higher(selected: str, recommended: str, reason: str) -> tuple[str, str, str
 
 
 def _tier_expectation(stage: str, tier: str, code: str) -> tuple[str, str, tuple[Any, ...]]:
+    expected: tuple[str, str | None, str, dict[str, Any]]
     if stage == "pre-dispatch":
         if code not in PRE_DISPATCH_EVIDENCE:
             _fail("pre-dispatch evidence code is invalid")

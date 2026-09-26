@@ -10,7 +10,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NoReturn
 
 sys.dont_write_bytecode = True
 
@@ -88,7 +88,7 @@ class DuplicateKeyError(CompatibilityError):
     """JSON object contains a duplicate key."""
 
 
-def fail(message: str, code: int = 2) -> None:
+def fail(message: str, code: int = 2) -> NoReturn:
     print(f"compatibility: {message}", file=sys.stderr)
     raise SystemExit(code)
 
@@ -515,7 +515,7 @@ def validate_inventory_binding(
         import version_manifest_engine
     except ImportError:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        import version_manifest_engine  # type: ignore[no-redef]
+        import version_manifest_engine
     try:
         spec = version_manifest_engine.get_version_spec(version, manifest_file)
         version_manifest_engine.validate_activation_binding(binding, spec)

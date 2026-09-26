@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import datetime
 import hashlib
 import importlib.util
@@ -59,7 +58,7 @@ def parse_iso_date(date_str: Any, label: str) -> datetime.date:
     try:
         year, month, day = map(int, date_str.split("-"))
         return datetime.date(year, month, day)
-    except (ValueError, OverflowError) as exc:
+    except (ValueError, OverflowError):
         raise ModelIntelligenceError(f"{label} is an invalid calendar date: {date_str!r}") from None
 
 
@@ -1110,7 +1109,7 @@ def main(argv: Sequence[str]) -> int:
         report_path: Path | None = None
         plan_path: Path | None = None
         results_path: Path | None = None
-        out_path: Path | None = None
+        out_path = None
         idx = 2
         while idx < len(argv):
             arg = argv[idx]

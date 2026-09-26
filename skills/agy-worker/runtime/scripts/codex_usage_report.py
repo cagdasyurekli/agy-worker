@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, cast
 
 
 PINNED_CODEX_VERSION = "0.150.1"
@@ -499,7 +499,7 @@ def parse_session_file(abs_file_path: str) -> dict[str, Any]:
             seen_event_ids.add(event_id)
 
         obj_type = obj.get("type")
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else obj
+        payload = cast(dict[str, Any], obj.get("payload")) if isinstance(obj.get("payload"), dict) else obj
 
         # Check session_meta
         if obj_type == "session_meta" or "session_meta" in obj or "cli_version" in payload:
@@ -997,7 +997,7 @@ def format_text_report(report: dict[str, Any]) -> str:
         if "rate_limits" in au and au["rate_limits"]:
             rl = au["rate_limits"]
             p = rl["primary"]
-            lines.append(f"Rate Limits:")
+            lines.append("Rate Limits:")
             if p is None:
                 lines.append("  Primary:   unavailable")
             else:

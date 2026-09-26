@@ -8,7 +8,6 @@ import email.message
 import importlib.util
 import io
 import json
-import os
 import ssl
 import sys
 import tempfile
@@ -96,7 +95,7 @@ def expect_error(category: str, callback: Callable[[], Any]) -> None:
         callback()
     except distribution.DistributionEvidenceError as exc:
         if exc.category != category:
-            raise AssertionError(f"category {exc.category!r}, expected {category!r}")
+            raise AssertionError(f"category {exc.category!r}, expected {category!r}")  # noqa: B904 -- preserve existing exception context and public diagnostics
         return
     raise AssertionError(f"expected controlled {category!r} error")
 

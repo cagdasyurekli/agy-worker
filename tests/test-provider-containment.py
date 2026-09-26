@@ -521,7 +521,7 @@ def native_grant_profile_bytes_and_invalid_choices() -> bool:
         + f'    (global-name "{services[-1]}")))\n'
     ).encode()
     listener = b'  (allow network-bind network-inbound (local tcp "localhost:*"))\n'
-    helper = f'(with-filter (process-path "/usr/bin/security")'.encode()
+    helper = '(with-filter (process-path "/usr/bin/security")'.encode()
     return (
         variants["baseline"] == baseline
         and baseline.count(direct) == 1
@@ -1001,7 +1001,7 @@ def keychain_policy_is_helper_only_and_self_verify_never_discovers() -> bool:
     return (
         helper_clause in profile
         and profile.count(f'(literal "{keychain}")') == 1
-        and f'(with-filter (process-path "/bin/cat")' not in profile
+        and '(with-filter (process-path "/bin/cat")' not in profile
         and rejects(lambda: MODULE.render_profile(
             target_executable="/usr/bin/true", role=MODULE.ROLE_SELF_VERIFY,
             network_policy=MODULE.NETWORK_DENY_ALL, allow_keychain=False,

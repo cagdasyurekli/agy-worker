@@ -9,7 +9,7 @@ without letting old state shape leak into ordinary controller transitions.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def is_legacy(state: dict[str, Any], api: Any) -> bool:
@@ -39,7 +39,7 @@ def project_for_read(api: Any, value: Any, fields: set[str]) -> dict[str, Any] |
         11: prior_fields - api.STATE_V12_FIELDS - api.STATE_V13_FIELDS,
         12: prior_fields - api.STATE_V13_FIELDS,
         13: prior_fields,
-    }.get(version)
+    }.get(cast(int, version))
     if expected is None or set(value) != expected:
         raise api.DispatchError("dispatch state fields are invalid")
     value = dict(value)

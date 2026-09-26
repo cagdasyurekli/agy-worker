@@ -19,7 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
-from typing import Any
+from typing import Any, NoReturn, Sequence, Iterator
 
 sys.dont_write_bytecode = True
 RUNTIME_SCRIPTS = str(Path(__file__).resolve(strict=True).parent)
@@ -130,7 +130,7 @@ class SignalController:
         raise SignalInterruption("receipt operation interrupted")
 
     @contextmanager
-    def blocked(self):
+    def blocked(self) -> Iterator[None]:
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
         try:
             yield
@@ -923,7 +923,7 @@ def publish_receipt(
 
 
 class UsageParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(64, f"verify-job: {message}\n")
 
@@ -935,7 +935,7 @@ class VerifierAction(argparse.Action):
         self,
         parser: argparse.ArgumentParser,
         namespace: argparse.Namespace,
-        values: str,
+        values: str | Sequence[Any] | None,
         option_string: str | None = None,
     ) -> None:
         del parser, option_string

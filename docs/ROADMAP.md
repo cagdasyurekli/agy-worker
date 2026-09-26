@@ -12,6 +12,13 @@ scope; reuse existing authority when it covers the work. This roadmap does not i
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
 
+## Unreleased — development quality gate
+
+The local candidate adds pinned development-only Ruff and Mypy checks targeting
+Python 3.9. CI requires their separate job alongside the existing offline shards;
+the shipped runtime and canonical offline registry remain standard-library-only.
+See [contributor setup](../CONTRIBUTING.md#verify-locally). This is not released.
+
 ## Unreleased — dual-host package identity
 
 The plugin and marketplace identity becomes `agy-worker` on Codex and Claude Code;

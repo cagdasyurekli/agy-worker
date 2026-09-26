@@ -2,9 +2,17 @@
 """Pure offline SWE-bench workflow-study artifact pipeline."""
 from __future__ import annotations
 
-import argparse, hashlib, json, math, os, re, secrets, stat, sys
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import secrets
+import stat
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, cast
 
 sys.dont_write_bytecode = True
 SCRIPT_DIR = Path(__file__).resolve(strict=True).parent
@@ -127,7 +135,7 @@ def validate_schema(value: Any, schema: dict[str,Any], location: str = "$", root
         try:
             f=float(value)
             if not math.isfinite(f): raise ValidationFailure(f"{location} must be finite")
-        except OverflowError: raise ValidationFailure(f"{location} is oversized")
+        except OverflowError: raise ValidationFailure(f"{location} is oversized")  # noqa: B904 -- preserve existing exception context and public diagnostics
         if value<schema.get("minimum",value) or value>schema.get("maximum",value): raise ValidationFailure(f"{location} is outside its range")
     if isinstance(value,list):
         if len(value)<schema.get("minItems",0) or len(value)>schema.get("maxItems",len(value)): raise ValidationFailure(f"{location} has invalid item count")
@@ -140,7 +148,7 @@ def validate_schema(value: Any, schema: dict[str,Any], location: str = "$", root
         for key,child in properties.items():
             if key in value: validate_schema(value[key],child,f"{location}.{key}",root_schema)
 
-def fail(message: str, code: str = "invalid_input") -> None:
+def fail(message: str, code: str = "invalid_input") -> NoReturn:
     """Stop with a bounded, stable semantic category and sanitized detail."""
     print(f"error: {code}: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -473,7 +481,7 @@ def chain(root_fd:int,stage:str)->tuple[Any,...]:
     if stage in {"report","advise"}:
         imported,imported_raw=read_artifact(root_fd,"imported_results.json"); imported=validate_imported(imported,plan,plan_raw)
     if stage=="advise":
-        report,report_raw=read_artifact(root_fd,"report.json"); report=validate_report(report,plan,plan_raw,imported,imported_raw)
+        report,report_raw=read_artifact(root_fd,"report.json"); report=validate_report(report,plan,plan_raw,cast(dict[str, Any], imported),cast(bytes, imported_raw))
     return plan,plan_raw,imported,imported_raw,report,report_raw
 
 def do_prepare(args: argparse.Namespace)->None:
@@ -512,7 +520,7 @@ def do_report(args: argparse.Namespace)->None:
         plan,plan_raw,imported,imported_raw,_,_=chain(fd,"report")
         records=imported["records"]
         report={"schema_version":1,"kind":"agy-swebench-workflow-study-report","plan_sha256":sha(plan_raw),"imported_results_sha256":sha(imported_raw),"exact_bindings_verified":True,"plan":plan,"records":records,"denominators":{"planned_tasks":len(plan["tasks"]),"planned_cells":len(plan["tasks"])*len(ARMS),"accepted_solutions":sum(cell["accepted_solution"] for record in records for cell in record["cells"])}}
-        validate_report(report,plan,plan_raw,imported,imported_raw); publish(fd,"report.json",report); print("Generated study report")
+        validate_report(report,plan,plan_raw,cast(dict[str, Any], imported),cast(bytes, imported_raw)); publish(fd,"report.json",report); print("Generated study report")
     finally: os.close(fd)
 
 def total_usage(plan:dict[str,Any],cell:dict[str,Any])->int|None:

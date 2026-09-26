@@ -1103,12 +1103,12 @@ def run_completion_failure_cases(root: Path) -> list[dict[str, object]]:
             publisher = DurablePublisher(case)
 
             def marker() -> None:
-                publisher.publish("version.binding.sha256", b"digest\n")
-                if failure_point == "marker":
+                publisher.publish("version.binding.sha256", b"digest\n")  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                if failure_point == "marker":  # noqa: B023 -- callback is invoked and restored within this loop iteration
                     raise HarnessError("injected marker failure")
 
             def disarm() -> None:
-                if failure_point == "disarm":
+                if failure_point == "disarm":  # noqa: B023 -- callback is invoked and restored within this loop iteration
                     raise HarnessError("injected disarm failure")
 
             rejected = False

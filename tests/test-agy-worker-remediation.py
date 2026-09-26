@@ -6,7 +6,7 @@ import argparse
 import copy
 import contextlib
 import fcntl
-import hashlib
+import hashlib  # noqa: F401 -- supplied to recovery cases through run(globals())
 import io
 import importlib.util
 import json
@@ -19,7 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
+import threading  # noqa: F401 -- supplied to recovery/runtime cases through run(globals())
 import time
 from unittest import mock
 
@@ -2191,7 +2191,7 @@ with tempfile.TemporaryDirectory() as temporary:
             def drop_terminal_snapshot(workdir: str):
                 nonlocal snapshots
                 snapshots += 1
-                return original_snapshot(workdir) if snapshots == 1 else None
+                return original_snapshot(workdir) if snapshots == 1 else None  # noqa: B023 -- callback is invoked and restored within this loop iteration
             MODULE._worktree_snapshot = drop_terminal_snapshot
             try:
                 assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["status_unavailable"]
@@ -4266,9 +4266,9 @@ with tempfile.TemporaryDirectory() as temporary:
                 )
                 probe.chmod(0o755)
                 if argument == "--version":
-                    action = lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe))
+                    action = lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe))  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 else:
-                    action = lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe))
+                    action = lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe))  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 if returncode == 0:
                     result = action()
                     if argument == "--version":
@@ -4339,9 +4339,9 @@ with tempfile.TemporaryDirectory() as temporary:
             )
             probe.chmod(0o755)
             action = (
-                (lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe)))
+                (lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe)))  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 if argument == "--version"
-                else (lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe)))
+                else (lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe)))  # noqa: B023 -- callback is invoked and restored within this loop iteration
             )
             started = time.monotonic()
             result = action()

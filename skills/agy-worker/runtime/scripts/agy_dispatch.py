@@ -26,7 +26,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Any, Iterator, NamedTuple
+from typing import Any, Iterator, NamedTuple, NoReturn, IO, cast
 
 sys.dont_write_bytecode = True
 
@@ -34,9 +34,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import legacy_dispatch_state as LEGACY
-import agy_dispatch_verification as SELF_VERIFICATION
-import agy_dispatch_containment as CONTAINMENT
+import legacy_dispatch_state as LEGACY  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import agy_dispatch_verification as SELF_VERIFICATION  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 
 class _DispatchAPI:
@@ -236,7 +236,7 @@ _selection_spec.loader.exec_module(MODEL_SELECTION)
 
 
 class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         del message
         self.print_usage(sys.stderr)
         self.exit(64, "agy-dispatch: invalid arguments\n")
@@ -3062,7 +3062,7 @@ def _full_stat_binding(info: os.stat_result) -> tuple[int, ...]:
 
 
 def _bound_git_worktree_root(
-    raw: bytes, canonical_root: str, root_binding: tuple[int, ...],
+    raw: bytes | None, canonical_root: str, root_binding: tuple[int, ...],
 ) -> bool:
     return _worktree_call("_bound_git_worktree_root", raw, canonical_root, root_binding)
 
@@ -3306,6 +3306,7 @@ def _dispatch_root_identity(workdir: str) -> dict[str, Any] | None:
 
 def _state_worktree_snapshot(state: dict[str, Any], workdir: str) -> dict[str, Any] | None:
     """Use a persisted algorithm identity; historical snapshots stay exact."""
+    algorithm: str | None
     if state.get("schema_version") in {5, 6}:
         algorithm = WORKTREE_SNAPSHOT_LEGACY_V6
     elif state.get("schema_version") == 7:
@@ -3611,7 +3612,7 @@ def _copy_bound_candidate(worktree: Path, destination: Path) -> None:
         if not stat.S_ISLNK(before.st_mode):
             raise DispatchError("verification copy source link changed")
         try:
-            target_text = os.readlink(source)
+            _target_text = os.readlink(source)
             resolved = os.path.realpath(source)
             after = source.lstat()
         except OSError as exc:
@@ -4207,6 +4208,8 @@ def _reviewed_provider_timeout_lines(version: str, seconds: object) -> set[bytes
     """
     if version not in {"1.2.2", "1.2.6", "1.2.7"} or type(seconds) not in (int, float):
         return set()
+    # The exact-type guard above excludes bool and all non-numeric objects.
+    seconds = cast("int | float", seconds)
     if not math.isfinite(seconds) or seconds <= 0 or seconds != int(seconds):
         return set()
     total = int(seconds)
@@ -4397,8 +4400,8 @@ def _quota_terminal_failure(stream: Path, version: str) -> tuple[str, int | None
     hours = int(match.group("hours") or 0)
     minutes = int(match.group("minutes") or 0)
     seconds = int(match.group("seconds") or 0)
-    retry = hours * 3600 + minutes * 60 + seconds
-    if minutes >= 60 or seconds >= 60 or not (1 <= retry <= MAX_PROVIDER_RETRY_SECONDS):
+    retry: int | None = hours * 3600 + minutes * 60 + seconds
+    if minutes >= 60 or seconds >= 60 or not (1 <= cast(int, retry) <= MAX_PROVIDER_RETRY_SECONDS):
         retry = None
     return "provider_quota_exhausted", retry
 
@@ -4443,7 +4446,7 @@ def _has_reviewed_terminal_refusal(stream: Path, version: str) -> bool:
     if not isinstance(conversation, str) or CONVERSATION_RE.fullmatch(conversation) is None:
         return False
     duration = result.get("duration_seconds")
-    if type(duration) not in (int, float) or duration < 0:
+    if type(duration) not in (int, float) or cast("int | float", duration) < 0:
         return False
     if isinstance(duration, float) and not math.isfinite(duration):
         return False
@@ -4713,7 +4716,7 @@ def controller(job: Path, ownership_fd: int) -> int:
         schema_paths: tuple[Path, Path] | None = None
         try:
             command = _load_bound_command(job, state, stage_readonly=False)
-            MODEL_SELECTION.ACTIVE_CHILD_ENV = list(command["provider_env"])
+            MODEL_SELECTION.ACTIVE_CHILD_ENV = list(command["provider_env"])  # type: ignore[attr-defined]  # Loaded model_selection defines this exact child-environment list.
             _load_bound_selection(command, state)
             schema_paths = _bound_schemas(command, state)
             if not _worktree_symlink_boundary(command["workdir"]):
@@ -4815,7 +4818,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                     raise
                 current, current_raw, _current_sha = read_state_snapshot(job)
                 if current["attempt"] != state["attempt"]:
-                    raise DispatchError("dispatch attempt changed during control")
+                    raise DispatchError("dispatch attempt changed during control")  # noqa: B904 -- preserve existing exception context and public diagnostics
                 state, prior_raw = current, current_raw
                 return False
 
@@ -4850,7 +4853,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                     if not chunk:
                         try:
                             selector.unregister(key.fileobj)
-                            key.fileobj.close()
+                            cast(IO[bytes], key.fileobj).close()
                         except OSError:
                             reason = "status_unavailable"
                             failure_stage = "binding_failure"
@@ -4974,7 +4977,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                         allow_keychain=True,
                         read_only_inputs=(contained_argv[schema_index],),
                         provider_max_cycles=command["max_cycles"],
-                        provider_write_selectors=scope["write"],
+                        provider_write_selectors=cast(dict[str, Any], scope)["write"],
                         grant_profile=command["native_grant_profile"],
                     )
                 # The prior attempt budget is still a hard stop, but bounded
@@ -5121,7 +5124,7 @@ def controller(job: Path, ownership_fd: int) -> int:
             # before process-group closure; its PID reserves the group identifier.
             while process is not None and selector.get_map() and reason is None:
                 now_mono = time.monotonic()
-                elapsed = float(state["attempt_base_elapsed"]) + now_mono - started_mono
+                elapsed = float(state["attempt_base_elapsed"]) + now_mono - cast(float, started_mono)
                 try:
                     refresh_control_snapshot()
                 except DispatchError:
@@ -5162,9 +5165,9 @@ def controller(job: Path, ownership_fd: int) -> int:
                     # and classify the resampled time before consuming ready
                     # bytes as semantic progress.
                     wait_until = min(
-                        started_mono
+                        cast(float, started_mono)
                         + max(0.0, _provider_max_seconds(state) - float(state["attempt_base_elapsed"])),
-                        started_mono
+                        cast(float, started_mono)
                         + max(0.0, float(state["hard_seconds"]) - float(state["attempt_base_elapsed"])),
                         heartbeat_mono + float(state["idle_seconds"]),
                         next_notice,
@@ -5184,7 +5187,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                     break
                 elapsed = (
                     float(state["attempt_base_elapsed"])
-                    + post_wait_mono - started_mono
+                    + post_wait_mono - cast(float, started_mono)
                 )
                 if state["cancel_requested"] or stop_signal is not None:
                     reason = "cancelled" if stop_signal is None else "interrupted"
@@ -5211,7 +5214,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                     if not chunk:
                         try:
                             selector.unregister(key.fileobj)
-                            key.fileobj.close()
+                            cast(IO[bytes], key.fileobj).close()
                         except OSError:
                             reason = "status_unavailable"
                             failure_stage = "binding_failure"
@@ -5270,7 +5273,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                                 updates: dict[str, Any] = {
                                     "progress_count": state["progress_count"] + 1,
                                     "last_progress_epoch": time.time(),
-                                    "elapsed_seconds": float(state["attempt_base_elapsed"]) + heartbeat_mono - started_mono,
+                                    "elapsed_seconds": float(state["attempt_base_elapsed"]) + heartbeat_mono - cast(float, started_mono),
                                     "last_activity": (
                                         "provider_initialized" if event_kind == "init"
                                         else "progress_signal" if event_kind == "step_update"
@@ -5466,13 +5469,13 @@ def controller(job: Path, ownership_fd: int) -> int:
                 failure_stage = None
             if reason is None:
                 final_status, exit_code = "succeeded", 0
-                result_path: str | None = str(envelope_path)
+                _result_path: str | None = str(envelope_path)
             else:
                 final_status = "cancelled" if reason in {"cancelled", "interrupted"} else "failed"
                 if reason == "provider_terminal_cancelled":
                     final_status = "cancelled"
                 exit_code = 128 + stop_signal if stop_signal is not None else EXIT_BY_REASON[reason]
-                result_path = str(envelope_path) if result_binding is not None else None
+                _result_path = str(envelope_path) if result_binding is not None else None
             cleanup_failed = False
             reconciliation_manifest_sha: str | None = None
             derived_selected_sha: str | None = None
@@ -5488,7 +5491,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                         raise DispatchError(
                             "source worktree changed while the narrow provider stage was active"
                         )
-                    mutations, op_manifest = _scan_stage_mutations(stage_dir, scope, selected_manifest)
+                    mutations, op_manifest = _scan_stage_mutations(stage_dir, cast(dict[str, Any], scope), cast(list[dict[str, Any]], selected_manifest))
                     if result_binding is not None and not _declared_scoped_mutations_match(
                         envelope_path, result_binding, mutations, stage_dir,
                     ):
@@ -5502,9 +5505,9 @@ def controller(job: Path, ownership_fd: int) -> int:
                             command["workdir"], stage_dir, mutations, job,
                         )
                         if _build_selected_content_manifest(
-                            command["workdir"], scope,
+                            command["workdir"], cast(dict[str, Any], scope),
                         ) != _build_selected_content_manifest(
-                            stage_dir, scope, is_stage=True,
+                            stage_dir, cast(dict[str, Any], scope), is_stage=True,
                         ):
                             raise DispatchError(
                                 "source reconciliation does not match the provider stage"
@@ -5534,7 +5537,7 @@ def controller(job: Path, ownership_fd: int) -> int:
             if cleanup_failed:
                 reason, final_status = "status_unavailable", "failed"
                 exit_code = EXIT_BY_REASON["status_unavailable"]
-                result_path = None
+                _result_path = None
                 result_binding = None
                 failure_stage = "binding_failure"
             # A SHA-approved cancellation may arrive after the last pipe-loop
@@ -5555,7 +5558,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                 if current["cancel_requested"]:
                     reason, final_status = "cancelled", "cancelled"
                     exit_code = EXIT_BY_REASON["cancelled"]
-                    result_path = None
+                    _result_path = None
                     result_binding = None
                     failure_stage = None
             # This may use a bounded Git fallback.  The provider clock was
@@ -5642,7 +5645,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                 )
                 if current["cancel_requested"]:
                     reason, final_status, exit_code = "cancelled", "cancelled", EXIT_BY_REASON["cancelled"]
-                    result_path = None
+                    _result_path = None
                     result_binding = None
                     failure_stage = None
                 if reason != "provider_quota_exhausted":
@@ -5667,7 +5670,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                 # Keep an incomplete one as inaccessible forensic state and
                 # fail closed; do not let a concurrent local cancel convert it
                 # into an apparently usable candidate.
-                preserve_candidate = bool(
+                _preserve_candidate = bool(
                     result_binding is None and prior_candidate_is_bound
                 )
                 preserve_candidate_forensics = bool(
@@ -6088,9 +6091,9 @@ def create_state(
                     next_state.update({
                         "verification_path": str(verification_path),
                         "verification_sha256": verification_sha,
-                        "verification_identity": list(verification_identity),
-                        "check_summary": verification["summary"],
-                        "check_counts": _verification_counts(verification),
+                        "verification_identity": list(cast(tuple[int, int, int, int, int], verification_identity)),
+                        "check_summary": cast(dict[str, Any], verification)["summary"],
+                        "check_counts": _verification_counts(cast(dict[str, Any], verification)),
                     })
                 validate_state(next_state)
                 current, _info = read_regular(path, MAX_STATE_BYTES, "dispatch state")
@@ -6346,16 +6349,16 @@ def _terminalize_owned(
             # protect, so it remains cancelled.  Only an *incomplete* prior
             # candidate takes fail-closed precedence over cancellation: that
             # combination cannot truthfully expose a readable result.
-            cancelled = bool(
+            was_cancelled = bool(
                 current["cancel_requested"]
                 and (not candidate or prior_candidate_is_bound)
             )
             candidate_unavailable = bool(candidate and not prior_candidate_is_bound)
             updates = {
-                "status": "cancelled" if cancelled else "failed",
-                "reason": "cancelled" if cancelled else "status_unavailable",
+                "status": "cancelled" if was_cancelled else "failed",
+                "reason": "cancelled" if was_cancelled else "status_unavailable",
                 "exit_code": (
-                    EXIT_BY_REASON["cancelled"] if cancelled
+                    EXIT_BY_REASON["cancelled"] if was_cancelled
                     else EXIT_BY_REASON["status_unavailable"]
                 ),
                 "controller_pid": None,
@@ -6372,8 +6375,8 @@ def _terminalize_owned(
                 # A successful local cancellation has no failed binding to
                 # report.  An unbound/incomplete prior candidate is the one
                 # case that must retain binding_failure fail-closed.
-                "failure_stage": None if (cancelled or prior_candidate_is_bound) else "binding_failure",
-                "remote_cancel_unverified": bool(cancelled and postlaunch_cancel),
+                "failure_stage": None if (was_cancelled or prior_candidate_is_bound) else "binding_failure",
+                "remote_cancel_unverified": bool(was_cancelled and postlaunch_cancel),
                 "provider_terminal_status": current.get("provider_terminal_status", "unknown"),
             }
             if current["schema_version"] >= 5:
@@ -6810,7 +6813,7 @@ if __name__ == "__main__":
         print(f"agy-dispatch: {exc}", file=sys.stderr)
         command_name = sys.argv[1] if len(sys.argv) > 1 else ""
         if command_name == "resume":
-            raise SystemExit(EXIT_BY_REASON["resume_failed"])
+            raise SystemExit(EXIT_BY_REASON["resume_failed"])  # noqa: B904 -- preserve existing exception context and public diagnostics
         if command_name in {"status", "wait", "result", "verification-copy", "self-verify"}:
-            raise SystemExit(EXIT_BY_REASON["status_unavailable"])
-        raise SystemExit(64)
+            raise SystemExit(EXIT_BY_REASON["status_unavailable"])  # noqa: B904 -- preserve existing exception context and public diagnostics
+        raise SystemExit(64)  # noqa: B904 -- preserve existing exception context and public diagnostics

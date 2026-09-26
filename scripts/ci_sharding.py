@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -22,12 +21,10 @@ _script_dir = Path(__file__).resolve().parent
 if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 
-from ci_stages import (
-    ANNOUNCE_MAP,
+from ci_stages import (  # noqa: E402 -- sibling imports follow startup isolation/path setup
     SHARDS,
     STAGE_MAP,
     STAGES,
-    Stage,
     canonical_bytes,
     inventory_digest,
     receipt_v1_inventory_digest,

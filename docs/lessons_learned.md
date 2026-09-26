@@ -1119,3 +1119,12 @@ provider startup needs before freezing a live package, and include bounded same-
 repairs in its shared budget. Reuse exact-candidate test evidence; run the required
 full suite once the candidate is stable. New data, permissions, destinations, or
 budget still need authority. A Goal continuation is not a missing user decision.
+
+## Static checks must respect deliberate dynamic bindings
+
+A globals-injected helper needs a source-proven static declaration for each injected
+name. Keep those declarations under `TYPE_CHECKING`; never invent live defaults or
+remove imports whose values are passed through a context dictionary. Type narrowing
+must follow existing validation, and a tool diagnostic alone does not justify a
+runtime behavior change. Keep formatting migrations separate from a first lint
+baseline, with each excluded rule or exact-line exception explained.

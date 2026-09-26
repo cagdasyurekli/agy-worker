@@ -1051,7 +1051,7 @@ class UninstallTests(Fixture):
         self.assertEqual(ledger["manifest"]["update.sh"], notifier._hash_file(target))
 
     def test_unauthenticated_tombstone_rejected(self) -> None:
-        ledger = self.installed()
+        _ledger = self.installed()
         self.paths.tombstone.write_bytes(notifier._canonical_json({"schema":1,"label":notifier.LABEL,"phase":"started","replacements":[],"authentication":"0"*64}))
         os.chmod(self.paths.tombstone, 0o600)
         with self.assertRaisesRegex(notifier.NotifierError, "unauthenticated"):

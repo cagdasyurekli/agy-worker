@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Iterator
+from typing import Any, Iterator, NoReturn, IO, cast
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve(strict=True).parent
@@ -121,7 +121,7 @@ class GitResult:
 
 
 class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         del message
         self.print_usage(sys.stderr)
         self.exit(64, "job: invalid arguments\n")
@@ -776,7 +776,7 @@ def _communicate_bounded(
                         continue
                     if not chunk:
                         selector.unregister(key.fileobj)
-                        key.fileobj.close()
+                        cast(IO[bytes], key.fileobj).close()
                         continue
                     output.extend(chunk)
                     if len(output) > maximum:
@@ -793,7 +793,7 @@ def _communicate_bounded(
                         pending = pending[written:]
                     if not pending:
                         selector.unregister(key.fileobj)
-                        key.fileobj.close()
+                        cast(IO[bytes], key.fileobj).close()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(process.args, timeout)

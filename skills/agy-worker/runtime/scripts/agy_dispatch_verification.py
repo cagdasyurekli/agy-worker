@@ -18,7 +18,7 @@ import signal
 import stat
 import subprocess
 import time
-from typing import Any
+from typing import Any, IO, cast
 
 
 MAX_MANIFEST_BYTES = 64 * 1024
@@ -107,7 +107,7 @@ def run_check(check: Check, prepared: Any, *, containment: Any,
                 outcome = "timeout"
                 break
             for key, _events in selector.select(min(0.05, max(0, deadline - time.monotonic()))):
-                chunk = os.read(key.fileobj.fileno(), min(65536, check.output_limit_bytes + 1))
+                chunk = os.read(cast(IO[bytes], key.fileobj).fileno(), min(65536, check.output_limit_bytes + 1))
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
@@ -153,9 +153,9 @@ def run_check(check: Check, prepared: Any, *, containment: Any,
         finally:
             selector.close()
             if process is not None:
-                for stream in (process.stdout, process.stderr):
-                    if stream is not None:
-                        stream.close()
+                for remaining_stream in (process.stdout, process.stderr):
+                    if remaining_stream is not None:
+                        remaining_stream.close()
             for descriptor in descriptors.values():
                 try:
                     os.fsync(descriptor)

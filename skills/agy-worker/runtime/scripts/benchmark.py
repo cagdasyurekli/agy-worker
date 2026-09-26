@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Callable
 
 sys.dont_write_bytecode = True
 SCRIPT_DIR = Path(__file__).resolve(strict=True).parent
@@ -78,7 +78,7 @@ BENCHMARK_TREE_FILES = {
 SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 ACTIVE_PUBLICATIONS: list[tuple[Path, str, tuple[int, int]]] = []
 try:
-    _WAITID = ctypes.CDLL(None, use_errno=True).waitid
+    _WAITID: Callable[[int, int, object, int], int] | None = ctypes.CDLL(None, use_errno=True).waitid
 except (AttributeError, OSError):
     _WAITID = None
 
@@ -110,13 +110,13 @@ class Interrupted(BaseException):
 
 
 class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         del message
         self.print_usage(sys.stderr)
         self.exit(64, "benchmark: invalid arguments\n")
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     raise BenchmarkError(message)
 
 
@@ -655,11 +655,11 @@ def run_bounded(argv: list[str], cwd: Path, timeout: float = RUN_TIMEOUT) -> tup
                 if len(buffers[fd]) > MAX_STREAM: raise BenchmarkError("benchmark gate output exceeded its bound")
             stream.close()
         return rc, bytes(buffers[stdout_fd]), bytes(buffers[stderr_fd])
-    except Interrupted as exc:
+    except Interrupted:
         if hasattr(signal, "pthread_sigmask"): signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         if process is not None:
             try: _close_group(process)
-            except BaseException: raise BenchmarkError("benchmark gate cleanup failed")
+            except BaseException: raise BenchmarkError("benchmark gate cleanup failed")  # noqa: B904 -- preserve existing exception context and public diagnostics
             process = None
         raise
     except BaseException:

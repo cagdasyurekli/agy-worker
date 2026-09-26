@@ -2,6 +2,34 @@
 """Runtime-boundary cases loaded by the canonical remediation suite."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+# run() receives these names from test-agy-worker-remediation.py globals.
+# These declarations are static only; the live objects still come from context.
+if TYPE_CHECKING:
+    from types import ModuleType
+    from typing import cast
+    from typing import Callable
+    MODULE: ModuleType = cast(ModuleType, ...)
+    from pathlib import Path
+    SOURCE: Path = cast(Path, ...)
+    def check(label: str, action: Callable[[], object]) -> None: ...
+    import copy
+    import fcntl
+    import io
+    import json
+    import os
+    def provider_schema(path: Path) -> None: ...
+    def report(**updates: object) -> dict: ...
+    root: Path = cast(Path, ...)
+    def run_controller(job: Path, bin_dir: Path) -> int: ...
+    import shlex
+    import signal
+    import subprocess
+    import sys
+    import threading
+    import time
+
 
 def run(context: dict[str, object]) -> None:
     """Run the direct-selection boundary check in the canonical context."""

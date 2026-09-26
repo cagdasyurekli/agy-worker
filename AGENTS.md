@@ -147,7 +147,8 @@ to obtain a green result. A gate rejection may feed the project repair loop, but
 Codex's driver-owned checks determine `verified` versus `partially_verified` delivery.
 
 During implementation, run the owning focused suite from the relevant repository-map
-row. Reuse driver-owned checks only for identical candidate bytes and relevant
+row. Before review, also run the development quality gate documented in
+`CONTRIBUTING.md`. Reuse driver-owned checks only for identical candidate bytes and relevant
 environment; after changes rerun affected checks and run the required full suite once
 the final executable candidate is stable. Once candidate bytes are stable, run
 `./scripts/ci-offline.sh` once before review; it already includes every offline suite,

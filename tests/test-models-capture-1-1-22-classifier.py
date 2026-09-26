@@ -8,7 +8,6 @@ import os
 import pathlib
 import runpy
 import stat
-import sys
 import tempfile
 import unittest
 from typing import Any

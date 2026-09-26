@@ -23,7 +23,21 @@ import subprocess
 import sys
 import time
 import unicodedata
-from typing import Any, Mapping
+from typing import Any, Mapping, TYPE_CHECKING, cast
+
+# call() receives these exact dispatcher bindings; no runtime import/cycle is added.
+if TYPE_CHECKING:
+    from agy_dispatch import (
+        MAX_BOUNDARY_ENTRIES as MAX_BOUNDARY_ENTRIES,
+        MAX_STREAM_BYTES as MAX_STREAM_BYTES,
+        MODEL_SELECTION as MODEL_SELECTION,
+        TERM_GRACE as TERM_GRACE,
+        _identity as _identity,
+        _parse_resolve_undo as _parse_resolve_undo,
+        canonical as canonical,
+        digest as digest,
+    )
+
 
 _CONTAINMENT_SPEC = importlib.util.spec_from_file_location(
     "agy_dispatch_containment_for_worktree",
@@ -811,7 +825,7 @@ def _preview_main(argv: list[str]) -> int:
     scope_path: str | None = None
     provider_isolation = "session"
     provider_isolation_seen = False
-    format_opt = "json"
+    _format_opt = "json"
     idx = 0
     while idx < len(argv):
         arg = argv[idx]
@@ -838,7 +852,7 @@ def _preview_main(argv: list[str]) -> int:
             if idx + 1 >= len(argv) or argv[idx + 1] != "json":
                 print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
                 return 64
-            format_opt = argv[idx + 1]
+            _format_opt = argv[idx + 1]
             idx += 2
         else:
             print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
@@ -1485,7 +1499,7 @@ def _full_stat_binding(info: os.stat_result) -> tuple[int, ...]:
 
 
 def _bound_git_worktree_root(
-    raw: bytes, canonical_root: str, root_binding: tuple[int, ...],
+    raw: bytes | None, canonical_root: str, root_binding: tuple[int, ...],
 ) -> bool:
     """Accept only Git's exact bound-root spelling or macOS's /var alias.
 
@@ -1762,9 +1776,9 @@ def _bounded_git_read(
             ready = selector.select(remaining)
             if not ready:
                 return None
-            for key, events in ready:
+            for selector_key, events in ready:
                 if events & selectors.EVENT_READ:
-                    if key.fileobj == status_read:
+                    if selector_key.fileobj == status_read:
                         piece = os.read(status_read, 33 - len(status))
                         if not piece:
                             return None
@@ -1780,7 +1794,7 @@ def _bounded_git_read(
                         selector.unregister(status_read)
                         os.close(status_read)
                         status_read = -1
-                    elif key.fileobj is process.stdout:
+                    elif selector_key.fileobj is process.stdout:
                         amount = min(65536, output_limit + 1 - len(output))
                         piece = os.read(process.stdout.fileno(), amount)
                         if not piece:
@@ -1800,7 +1814,7 @@ def _bounded_git_read(
                                 return None
                 if events & selectors.EVENT_WRITE:
                     if sent == len(payload):
-                        selector.unregister(key.fileobj)
+                        selector.unregister(selector_key.fileobj)
                         os.close(payload_write)
                         payload_write = -1
                     else:
@@ -1839,9 +1853,9 @@ def _bounded_git_read(
         if status_read >= 0:
             os.close(status_read)
         if process is not None:
-            for stream in (process.stdout, process.stderr):
-                if stream is not None and not stream.closed:
-                    stream.close()
+            for remaining_stream in (process.stdout, process.stderr):
+                if remaining_stream is not None and not remaining_stream.closed:
+                    remaining_stream.close()
 
 
 def _git_boundary_identity(workdir: str) -> dict[str, Any] | None:
@@ -2308,7 +2322,7 @@ def _worktree_snapshot(
             scan.
             """
             return git_read(
-                _BoundGitReadArguments(arguments, git_dir_boundary), payload, allowed=allowed,
+                _BoundGitReadArguments(arguments, cast(tuple[str, tuple[int, ...]], git_dir_boundary)), payload, allowed=allowed,
             )
 
         if not bound_git_worktree():
@@ -2390,13 +2404,13 @@ def _worktree_snapshot(
             ):
                 return None
             if not legacy:
-                parsed_resolve_undo = _parse_resolve_undo(resolve_undo[1], object_length)  # type: ignore[index]
+                parsed_resolve_undo = _parse_resolve_undo(cast(tuple[int, bytes], resolve_undo)[1], object_length)
                 if parsed_resolve_undo is None or parsed_resolve_undo:
                     if explain_unsupported and parsed_resolve_undo:
                         second_resolve_undo = bound_git_read(["ls-files", "--resolve-undo", "-z"])
                         if (
                             second_resolve_undo is not None
-                            and second_resolve_undo[1] == resolve_undo[1]
+                            and second_resolve_undo[1] == cast(tuple[int, bytes], resolve_undo)[1]
                             and index_binding(index_path) == before_index
                             and _parse_resolve_undo(second_resolve_undo[1], object_length) == parsed_resolve_undo
                         ):
@@ -4192,7 +4206,7 @@ def _reconcile_stage_to_source(
                         parent_path = "/".join(parts[:parent_index])
                         creator = created_directory_indexes.get(parent_path)
                         if op["op"] != "create" or creator is None or creator >= index:
-                            raise DispatchError("reconciliation parent is unavailable")
+                            raise DispatchError("reconciliation parent is unavailable")  # noqa: B904 -- preserve existing exception context and public diagnostics
                         # Stage mutation generation orders parent directory
                         # creates before descendants. A missing source parent
                         # therefore has no prior target to bind; the normal

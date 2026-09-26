@@ -972,7 +972,7 @@ def _run_child(paths: Layout) -> tuple[int, bytes, bytes]:
             or any(value not in b"SA" for value in acknowledgements)
         ):
             raise NotifierError("interrupted child lacked nested cleanup acknowledgement") from exc
-        raise interrupted
+        raise interrupted  # noqa: B904 -- preserve existing exception context and public diagnostics
     finally:
         for descriptor in (sentinel_read, sentinel_write, ack_read, ack_write):
             if descriptor >= 0:

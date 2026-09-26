@@ -12,7 +12,7 @@ and public-documentation changes must also follow the
 
 - Keep the worker outside the trust boundary. Do not weaken `qa-gate.sh` to make a
   candidate pass.
-- Keep the runtime Bash + Python 3 + git. Do not add a package manager or daemon.
+- Keep the runtime Bash + Python 3.9+ + git. Do not add a package manager or daemon.
 - Preserve explicit permission, privacy, and external-action boundaries.
 - Open security reports through the private route in [SECURITY.md](SECURITY.md), not
   a public issue.
@@ -27,6 +27,34 @@ During implementation, run the owning focused suite from the relevant
 [`REPO_MAP`](docs/REPO_MAP.md) row. Do not repeatedly run the full suite while the
 same candidate bytes are unchanged.
 
+Install the pinned development tools in a temporary virtual environment (Python
+3.9 or newer), leaving the shipped runtime and system Python unchanged:
+
+```bash
+QUALITY_VENV="$(mktemp -d)/quality-venv"
+python3 -m venv "$QUALITY_VENV"
+"$QUALITY_VENV/bin/python" -m pip --isolated install --no-cache-dir -r requirements-dev.txt
+. "$QUALITY_VENV/bin/activate"
+```
+
+The local quality command is required before review:
+
+```bash
+RUFF_NO_CACHE=true ruff check . && mypy
+```
+
+`pyproject.toml` owns the Python 3.9 target and the documented lint baseline;
+Mypy checks the canonical runtime scripts, and its cache is disabled. Exact direct
+and transitive development versions live in `requirements-dev.txt`. They are not
+runtime dependencies. Dependency hashes are not locked: the version pins allow
+platform-specific wheels and do not claim artifact integrity. Upgrade the pins as a
+reviewed unit while preserving Python 3.9 support.
+
+CI runs this command in a separate required `quality` job. The aggregate `test`
+check requires its explicit success, including rejecting skipped or cancelled jobs.
+The canonical offline registry remains standard-library-only and does not install
+or depend on the development tools.
+
 Once the candidate is stable, run the canonical offline CI body once before
 requesting review:
 
@@ -35,7 +63,7 @@ requesting review:
 ```
 
 It is fail-fast, requires no network or provider call, does not intentionally inspect
-account-HOME contents, externalizes temporary bytecode, and runs the static checks plus
+account-HOME contents, externalizes temporary bytecode, and runs shell/Python syntax checks plus
 all registered offline stages. Ambient local tools may still consult ordinary user
 configuration. In GitHub Actions, the suite is partitioned across four fail-closed shards
 (`dispatcher`, `dispatcher-remediation`, `other-a`, `other-b`) and validated by the required aggregate

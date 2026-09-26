@@ -15,7 +15,7 @@ import re
 import secrets
 import stat
 import sys
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 
 sys.dont_write_bytecode = True
 
@@ -1346,7 +1346,7 @@ def evaluate_campaign(
     anchor_matches = True
     identity_matches = True
     substituted = False
-    drift_detected = False
+    _drift_detected = False
     telemetry_compatible = True
     budget_within_limits = True
     uncertainty_acceptable = True
@@ -1359,7 +1359,7 @@ def evaluate_campaign(
         or plan["trigger"]["maintainer_disposition"] != "collect"
     ):
         anchor_matches = False
-        drift_detected = True
+        _drift_detected = True
 
     if (
         not isinstance(review, dict)
@@ -1369,17 +1369,17 @@ def evaluate_campaign(
         or matrix_sha is None
     ):
         anchor_matches = False
-        drift_detected = True
+        _drift_detected = True
     else:
         if review_sha != plan["anchors"]["benchmark_review_sha256"]:
             anchor_matches = False
-            drift_detected = True
+            _drift_detected = True
         if review.get("status") != "benchmark-review-due":
             anchor_matches = False
-            drift_detected = True
+            _drift_detected = True
         if review.get("maintainer_disposition") != "collect":
             anchor_matches = False
-            drift_detected = True
+            _drift_detected = True
         reviews_due = review.get("reviews_due", [])
         matching_due = [
             it for it in reviews_due
@@ -1389,17 +1389,17 @@ def evaluate_campaign(
         ]
         if not matching_due:
             anchor_matches = False
-            drift_detected = True
+            _drift_detected = True
 
     if dataset_sha != plan["anchors"]["dataset_sha256"]:
         anchor_matches = False
-        drift_detected = True
+        _drift_detected = True
     if inventory_sha != plan["anchors"]["inventory_binding_sha256"]:
         anchor_matches = False
-        drift_detected = True
+        _drift_detected = True
     if matrix_sha != plan["anchors"]["model_matrix_sha256"]:
         anchor_matches = False
-        drift_detected = True
+        _drift_detected = True
 
     # Build cohort record list
     all_cohort_records: list[dict[str, Any]] = []
@@ -2770,7 +2770,7 @@ def main(argv: Sequence[str]) -> int:
             return 2
 
         try:
-            plan, _, _ = read_json_file(plan_path)
+            plan, _, _ = read_json_file(cast(Path, plan_path))
             validate_plan(plan)
 
             assert review_path is not None and inventory_path is not None
@@ -2842,7 +2842,7 @@ def main(argv: Sequence[str]) -> int:
             return 2
 
         try:
-            plan, plan_sha, _ = read_json_file(plan_path)
+            plan, plan_sha, _ = read_json_file(cast(Path, plan_path))
             records = collect_record_files(record_args)
 
             assert review_path is not None and dataset_path is not None
@@ -2878,7 +2878,7 @@ def main(argv: Sequence[str]) -> int:
         inventory_path = None
         matrix_path = None
         out_path = None
-        record_args: list[str] = []
+        record_args = []
 
         idx = 0
         while idx < len(subcmd_args):
@@ -2929,7 +2929,7 @@ def main(argv: Sequence[str]) -> int:
             return 2
 
         try:
-            plan, plan_sha, _ = read_json_file(plan_path)
+            plan, plan_sha, _ = read_json_file(cast(Path, plan_path))
             records = collect_record_files(record_args)
             cand_records = [(r, r_sha) for r, r_sha in records if r["subject_role"] == "candidate"]
             anc_records = [(r, r_sha) for r, r_sha in records if r["subject_role"] == "anchor"]
@@ -2937,8 +2937,8 @@ def main(argv: Sequence[str]) -> int:
                 raise ModelEvidenceCampaignError("materialize-measured requires exactly one candidate record")
             candidate_record, candidate_record_sha = cand_records[0]
 
-            eval_dict, eval_sha, _ = read_json_file(evaluation_path)
-            dataset, ds_sha, _ = read_json_file(dataset_path, max_bytes=MAX_DATASET_BYTES)
+            eval_dict, eval_sha, _ = read_json_file(cast(Path, evaluation_path))
+            dataset, ds_sha, _ = read_json_file(cast(Path, dataset_path), max_bytes=MAX_DATASET_BYTES)
             assert review_path is not None and inventory_path is not None and matrix_path is not None
             review, review_sha, _ = read_json_file(review_path)
             inventory, inventory_sha, _ = read_json_file(inventory_path)
@@ -2956,7 +2956,7 @@ def main(argv: Sequence[str]) -> int:
                 matrix=matrix, matrix_sha=matrix_sha,
             )
             formatted = json.dumps(new_dataset, indent=2) + "\n"
-            publish_file_atomically(out_path, formatted.encode("utf-8"))
+            publish_file_atomically(cast(Path, out_path), formatted.encode("utf-8"))
             sys.stdout.write(formatted)
             return 0
         except Exception as exc:
@@ -2985,7 +2985,7 @@ def main(argv: Sequence[str]) -> int:
 
     elif subcmd == "advisory-export":
         approve_sha: str | None = None
-        out_path: Path | None = None
+        out_path = None
         advisory_args: list[str] = []
         idx = 0
         while idx < len(subcmd_args):
@@ -3062,7 +3062,7 @@ def main(argv: Sequence[str]) -> int:
             return 2
 
     elif subcmd == "aggregate-export":
-        approve_sha: str | None = None
+        approve_sha = None
         out_path = None
 
         idx = 0

@@ -8,10 +8,8 @@ import hashlib
 import importlib.util
 import json
 import os
-import pathlib
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import tempfile

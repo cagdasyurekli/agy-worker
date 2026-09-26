@@ -354,7 +354,7 @@ def operation_constants(spec: VersionSpec, operation: str) -> Dict[str, object]:
             CAPTURE_SNAPSHOT_POLICY=spec.capture_snapshot_policy,
         )
     if operation == "capture":
-        result = dict(common, OUTPUT_PROFILE_NAME=spec.output_profile_name, CAPTURE_SNAPSHOT_POLICY=spec.capture_snapshot_policy)
+        result: dict[str, object] = dict(common, OUTPUT_PROFILE_NAME=spec.output_profile_name, CAPTURE_SNAPSHOT_POLICY=spec.capture_snapshot_policy)
         if spec.capture_snapshot_policy != "stable":
             if spec.capture_runner_source_sha256 is None:
                 raise EngineError("version does not bind the shared capture runner")

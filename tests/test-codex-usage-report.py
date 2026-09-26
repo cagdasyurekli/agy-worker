@@ -7,12 +7,10 @@ import json
 import os
 import pathlib
 import runpy
-import stat
 import sys
 import tempfile
-import time
 import unittest
-from typing import Any
+from typing import Any, Optional
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]

@@ -20,7 +20,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
-from typing import Any
+from typing import Any, IO, cast
 
 
 SCHEMA = "agy-worker.feedback-triage.v1"
@@ -302,7 +302,7 @@ def bounded_fetch(command: list[str], environment: dict[str, str]) -> bytes:
             for key, _mask in events:
                 if key.data == "stdout":
                     allowance = MAX_INPUT_BYTES + 1 - len(output)
-                    chunk = os.read(key.fileobj.fileno(), min(READ_CHUNK_BYTES, allowance))
+                    chunk = os.read(cast(IO[bytes], key.fileobj).fileno(), min(READ_CHUNK_BYTES, allowance))
                     if not chunk:
                         selector.unregister(key.fileobj)
                         output_eof = True
