@@ -33,6 +33,7 @@ PROVIDER_SCHEMA = ROOT / "skills/agy-worker/runtime/schemas/worker-result.provid
 spec = importlib.util.spec_from_file_location("agy_dispatch_remediation", SOURCE)
 MODULE = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = MODULE
 spec.loader.exec_module(MODULE)
 
 def worktree_function_source(name: str) -> str:
@@ -45,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 116
+EXPECTED_CHECKS = 120
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -55,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 68, "runtime": 1, "recovery": 47}
+GROUP_CHECKS = {"core": 72, "runtime": 1, "recovery": 47}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -169,6 +170,7 @@ fixture_kind = sys.argv[4]
 spec = importlib.util.spec_from_file_location("agy_dispatch_linux_fixture", source)
 dispatch = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = dispatch
 spec.loader.exec_module(dispatch)
 
 
@@ -373,7 +375,174 @@ def run_scoped_controller(
         MODULE.WORKTREE._materialize_stage = original_materialize
 
 
+def controller_monitor_decisions_preserve_lazy_precedence() -> None:
+    state = {"cancel_requested": False, "max_seconds": 20, "hard_seconds": 15,
+             "idle_seconds": 5, "self_verification_elapsed_seconds": 0}
+    def decide(elapsed=0.0, now=0.0, stop=None, **updates):
+        return MODULE._controller_monitor_limit(
+            {**state, **updates}, stop, elapsed, now, 0.0, float_hard=True,
+        )
+    assert decide(14.0, 4.0) is None
+    assert decide(20.0, 5.0) == ("hard_deadline_exceeded", "max-runtime")
+    assert decide(15.0, 5.0) == ("hard_deadline_exceeded", "hard")
+    assert decide(14.0, 5.0) == ("idle_timeout", "idle")
+    assert decide(20.0, 5.0, cancel_requested=True) == ("cancelled", None)
+    assert decide(20.0, 5.0, signal.SIGTERM, cancel_requested=True) == ("interrupted", None)
+    assert decide(10.0, 5.0, self_verification_elapsed_seconds=10) == (
+        "hard_deadline_exceeded", "max-runtime",
+    )
+    # Winning controls and limits must not evaluate a later unavailable field.
+    assert MODULE._controller_monitor_limit(
+        {"cancel_requested": True}, None, 0, 0, 0, float_hard=True,
+    ) == ("cancelled", None)
+    assert MODULE._controller_monitor_limit(
+        {"cancel_requested": False}, signal.SIGINT, 0, 0, 0, float_hard=True,
+    ) == ("interrupted", None)
+    assert MODULE._controller_monitor_limit(
+        {"cancel_requested": False, "max_seconds": 0}, None, 0, 0, 0,
+        float_hard=True,
+    ) == ("hard_deadline_exceeded", "max-runtime")
+    for coerce in (False, True):
+        assert MODULE._controller_monitor_limit(
+            {"cancel_requested": False, "max_seconds": 10, "hard_seconds": 0},
+            None, 0, 0, 0, float_hard=coerce,
+        ) == ("hard_deadline_exceeded", "hard")
+
+
+def controller_wait_uses_each_clock_and_zero_floor() -> None:
+    state = {"max_seconds": 100, "hard_seconds": 100, "idle_seconds": 100,
+             "attempt_base_elapsed": 0}
+    now = 10.0
+    delta = 0.0625  # exactly representable across boundary subtraction
+    assert delta < MODULE.CONTROL_POLL
+    assert MODULE._controller_wait_seconds(state, 0, 0, 100, now) == MODULE.CONTROL_POLL
+    for field in ("max_seconds", "hard_seconds", "idle_seconds"):
+        bounded = {**state, field: now + delta}
+        assert MODULE._controller_wait_seconds(bounded, 0, 0, 100, now) == delta
+        for boundary in (now, now - 1):
+            assert MODULE._controller_wait_seconds(
+                {**state, field: boundary}, 0, 0, 100, now,
+            ) == 0
+    assert MODULE._controller_wait_seconds(state, 0, 0, now + delta, now) == delta
+    assert MODULE._controller_wait_seconds(state, 0, 0, now, now) == 0
+    assert MODULE._controller_wait_seconds(state, 0, 0, now - 1, now) == 0
+    assert MODULE._controller_wait_seconds(
+        {**state, "max_seconds": 15, "attempt_base_elapsed": 5}, 0, 0, 100, now,
+    ) == 0
+    assert MODULE._controller_wait_seconds(
+        {**state, "max_seconds": 15, "self_verification_elapsed_seconds": 5},
+        0, 0, 100, now,
+    ) == 0
+
+
+def controller_terminal_policy_preserves_candidate_facts() -> None:
+    current = {
+        "cancel_requested": False, "attempt_origin": "initial",
+        "candidate_recognized": False, "candidate_source": "none",
+        "result_available": False, "failure_stage": None,
+        "result_path": None, "result_sha256": None, "result_identity": None,
+        "candidate_worktree_sha256": None, "candidate_worktree_entries": None,
+    }
+    bound = ("a" * 64, (1, 2, 3, 4, 5))
+    candidate = MODULE._CandidateReconciliation(candidate_worktree={"sha256": "b" * 64})
+    for reason, expected in [(None, "succeeded"), ("cancelled", "cancelled"),
+                             ("provider_terminal_cancelled", "cancelled"),
+                             ("hard_deadline_exceeded", "failed")]:
+        status, code = MODULE._controller_terminal_status(reason, None)
+        assert status == expected
+        assert code == (0 if reason is None else MODULE.EXIT_BY_REASON[reason])
+    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        assert MODULE._controller_terminal_status("interrupted", number) == (
+            "cancelled", 128 + number,
+        )
+    for outer, source in [("SUCCESS", "provider_success"), ("ERROR", "provider_error"),
+                          ("CANCELLED", "provider_cancelled")]:
+        outcome = MODULE._ControllerOutcome(
+            reason="hard_deadline_exceeded", final_status="failed",
+            exit_code=MODULE.EXIT_BY_REASON["hard_deadline_exceeded"],
+            result_binding=bound, outer_status=outer,
+        )
+        projected, disposition = MODULE._classify_controller_candidate(outcome, candidate, current)
+        assert projected is not outcome and projected == outcome
+        assert projected.reason == "hard_deadline_exceeded"
+        assert projected.result_binding == bound
+        assert disposition.candidate_source == source
+        assert disposition.candidate_recognized and not disposition.candidate_unavailable
+        unavailable, facts = MODULE._classify_controller_candidate(
+            outcome, MODULE._CandidateReconciliation(), current,
+        )
+        assert unavailable.reason == "status_unavailable"
+        assert unavailable.failure_stage == "binding_failure"
+        assert unavailable.result_binding == bound
+        assert facts.terminal_snapshot_unavailable and facts.candidate_unavailable
+        assert outcome.reason == "hard_deadline_exceeded"  # input is unchanged
+    cancelled, facts = MODULE._classify_controller_candidate(
+        outcome, candidate, {**current, "cancel_requested": True},
+    )
+    assert cancelled.reason == "cancelled" and cancelled.result_binding is None
+    assert not facts.candidate_recognized
+    previous = {**current, "attempt_origin": "conversation-continue",
+                "candidate_recognized": True, "candidate_source": "provider_error",
+                "result_available": True, "result_path": "/private/result",
+                "result_sha256": "a" * 64, "result_identity": [1, 2, 3, 4, 5],
+                "candidate_worktree_sha256": "b" * 64, "candidate_worktree_entries": 1}
+    stopped = MODULE._ControllerOutcome(reason="cancelled", final_status="cancelled", exit_code=22)
+    for missing in (None, "result_sha256", "candidate_worktree_sha256"):
+        projection, facts = MODULE._classify_controller_candidate(
+            stopped, MODULE._CandidateReconciliation(),
+            previous if missing is None else {**previous, missing: None},
+        )
+        assert facts.preserve_candidate_forensics and facts.candidate_recognized
+        assert projection.reason == ("cancelled" if missing is None else "status_unavailable")
+        assert facts.candidate_unavailable == (missing is not None)
+
+
+def controller_signal_and_context_ownership_are_isolated() -> None:
+    execution = MODULE._ProviderExecution()
+    MODULE._latch_controller_signal(execution, signal.SIGTERM)
+    MODULE._latch_controller_signal(execution, signal.SIGINT)
+    assert execution.stop_signal == signal.SIGTERM
+    watched = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    assert MODULE._controller_completion_signal(watched, {signal.SIGHUP}, execution.stop_signal) == signal.SIGHUP
+    assert MODULE._controller_completion_signal(watched, {signal.SIGTERM}, signal.SIGINT) == signal.SIGINT
+    assert MODULE._controller_completion_signal(watched, set(), execution.stop_signal) == signal.SIGTERM
+    assert MODULE._controller_completion_signal(watched, set(), None) is None
+    first = MODULE._ControllerStreams(Path("one"), Path("two"), Path("three"))
+    second = MODULE._ControllerStreams(Path("one"), Path("two"), Path("three"))
+    first.buffers["stdout"].extend(b"private")
+    first.sizes["stdout"] = 7
+    assert second.buffers["stdout"] == bytearray() and second.sizes["stdout"] == 0
+    assert first.stdout_fd == second.stdout_fd == -1 and first.selector is None
+    names = ("agy_controller_context_copy_one", "agy_controller_context_copy_two")
+    previous = {name: sys.modules.get(name) for name in names}
+    copies = []
+    try:
+        for name in (*names, names[0]):
+            copied_spec = importlib.util.spec_from_file_location(name, SOURCE)
+            copied = importlib.util.module_from_spec(copied_spec)
+            assert copied_spec.loader is not None
+            sys.modules[copied_spec.name] = copied
+            copied_spec.loader.exec_module(copied)
+            copies.append(copied)
+            assert copied._ControllerBinding().state == {}
+            assert sys.modules[name] is copied
+        assert len({copy_module._ControllerBinding for copy_module in copies}) == 3
+        assert all(copy_module._ControllerBinding is not MODULE._ControllerBinding for copy_module in copies)
+        copies[0]._ControllerBinding().state["private"] = True
+        assert copies[1]._ControllerBinding().state == {}
+    finally:
+        for name, prior in previous.items():
+            if prior is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prior
+
+
 with tempfile.TemporaryDirectory() as temporary:
+    check("controller pure monitor decisions preserve lazy limit precedence", controller_monitor_decisions_preserve_lazy_precedence)
+    check("controller pure wait uses each clock and the zero floor", controller_wait_uses_each_clock_and_zero_floor)
+    check("controller pure terminal policy preserves candidate facts", controller_terminal_policy_preserves_candidate_facts)
+    check("controller signals and context ownership stay isolated", controller_signal_and_context_ownership_are_isolated)
     root = Path(temporary)
     provider = root / "provider.json"
     provider_schema(provider)
@@ -651,6 +820,7 @@ with tempfile.TemporaryDirectory() as temporary:
         copied_spec = importlib.util.spec_from_file_location("agy_dispatch_folder_copy", copied_source)
         copied_module = importlib.util.module_from_spec(copied_spec)
         assert copied_spec.loader is not None
+        sys.modules[copied_spec.name] = copied_module
         copied_spec.loader.exec_module(copied_module)
         copied_job = log_root / "folder-format"; copied_job.mkdir(mode=0o700)
         copied_command = dict(command, job_id="folder-format")

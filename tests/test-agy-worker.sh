@@ -714,6 +714,7 @@ def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -1599,6 +1600,7 @@ job.mkdir(mode=0o700)
 spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_queued_v6", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 command = json.loads(Path(template_text).read_text(encoding="utf-8"))
@@ -1778,6 +1780,7 @@ source, job_text = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("scoped_repair_command", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 command, _raw, _identity = module.load_command(Path(job_text).resolve())
 assert command["schema_version"] == 11
@@ -2025,6 +2028,7 @@ assert (Path(sys.argv[3]) / "boost-target.txt").read_text(encoding="utf-8") == "
 spec = importlib.util.spec_from_file_location("agy_dispatch_prompt_test", sys.argv[5])
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 weird_root = Path('/private/tmp/space "quote" \\ slash\nline/stage-001')
 synthetic = ["agy", "--print", "ORIGINAL-PROMPT"]
@@ -4828,6 +4832,7 @@ import sys
 
 spec = importlib.util.spec_from_file_location("agy_dispatch_quota_contract", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 root = Path(sys.argv[2])
 canonical = (
@@ -5325,6 +5330,7 @@ workdir = str(Path(workdir).resolve())
 spec = importlib.util.spec_from_file_location("agy_dispatch_queued_cancel", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 job = Path(job_text).resolve()
 job.mkdir(mode=0o700)
@@ -5374,6 +5380,7 @@ source, job_text = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("agy_dispatch_state_snapshot", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 job = Path(job_text).resolve()
 job.mkdir(mode=0o700)
@@ -5410,6 +5417,7 @@ source, job_text, done_text, blocked_text, acquired_text = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("agy_dispatch_state_writer", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 job = Path(job_text)
 lock_fd = os.open(
@@ -5490,7 +5498,7 @@ import importlib.util
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_orphan", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(sys.argv[2])
 command, raw, identity = module.load_command(job)
 state = module.initial_state(
@@ -5661,7 +5669,7 @@ import sys
 source = Path(sys.argv[1]).resolve()
 root = Path(sys.argv[2]).resolve()
 spec = importlib.util.spec_from_file_location("agy_dispatch_v2_continue_parity", source)
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 
 repo = root / "historical-v2-direct-repo"; repo.mkdir()
 subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -6228,7 +6236,7 @@ import importlib.util
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_project_orphan", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(sys.argv[2])
 state, raw, _sha = module.load_state(job)
 state.update({
@@ -6286,7 +6294,7 @@ import importlib.util
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_v1", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(sys.argv[2])
 state, _raw, _sha = module.load_state(job)
 for field in module.STATE_PROJECT_FIELDS:
@@ -6365,7 +6373,7 @@ from pathlib import Path
 old = json.load(open(sys.argv[1], encoding="utf-8"))
 stored = json.load(open(sys.argv[2], encoding="utf-8"))
 spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_assert", sys.argv[3])
-module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); assert spec.loader is not None; sys.modules[spec.name] = module; spec.loader.exec_module(module)
 assert old["next_action"] == "result"
 assert old["next_action_command"] == '"$PIPELINE/agy-worker.sh" result --job-id resume-case --format json'
 assert old["phase"] is None and old["assurance"] is None
@@ -6387,7 +6395,7 @@ from pathlib import Path
 import sys
 source, job_text, workdir = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("agy_dispatch_rollback", source)
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(job_text)
 before = (job / module.STATE_NAME).read_bytes()
 state, _raw, sha = module.load_state(job)
@@ -6431,7 +6439,7 @@ import os
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_boundary_cap", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 root = Path(sys.argv[2]).resolve(); root.mkdir(mode=0o700)
 (root / ".git").write_text("gitdir: bounded\n", encoding="ascii")
 (root / "one").write_text("1", encoding="ascii")

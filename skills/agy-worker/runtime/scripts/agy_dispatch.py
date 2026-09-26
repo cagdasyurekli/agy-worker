@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import fcntl
 import hashlib
 from functools import partial
@@ -26,7 +27,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import Any, Iterator, NamedTuple, NoReturn, IO, cast
+from typing import AbstractSet, Any, Iterator, NamedTuple, NoReturn, IO, cast
 
 sys.dont_write_bytecode = True
 
@@ -4399,18 +4400,1587 @@ def _validate_terminal_envelope(
     return (digest(raw), _identity(info)), outer_status, None
 
 
-def controller(job: Path, ownership_fd: int) -> int:
+@dataclasses.dataclass
+class _ControllerBinding:
+    state: dict[str, Any] = dataclasses.field(default_factory=dict)
+    prior_raw: bytes = b""
+    command: dict[str, Any] = dataclasses.field(default_factory=dict)
+    feedback: Path | None = None
+    schema_paths: tuple[Path, Path] | None = None
+
+
+@dataclasses.dataclass
+class _ProviderExecution:
     stop_signal: int | None = None
     process: subprocess.Popen[bytes] | None = None
     started_mono: float | None = None
     runtime_end_mono: float | None = None
-    runtime_frozen = False
-    idle_timeout_with_exited_provider = False
+    runtime_frozen: bool = False
+    idle_timeout_with_exited_provider: bool = False
+    elapsed: float = 0.0
+    heartbeat_mono: float = 0.0
+    next_notice: float = 0.0
+    returncode: int = 0
+
+
+@dataclasses.dataclass
+class _ControllerStreams:
+    stream_path: Path
+    stderr_path: Path
+    envelope_path: Path
+    stdout_fd: int = -1
+    stderr_fd: int = -1
+    selector: selectors.BaseSelector | None = None
+    buffers: dict[str, bytearray] = dataclasses.field(
+        default_factory=lambda: {"stdout": bytearray(), "stderr": bytearray()},
+    )
+    sizes: dict[str, int] = dataclasses.field(
+        default_factory=lambda: {"stdout": 0, "stderr": 0},
+    )
+
+
+@dataclasses.dataclass
+class _ScopedLaunch:
+    argv: list[str] = dataclasses.field(default_factory=list)
+    launch_cwd: str = ""
+    executable_binding: tuple[str, dict[str, Any]] | None = None
+    stage_dir: Path | None = None
+    scope: dict[str, Any] | None = None
+    selected_manifest: list[dict[str, Any]] | None = None
+    stage_manifest_sha: str | None = None
+    stage_identity: tuple[int, int, int, int, int] | None = None
+    narrow_source_snapshot: dict[str, Any] | None = None
+    scoped_executable: str | None = None
+    prepared_containment: CONTAINMENT.PreparedContainedLaunch | None = None
+    contained_root: CONTAINMENT.ProcessIdentity | None = None
+
+
+@dataclasses.dataclass
+class _ControllerOutcome:
+    reason: str | None = None
+    limit_kind: str | None = None
+    failure_stage: str | None = None
+    saw_init: bool = False
+    saw_terminal: bool = False
+    result_binding: tuple[str, tuple[int, int, int, int, int]] | None = None
+    outer_status: str | None = None
+    provider_retry_after: int | None = None
+    provider_retry_observed: float | None = None
+    boundary_failed: bool = False
+    cleanup_failed: bool = False
+    final_status: str = "failed"
+    exit_code: int = 0
+    result_path: str | None = None
+
+
+@dataclasses.dataclass
+class _CandidateReconciliation:
+    candidate_worktree: dict[str, Any] | None = None
+    reconciliation: dict[str, Any] = dataclasses.field(default_factory=dict)
+    reconciliation_manifest_sha: str | None = None
+    derived_selected_sha: str | None = None
+    derived_selected_files: int | None = None
+    derived_selected_trees: int | None = None
+    derived_transmission_sha: str | None = None
+
+
+def _controller_monitor_limit(
+    state: dict[str, Any], stop_signal: int | None, elapsed: float,
+    now_mono: float, heartbeat_mono: float, *, float_hard: bool,
+) -> tuple[str, str | None] | None:
+    """Classify a sample without evaluating limits after a winning control."""
+    if state["cancel_requested"] or stop_signal is not None:
+        return ("cancelled" if stop_signal is None else "interrupted"), None
+    if elapsed >= _provider_max_seconds(state):
+        return "hard_deadline_exceeded", "max-runtime"
+    hard_seconds = float(state["hard_seconds"]) if float_hard else state["hard_seconds"]
+    if elapsed >= hard_seconds:
+        return "hard_deadline_exceeded", "hard"
+    if now_mono - heartbeat_mono >= float(state["idle_seconds"]):
+        return "idle_timeout", "idle"
+    return None
+
+
+def _controller_wait_seconds(
+    state: dict[str, Any], started_mono: float, heartbeat_mono: float,
+    next_notice: float, now_mono: float,
+) -> float:
+    """Bound a selector wait by the first controller-owned clock."""
+    wait_until = min(
+        started_mono + max(0.0, _provider_max_seconds(state) - float(state["attempt_base_elapsed"])),
+        started_mono + max(0.0, float(state["hard_seconds"]) - float(state["attempt_base_elapsed"])),
+        heartbeat_mono + float(state["idle_seconds"]),
+        next_notice,
+    )
+    return min(CONTROL_POLL, max(0.0, wait_until - now_mono))
+
+
+def _controller_terminal_status(
+    reason: str | None, stop_signal: int | None,
+) -> tuple[str, int]:
+    if reason is None:
+        return "succeeded", 0
+    status = "cancelled" if reason in {
+        "cancelled", "interrupted", "provider_terminal_cancelled",
+    } else "failed"
+    return status, 128 + stop_signal if stop_signal is not None else EXIT_BY_REASON[reason]
+
+
+def _controller_completion_signal(
+    watched: tuple[int, ...], pending: AbstractSet[int], stop_signal: int | None,
+) -> int | None:
+    for candidate in watched:
+        if candidate in pending or candidate == stop_signal:
+            return candidate
+    return stop_signal
+
+
+def _latch_controller_signal(execution: _ProviderExecution, number: int) -> None:
+    if execution.stop_signal is None:
+        execution.stop_signal = number
+
+
+@dataclasses.dataclass
+class _CandidateDisposition:
+    preserve_candidate_forensics: bool = False
+    terminal_snapshot_unavailable: bool = False
+    candidate_recognized: bool = False
+    candidate_unavailable: bool = False
+    candidate_source: str = "none"
+    provider_terminal_status: str = "unknown"
+    preserved_path: str | None = None
+    preserved_sha: str | None = None
+    preserved_identity: list[int] | None = None
+
+
+def _claim_controller_attempt(
+    job: Path,
+    binding: _ControllerBinding,
+) -> int | None:
+    # Claim the queued attempt under one state lock.  A cancel can land
+    # between process spawn and this point, but never between this exact
+    # queued observation and controller ownership publication.
+    cancelled_before_claim = False
+    with state_lock(job):
+        binding.state, binding.prior_raw, _sha = load_state(job)
+        if binding.state["status"] == "cancel-requested" and binding.state["cancel_requested"]:
+            cancelled_before_claim = True
+        elif binding.state["status"] != "queued" or binding.state["cancel_requested"]:
+            raise DispatchError("dispatch is not queued")
+        else:
+            # A queued state with this exact PID is the startup handshake; it
+            # means the private controller is alive, not that a provider
+            # process exists or that provider runtime has started.
+            binding.state, binding.prior_raw, _sha = _transition_locked(job, binding.state, binding.prior_raw, {
+                "controller_pid": os.getpid(),
+            })
+    if cancelled_before_claim:
+        _terminalize_owned(
+            job, binding.state, status="cancelled", reason="cancelled",
+            exit_code=EXIT_BY_REASON["cancelled"], expected_controller_pid=None,
+        )
+        return EXIT_BY_REASON["cancelled"]
+    return None
+
+
+def _bind_controller_inputs(
+    job: Path,
+    binding: _ControllerBinding,
+) -> int | None:
+    binding.feedback = None
+    binding.schema_paths = None
+    try:
+        binding.command = _load_bound_command(job, binding.state, stage_readonly=False)
+        MODEL_SELECTION.ACTIVE_CHILD_ENV = list(binding.command["provider_env"])
+        _load_bound_selection(binding.command, binding.state)
+        binding.schema_paths = _bound_schemas(binding.command, binding.state)
+        if not WORKTREE._worktree_symlink_boundary(binding.command["workdir"]):
+            raise DispatchError("dispatch worktree symlink boundary changed")
+        if binding.state["workflow"] == "project":
+            if WORKTREE._project_boundary(binding.command["workdir"]) != binding.state["project_boundary"]:
+                raise DispatchError("project worktree boundary changed")
+        if binding.state["attempt_origin"] == "conversation-continue":
+            binding.feedback = _bound_verification(job, binding.state)
+            if binding.feedback is None:
+                raise DispatchError("project continuation has no verification feedback")
+            binding.command, _candidate_raw = _bound_current_candidate(job, binding.state)
+    except (OSError, DispatchError):
+        terminal, _raw, _sha = _terminalize_owned(
+            job, binding.state, status="failed", reason="status_unavailable",
+            exit_code=EXIT_BY_REASON["status_unavailable"],
+            failure_stage="binding_failure", expected_controller_pid=os.getpid(),
+        )
+        return int(terminal["exit_code"])
+    return None
+
+
+def _open_controller_artifacts(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+) -> int | None:
+    # ``elapsed_seconds`` is provider execution time.  The strict local
+    # command/root/schema/worktree proofs below happen before a provider
+    # process exists, so they cannot consume the provider hard, maximum,
+    # or idle budgets.  This is especially important when a safe platform
+    # Git fallback makes those bounded probes materially slower.
+    execution.elapsed = float(binding.state["attempt_base_elapsed"])
+    try:
+        streams.stdout_fd = _ensure_new_private(streams.stream_path)
+        streams.stderr_fd = _ensure_new_private(streams.stderr_path)
+        _stage(binding.command, True)
+        _load_bound_command(job, binding.state, stage_readonly=True)
+        _load_bound_selection(binding.command, binding.state)
+        binding.schema_paths = _bound_schemas(binding.command, binding.state)
+    except (OSError, DispatchError):
+        if streams.stdout_fd >= 0: os.close(streams.stdout_fd)
+        if streams.stderr_fd >= 0: os.close(streams.stderr_fd)
+        with contextlib.suppress(OSError): _stage(binding.command, False)
+        terminal, _raw, _sha = _terminalize_owned(
+            job, binding.state, status="failed", reason="status_unavailable",
+            exit_code=EXIT_BY_REASON["status_unavailable"],
+            failure_stage="binding_failure", expected_controller_pid=os.getpid(),
+        )
+        return int(terminal["exit_code"])
+    return None
+
+
+def _build_controller_argv(
+    binding: _ControllerBinding,
+    launch: _ScopedLaunch,
+) -> None:
+    launch.argv = list(binding.command["argv"])
+    if binding.state["attempt_origin"] in {"conversation-resume", "conversation-continue"}:
+        conversation = binding.state["conversation_id"]
+        if not isinstance(conversation, str):
+            raise DispatchError("resume has no conversation")
+        print_index = launch.argv.index("--print")
+        prefix = ["--conversation", conversation]
+        prompt = binding.command["resume_prompt"]
+        if binding.state["attempt_origin"] == "conversation-continue":
+            if binding.feedback is None:
+                raise DispatchError("project continuation feedback was not prevalidated")
+            if binding.state.get("provider_scope_path") is None:
+                prefix.extend(["--add-dir", str(binding.feedback.parent)])
+                prompt = binding.command["continue_prompt"] + f" Feedback file: '{binding.feedback}'."
+            else:
+                feedback_raw, _feedback_info = read_regular(
+                    binding.feedback, MAX_VERIFICATION_BYTES, "verification feedback",
+                    allowed_modes=(0o400,),
+                )
+                prompt = (
+                    binding.command["continue_prompt"]
+                    + " Driver verification JSON follows inline:\n"
+                    + feedback_raw.decode("utf-8", "strict")
+                )
+        launch.argv[print_index + 1] = prompt
+        launch.argv[print_index:print_index] = prefix
+
+
+def _controller_transition(
+    job: Path,
+    binding: _ControllerBinding,
+    updates: dict[str, Any],
+) -> bool:
+    """Do not turn a concurrent approved control into a controller crash."""
+    try:
+        binding.state, binding.prior_raw, _sha = transition(job, binding.state, binding.prior_raw, updates)
+        return True
+    except DispatchError as exc:
+        if str(exc) != "dispatch state changed before transition":
+            raise
+        current, current_raw, _current_sha = read_state_snapshot(job)
+        if current["attempt"] != binding.state["attempt"]:
+            raise DispatchError("dispatch attempt changed during control")  # noqa: B904 -- preserve existing exception context and public diagnostics
+        binding.state, binding.prior_raw = current, current_raw
+        return False
+
+
+def _refresh_control_snapshot(
+    job: Path,
+    binding: _ControllerBinding,
+) -> None:
+    """Reload an approved control transition before using live limits."""
+    current, current_raw, _current_sha = read_state_snapshot(job)
+    if current_raw == binding.prior_raw:
+        return
+    if (
+        current["previous_state_sha256"] != digest(binding.prior_raw)
+        or current["sequence"] != binding.state["sequence"] + 1
+        or current["attempt"] != binding.state["attempt"]
+    ):
+        raise DispatchError("dispatch changed during provider control")
+    binding.state, binding.prior_raw = current, current_raw
+
+
+def _drain_reaped_streams(
+    streams: _ControllerStreams,
+    outcome: _ControllerOutcome,
+) -> None:
+    """Bind bytes emitted before reap without treating them as activity."""
+    for key in list(cast(selectors.BaseSelector, streams.selector).get_map().values()):
+        name = key.data
+        while True:
+            try:
+                chunk = os.read(key.fd, 65536)
+            except BlockingIOError:
+                break
+            except OSError:
+                outcome.reason = "status_unavailable"
+                outcome.failure_stage = "binding_failure"
+                return
+            if not chunk:
+                try:
+                    cast(selectors.BaseSelector, streams.selector).unregister(key.fileobj)
+                    cast(IO[bytes], key.fileobj).close()
+                except OSError:
+                    outcome.reason = "status_unavailable"
+                    outcome.failure_stage = "binding_failure"
+                break
+            streams.sizes[name] += len(chunk)
+            if streams.sizes[name] > MAX_STREAM_BYTES:
+                outcome.reason = "output_oversized"
+                return
+            try:
+                os.write(streams.stdout_fd if name == "stdout" else streams.stderr_fd, chunk)
+            except OSError:
+                outcome.reason = "status_unavailable"
+                outcome.failure_stage = "binding_failure"
+                return
+
+
+def _prepare_scoped_controller_launch(
+    job: Path,
+    binding: _ControllerBinding,
+    launch: _ScopedLaunch,
+) -> None:
+    _scope_path, raw_scope, scope_info = _read_provider_scope_file(
+        binding.state["provider_scope_path"], MAX_COMMAND_BYTES,
+    )
+    if digest(raw_scope) != binding.state["provider_scope_sha256"]:
+        raise DispatchError("provider scope file changed since dispatch")
+    if list(_identity(scope_info)) != binding.state["provider_scope_identity"]:
+        raise DispatchError("provider scope file identity changed since dispatch")
+    launch.scope = WORKTREE._parse_provider_scope(raw_scope)
+    readable_manifest = WORKTREE._scan_readable_worktree(binding.command["workdir"])
+    manifest_sha = WORKTREE._manifest_digest(readable_manifest)
+    WORKTREE._validate_scope_against_worktree(launch.scope, binding.command["workdir"], readable_manifest)
+    launch.selected_manifest = WORKTREE._build_selected_content_manifest(binding.command["workdir"], launch.scope)
+    selected_sha = WORKTREE._selected_content_digest(launch.selected_manifest)
+    policy_sha = WORKTREE._canonical_digest(launch.scope)
+    transmission_sha = _bound_transmission_sha256(
+        binding.command, policy_sha, manifest_sha, selected_sha,
+    )
+    _require_scoped_transmission_authority(
+        binding.command, binding.state,
+        selected_content_sha256=selected_sha,
+        transmission_sha256=transmission_sha,
+        provider_origin=binding.state["attempt_origin"],
+    )
+    launch.narrow_source_snapshot = WORKTREE._worktree_snapshot(binding.command["workdir"])
+    launch.stage_dir = job / f"stage-{binding.state['attempt']:03d}"
+    launch.stage_identity, launch.stage_manifest_sha = WORKTREE._materialize_stage(binding.command["workdir"], launch.stage_dir, launch.scope, launch.selected_manifest)
+    launch.launch_cwd = str(launch.stage_dir)
+    if launch.executable_binding is None:
+        try:
+            launch.executable_binding = MODEL_SELECTION.resolve_safe_executable()
+        except MODEL_SELECTION.EvidenceUnavailable as exc:
+            raise SelectionPreflightError(
+                "scoped dispatch executable binding is unavailable",
+            ) from exc
+    launch.scoped_executable = launch.executable_binding[0]
+
+
+def _confirm_whole_controller_approval(
+    binding: _ControllerBinding,
+) -> None:
+    approved_whole_sha = binding.command.get("approved_whole_worktree_sha256")
+    if (
+        approved_whole_sha is not None
+        and (
+            binding.state["attempt_origin"] == "initial"
+            or (
+                binding.command["schema_version"] == 11
+                and binding.state.get("conversation_id") is None
+            )
+        )
+    ):
+        readable_manifest = WORKTREE._scan_readable_worktree(binding.command["workdir"])
+        if binding.command["schema_version"] == 11:
+            content = WORKTREE.whole_worktree_content_manifest(binding.command["workdir"])
+            content_sha = content["manifest_sha256"]
+            if content_sha != binding.command["whole_worktree_content_sha256"]:
+                raise DispatchError("whole-worktree content binding changed")
+            expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
+                _provider_isolation_for_command(binding.command), binding.command["native_grant_profile"],
+                whole_worktree_content_sha256=content_sha,
+                readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
+            )
+        else:
+            expected_approval = WORKTREE._compute_provider_launch_approval_sha256(
+                _provider_isolation_for_command(binding.command), WORKTREE._manifest_digest(readable_manifest),
+            ) if binding.command["schema_version"] == 10 else WORKTREE._manifest_digest(readable_manifest)
+        if expected_approval != approved_whole_sha:
+            raise DispatchError("whole-worktree transmission binding changed")
+
+
+def _prepare_native_controller_launch(
+    job: Path,
+    binding: _ControllerBinding,
+    launch: _ScopedLaunch,
+) -> None:
+    if launch.stage_dir is None:
+        raise DispatchError("scoped provider stage is unavailable")
+    contained_argv = [cast(str, launch.scoped_executable), *launch.argv[1:]]
+    if contained_argv.count("--json-schema") != 1:
+        raise DispatchError("scoped provider schema argument is invalid")
+    schema_index = contained_argv.index("--json-schema") + 1
+    if schema_index >= len(contained_argv):
+        raise DispatchError("scoped provider schema argument is invalid")
+    # The native binder canonicalizes the exact file. Use the
+    # same spelling in argv so /var -> /private/var aliases do
+    # not make the provider's approved schema unreadable.
+    contained_argv[schema_index] = os.path.realpath(cast(tuple[Path, Path], binding.schema_paths)[0])
+    launch.prepared_containment = CONTAINMENT.prepare_contained_launch(
+        role=CONTAINMENT.ROLE_PROVIDER,
+        network_policy=CONTAINMENT.NETWORK_PROVIDER_TLS,
+        job_dir=job,
+        attempt=binding.state['attempt'],
+        stage_dir=launch.stage_dir,
+        target_executable=cast(str, launch.scoped_executable),
+        target_argv=contained_argv,
+        child_environment=MODEL_SELECTION.child_environment(
+            binding.command["provider_env"],
+        ),
+        allow_keychain=True,
+        read_only_inputs=(contained_argv[schema_index],),
+        provider_max_cycles=binding.command["max_cycles"],
+        provider_write_selectors=cast(dict[str, Any], launch.scope)["write"],
+        grant_profile=binding.command["native_grant_profile"],
+    )
+
+
+def _spawn_controller_provider(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+) -> None:
+    # The prior attempt budget is still a hard stop, but bounded
+    # controller-local proofs do not become a provider timeout.
+    # Commit the running state/CAS boundary after slow preflight.
+    # The provider hard/runtime lease starts at the invocation
+    # boundary, immediately before Popen.  The value is committed
+    # only after Popen succeeds, so failed local creation still
+    # has no provider runtime.  This leaves no post-Popen window
+    # in which a child can schedule work beyond the hard limit.
+    # The final executable confirmation remains immediately
+    # adjacent to the provider-causing call.
+    if execution.stop_signal is not None:
+        outcome.reason = "interrupted"
+        execution.returncode = 128 + execution.stop_signal
+    elif execution.elapsed >= _provider_max_seconds(binding.state):
+        outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", "max-runtime"
+        execution.returncode = EXIT_BY_REASON[outcome.reason]
+    elif execution.elapsed >= float(binding.state["hard_seconds"]):
+        outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", "hard"
+        execution.returncode = EXIT_BY_REASON[outcome.reason]
+    else:
+        # Linearize cancellation against the provider-causing
+        # operation.  The final executable confirmation and Popen
+        # stay in this same short critical section: cancellation
+        # before it wins without a provider; cancellation after
+        # it is necessarily a post-launch request.
+        with state_lock(job):
+            current, current_raw, _current_sha = load_state(job)
+            if (
+                current["attempt"] != binding.state["attempt"]
+                or current["controller_pid"] != os.getpid()
+                or current["status"] in TERMINAL
+            ):
+                raise DispatchError("dispatch changed before provider launch")
+            binding.state, binding.prior_raw = current, current_raw
+            if binding.state["cancel_requested"]:
+                outcome.reason = "cancelled"
+                execution.returncode = EXIT_BY_REASON[outcome.reason]
+            else:
+                running_updates = {
+                    "status": "running", "controller_pid": os.getpid(),
+                    "started_epoch": None, "last_progress_epoch": None,
+                    "stream_path": str(streams.stream_path), "stderr_path": str(streams.stderr_path),
+                    "next_action": "wait",
+                }
+                if launch.stage_dir is not None:
+                    running_updates.update({
+                        "provider_stage_path": str(launch.stage_dir),
+                        "provider_stage_identity": list(launch.stage_identity) if launch.stage_identity is not None else None,
+                        "provider_stage_manifest_sha256": launch.stage_manifest_sha,
+                    })
+                binding.state, binding.prior_raw, _sha = _transition_locked(job, binding.state, binding.prior_raw, running_updates)
+                exact_executable = None
+                if launch.executable_binding is not None:
+                    try:
+                        exact_executable = MODEL_SELECTION.confirm_executable_binding(
+                            *launch.executable_binding,
+                        )
+                    except MODEL_SELECTION.EvidenceUnavailable as exc:
+                        raise SelectionPreflightError(
+                            "dispatch direct selection launch binding changed",
+                        ) from exc
+                provider_argv: list[str] | tuple[str, ...] = launch.argv
+                provider_cwd = launch.launch_cwd
+                provider_environment = _provider_environment(binding.command)
+                if launch.prepared_containment is not None:
+                    if (
+                        launch.stage_dir is None
+                        or launch.scope is None
+                        or launch.selected_manifest is None
+                        or launch.stage_identity is None
+                        or launch.stage_manifest_sha is None
+                    ):
+                        raise DispatchError("scoped provider launch binding is incomplete")
+                    _revalidate_scoped_provider_stage(
+                        launch.stage_dir, launch.scope, launch.selected_manifest,
+                        launch.stage_identity, launch.stage_manifest_sha,
+                    )
+                    confirmed_containment = CONTAINMENT.confirm_contained_launch(
+                        launch.prepared_containment,
+                    )
+                    provider_argv = confirmed_containment.argv
+                    exact_executable = confirmed_containment.executable
+                    provider_cwd = confirmed_containment.cwd
+                    provider_environment = confirmed_containment.environment
+                launch_mono = time.monotonic()
+                execution.process = subprocess.Popen(
+                    provider_argv,
+                    executable=exact_executable,
+                    cwd=provider_cwd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=provider_environment,
+                    start_new_session=True,
+                    close_fds=True,
+                    preexec_fn=lambda: os.umask(int(binding.command["child_umask"], 8)),
+                )
+                execution.started_mono = launch_mono
+                execution.heartbeat_mono = execution.started_mono
+                execution.next_notice = execution.started_mono + float(binding.command["notice_seconds"])
+                if launch.prepared_containment is not None:
+                    launch.contained_root = CONTAINMENT.bind_new_process_group(
+                        execution.process.pid,
+                    )
+                binding.state, binding.prior_raw, _sha = _transition_locked(
+                    job, binding.state, binding.prior_raw, {"started_epoch": time.time()},
+                )
+
+
+def _launch_controller_provider(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+) -> None:
+    try:
+        # Re-read the frozen record and re-probe *after* all controller
+        # mutations and immediately before the provider-causing launch.
+        # argv[0] stays the portable public spelling while executable=
+        # pins the safe, freshly-probed target for this one process.
+        launch.executable_binding = _reprobe_direct_selection(binding.command, binding.state, launch.argv)
+        _bound_worktree_baseline(binding.state, binding.command)
+        if not WORKTREE._worktree_symlink_boundary(binding.command["workdir"]):
+            raise DispatchError("dispatch worktree symlink boundary changed")
+        launch.launch_cwd = binding.command["workdir"]
+        if binding.state.get("provider_scope_path") is not None:
+            _prepare_scoped_controller_launch(job, binding, launch)
+        else:
+            _confirm_whole_controller_approval(binding)
+        _bind_workspace_prompt(
+            launch.argv, Path(os.path.realpath(launch.launch_cwd)),
+            scoped=launch.scope is not None, boost=bool(binding.command["boost"]),
+            provider_isolation=_provider_isolation_for_command(binding.command),
+            legacy_sandbox=binding.command["schema_version"] < 9,
+        )
+        if launch.scoped_executable is not None and _provider_isolation_for_command(binding.command) == "native":
+            _prepare_native_controller_launch(job, binding, launch)
+        _spawn_controller_provider(job, binding, execution, streams, launch, outcome)
+    except MODEL_SELECTION.ProbeInterrupted as exc:
+        # model_selection owns and reaps its short-lived probe group;
+        # the controller owns the terminal dispatch projection.
+        execution.stop_signal = exc.signal_number
+        outcome.reason = "interrupted"
+        execution.returncode = 128 + exc.signal_number
+    except SelectionPreflightError:
+        outcome.reason = "selection_preflight_failed"
+        outcome.failure_stage = "selection_preflight"
+        execution.returncode = EXIT_BY_REASON[outcome.reason]
+    except WorktreeBaselineError as exc:
+        outcome.reason = "resolve_undo_present" if isinstance(exc, ResolveUndoPresentError) else "status_unavailable"
+        outcome.failure_stage = "binding_failure"
+        execution.returncode = EXIT_BY_REASON[outcome.reason]
+    except (DispatchError, CONTAINMENT.ContainmentError):
+        outcome.reason = "status_unavailable"
+        execution.returncode = EXIT_BY_REASON["status_unavailable"]
+    except OSError:
+        # A legacy tier deliberately reaches this point even when agy is
+        # absent.  Publish a terminal, sanitized dispatch failure rather
+        # than leaking an interpreter traceback or leaving a queued job.
+        outcome.reason = "agy_failed_unclassified"
+        execution.returncode = 127
+    else:
+        if execution.process is not None:
+            try:
+                assert execution.process.stdout is not None and execution.process.stderr is not None
+                for name, pipe in (("stdout", execution.process.stdout), ("stderr", execution.process.stderr)):
+                    os.set_blocking(pipe.fileno(), False)
+                    cast(selectors.BaseSelector, streams.selector).register(pipe, selectors.EVENT_READ, name)
+            except (OSError, DispatchError):
+                outcome.reason = "status_unavailable"
+                outcome.failure_stage = "binding_failure"
+
+
+def _consume_controller_events(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+    events: list[tuple[selectors.SelectorKey, int]],
+) -> None:
+    for key, _mask in events:
+        name = key.data
+        try:
+            chunk = os.read(key.fd, 65536)
+        except BlockingIOError:
+            continue
+        except OSError:
+            outcome.reason = "status_unavailable"
+            outcome.failure_stage = "binding_failure"
+            break
+        if not chunk:
+            try:
+                cast(selectors.BaseSelector, streams.selector).unregister(key.fileobj)
+                cast(IO[bytes], key.fileobj).close()
+            except OSError:
+                outcome.reason = "status_unavailable"
+                outcome.failure_stage = "binding_failure"
+                break
+            continue
+        streams.sizes[name] += len(chunk)
+        if streams.sizes[name] > MAX_STREAM_BYTES:
+            outcome.reason = "output_oversized"
+            break
+        try:
+            os.write(streams.stdout_fd if name == "stdout" else streams.stderr_fd, chunk)
+        except OSError:
+            outcome.reason = "status_unavailable"
+            outcome.failure_stage = "binding_failure"
+            break
+        if name == "stdout" and outcome.reason is None:
+            streams.buffers[name].extend(chunk)
+            while b"\n" in streams.buffers[name]:
+                line, _, remainder = streams.buffers[name].partition(b"\n")
+                streams.buffers[name] = bytearray(remainder)
+                if len(line) > MAX_EVENT_BYTES:
+                    outcome.reason = "output_oversized"
+                    break
+                valid, conversation, event_kind = _event(line)
+                if valid:
+                    if outcome.saw_terminal or (event_kind == "init" and outcome.saw_init) or (
+                        event_kind != "init" and not outcome.saw_init
+                    ):
+                        outcome.reason = "invalid_envelope"
+                        outcome.failure_stage = "framing"
+                        break
+                    if event_kind == "init":
+                        try:
+                            init_frame = json.loads(
+                                line.decode("utf-8", "strict"),
+                                object_pairs_hook=_duplicates,
+                            )
+                        except (UnicodeError, json.JSONDecodeError, ValueError, OverflowError, DispatchError):
+                            init_frame = None
+                        init_value = init_frame.get("init") if isinstance(init_frame, dict) else None
+                        if not isinstance(init_value, dict) or not _init_cwd_matches_launch(init_value, launch.launch_cwd):
+                            outcome.reason = "status_unavailable"
+                            outcome.failure_stage = "binding_failure"
+                            break
+                        if binding.command.get("boost") and (
+                            init_value.get("agent") != "Boost"
+                            or init_value.get("permission_mode") != "request-review"
+                        ):
+                            outcome.reason = "invalid_envelope"
+                            outcome.failure_stage = "boost_contract"
+                            break
+                        outcome.saw_init = True
+                    elif event_kind == "result":
+                        outcome.saw_terminal = True
+                    execution.heartbeat_mono = time.monotonic()
+                    updates: dict[str, Any] = {
+                        "progress_count": binding.state["progress_count"] + 1,
+                        "last_progress_epoch": time.time(),
+                        "elapsed_seconds": float(binding.state["attempt_base_elapsed"]) + execution.heartbeat_mono - cast(float, execution.started_mono),
+                        "last_activity": (
+                            "provider_initialized" if event_kind == "init"
+                            else "progress_signal" if event_kind == "step_update"
+                            else "terminal_received"
+                        ),
+                    }
+                    if conversation is not None:
+                        if binding.state["conversation_id"] not in {None, conversation}:
+                            outcome.reason = "status_unavailable"
+                            break
+                        updates["conversation_id"] = conversation
+                        updates["resume_available"] = True
+                    try:
+                        _controller_transition(job, binding, updates)
+                    except DispatchError:
+                        outcome.reason = "status_unavailable"
+                        outcome.failure_stage = "binding_failure"
+                        break
+            if len(streams.buffers[name]) > MAX_EVENT_BYTES:
+                # A newline-free oversized frame cannot be safely
+                # resynchronized.  It is neither a heartbeat nor a
+                # candidate terminal result.
+                outcome.reason = "output_oversized"
+        if outcome.reason is not None:
+            break
+
+
+def _monitor_controller_provider(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+) -> None:
+    # Pipe EOF is the completion observation.  Do not poll/reap the leader
+    # before process-group closure; its PID reserves the group identifier.
+    while execution.process is not None and cast(selectors.BaseSelector, streams.selector).get_map() and outcome.reason is None:
+        now_mono = time.monotonic()
+        execution.elapsed = float(binding.state["attempt_base_elapsed"]) + now_mono - cast(float, execution.started_mono)
+        try:
+            _refresh_control_snapshot(job, binding)
+        except DispatchError:
+            outcome.reason = "status_unavailable"
+            break
+        decision = _controller_monitor_limit(binding.state, execution.stop_signal, execution.elapsed, now_mono, execution.heartbeat_mono, float_hard=False)
+        if decision is not None:
+            outcome.reason, outcome.limit_kind = decision
+            break
+        if now_mono >= execution.next_notice:
+            try:
+                _controller_transition(job, binding, {
+                    "notice_count": binding.state["notice_count"] + 1,
+                    "elapsed_seconds": execution.elapsed,
+                })
+            except DispatchError:
+                outcome.reason = "status_unavailable"
+                outcome.failure_stage = "binding_failure"
+                break
+            execution.next_notice += float(binding.command["notice_seconds"])
+            if sys.stderr.isatty():
+                print(
+                    f"agy-worker: still running; elapsed={int(execution.elapsed)}s "
+                    f"progress={binding.state['progress_count']}", file=sys.stderr, flush=True,
+                )
+        try:
+            # A fixed poll can return after a nearer hard, maximum,
+            # idle, or notice boundary.  Bound the kernel wait to the
+            # first controller-owned clock, then reload any extension
+            # and classify the resampled time before consuming ready
+            # bytes as semantic progress.
+            wait_seconds = _controller_wait_seconds(binding.state, cast(float, execution.started_mono), execution.heartbeat_mono, execution.next_notice, now_mono)
+            events = cast(selectors.BaseSelector, streams.selector).select(wait_seconds)
+        except OSError:
+            outcome.reason = "status_unavailable"
+            outcome.failure_stage = "binding_failure"
+            break
+        post_wait_mono = time.monotonic()
+        try:
+            _refresh_control_snapshot(job, binding)
+        except DispatchError:
+            outcome.reason = "status_unavailable"
+            outcome.failure_stage = "binding_failure"
+            break
+        execution.elapsed = (
+            float(binding.state["attempt_base_elapsed"])
+            + post_wait_mono - cast(float, execution.started_mono)
+        )
+        decision = _controller_monitor_limit(binding.state, execution.stop_signal, execution.elapsed, post_wait_mono, execution.heartbeat_mono, float_hard=True)
+        if decision is not None:
+            outcome.reason, outcome.limit_kind = decision
+            break
+        _consume_controller_events(job, binding, execution, streams, launch, outcome, events)
+        if outcome.reason is not None:
+            break
+
+
+def _reap_controller_provider(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+) -> None:
+    if execution.process is not None:
+        # The candidate worktree binding below is taken only after the
+        # provider process group has been terminated and reaped.  The
+        # controller-owned stream artifacts are flushed afterward.
+        # Freeze first: fsync, envelope parsing, and reconciliation
+        # are controller-local work and must not keep the provider
+        # clock or extension window alive.
+        execution.returncode = _terminate_provider_process(
+            execution.process, launch.contained_root,
+            contained=launch.prepared_containment is not None,
+        )
+        execution.idle_timeout_with_exited_provider = bool(
+            outcome.reason == "idle_timeout" and execution.returncode == 0
+        )
+        execution.process = None
+        execution.runtime_end_mono = time.monotonic()
+        # A hard/max boundary stops semantic event processing, but a
+        # complete terminal frame already present in the reaped pipes
+        # remains bounded provider evidence.  Drain it without
+        # incrementing progress or moving the heartbeat.
+        _drain_reaped_streams(streams, outcome)
+        assert execution.started_mono is not None
+        execution.elapsed = float(binding.state["attempt_base_elapsed"]) + max(
+            0.0, execution.runtime_end_mono - execution.started_mono,
+        )
+        binding.state, binding.prior_raw, _sha, frozen_limit = _freeze_reaped_runtime(
+            job, binding.state["attempt"], os.getpid(), execution.elapsed,
+        )
+        execution.runtime_frozen = True
+        if outcome.reason == "hard_deadline_exceeded":
+            # A valid extension may have landed after this controller
+            # observed its old limit but before the reaped-runtime CAS.
+            # The frozen locked limit is authoritative in either
+            # direction; do not retain a stale timeout projection.
+            if frozen_limit is None:
+                outcome.reason, outcome.limit_kind = None, None
+            else:
+                outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", frozen_limit
+        elif outcome.reason is None and frozen_limit is not None:
+            outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", frozen_limit
+
+
+def _observe_controller_terminal(
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+) -> None:
+    try:
+        os.fsync(streams.stdout_fd)
+        os.fsync(streams.stderr_fd)
+    except OSError:
+        outcome.reason = "status_unavailable"
+        outcome.failure_stage = "binding_failure"
+    outcome.result_binding = None
+    outcome.outer_status = None
+    outcome.provider_retry_after = None
+    outcome.provider_retry_observed = None
+    reviewed_idle_partial = bool(
+        execution.idle_timeout_with_exited_provider
+        and _has_reviewed_provider_timeout(
+            streams.stderr_path,
+            binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+            binding.command["max_seconds"],
+        )
+    )
+    # A deadline is a controller fact, not a reason to discard a
+    # terminal report already emitted by the bounded provider.  Parse
+    # that report for candidate/provenance evidence, but never let its
+    # outer SUCCESS/ERROR/CANCELLED disposition publish past the
+    # frozen deadline.  Cancellation and binding failures retain their
+    # existing fail-closed precedence and do not enter this path.
+    if outcome.reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:
+        if outcome.reason is None:
+            terminal_failure = _quota_terminal_failure(
+                streams.stream_path,
+                binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+            )
+            if terminal_failure is not None:
+                outcome.reason, outcome.provider_retry_after = terminal_failure
+                outcome.outer_status = "ERROR"
+                # The exact 1.1.13 quota terminal has a valid outer ERROR
+                # fact but intentionally carries no structured report.
+                # Preserve both facts without treating quota as a report.
+                outcome.failure_stage = "missing_structured_output"
+                if outcome.provider_retry_after is not None:
+                    outcome.provider_retry_observed = time.time()
+        if outcome.reason in {None, "hard_deadline_exceeded"} and streams.sizes["stdout"] == 0:
+            if outcome.reason is None:
+                outcome.reason = (
+                    _classify_stderr(
+                        streams.stderr_path,
+                        binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+                        execution.returncode,
+                        binding.command["max_seconds"],
+                    )
+                )
+        elif outcome.reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:
+            try:
+                if binding.schema_paths is None:
+                    raise DispatchError("dispatch schema binding is unavailable")
+                binding.schema_paths = _bound_schemas(binding.command, binding.state)
+                outcome.result_binding, outcome.outer_status, outcome.failure_stage = _validate_terminal_envelope(
+                    streams.stream_path, streams.envelope_path, binding.schema_paths[0], binding.schema_paths[1],
+                    boost=bool(binding.command.get("boost")), stage_dir=launch.stage_dir,
+                )
+                if outcome.result_binding is None and outcome.reason is None:
+                    if (
+                        outcome.failure_stage == "missing_structured_output"
+                        and execution.returncode == 0
+                        and _has_reviewed_terminal_refusal(
+                            streams.stream_path,
+                            binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+                        )
+                    ):
+                        outcome.reason, outcome.limit_kind = "permission_required", None
+                        outcome.failure_stage = None
+                    else:
+                        outcome.reason = "invalid_envelope"
+                elif (
+                    outcome.result_binding is not None
+                    and outcome.reason != "hard_deadline_exceeded"
+                    and _has_reviewed_denied_actions(
+                        streams.stream_path,
+                        binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+                    )
+                ):
+                    outcome.reason, outcome.limit_kind = "permission_required", None
+                elif (
+                    outcome.result_binding is not None
+                    and outcome.reason != "hard_deadline_exceeded"
+                    and _has_reviewed_provider_timeout(
+                        streams.stderr_path,
+                        binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+                        binding.command["max_seconds"],
+                    )
+                ):
+                    outcome.reason, outcome.limit_kind = "provider_timeout", None
+                elif outcome.reason is None and outcome.outer_status == "ERROR":
+                    outcome.reason = "provider_terminal_error"
+                elif outcome.reason is None and outcome.outer_status == "CANCELLED":
+                    outcome.reason = "provider_terminal_cancelled"
+            except DispatchError:
+                # A binding/schema failure is security-relevant even
+                # when a deadline was observed.  Do not preserve a
+                # candidate whose terminal bytes could not be bound.
+                outcome.reason = "status_unavailable"
+                outcome.result_binding = None
+                outcome.failure_stage = "binding_failure"
+    outcome.boundary_failed = False
+    if binding.command["workflow"] == "project":
+        try:
+            if WORKTREE._project_boundary(binding.command["workdir"]) != binding.state["project_boundary"]:
+                raise DispatchError("project worktree boundary changed")
+        except DispatchError:
+            outcome.boundary_failed = True
+            outcome.reason = "status_unavailable"
+            outcome.result_binding = None
+            outcome.failure_stage = "binding_failure"
+
+
+def _begin_controller_completion(
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+    prior_handlers: dict[signal.Signals, Any],
+) -> None:
+    # One blocked completion snapshot linearizes terminal state against
+    # late HUP/INT/TERM just as the foreground result publisher does.
+    watched = tuple(prior_handlers)
+    signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+    pending = signal.sigpending()
+    completion_signal = _controller_completion_signal(watched, pending, execution.stop_signal)
+    if completion_signal is not None:
+        execution.stop_signal = completion_signal
+        outcome.reason = "interrupted"
+        outcome.result_binding = None
+        outcome.failure_stage = None
+    outcome.final_status, outcome.exit_code = _controller_terminal_status(outcome.reason, execution.stop_signal)
+    outcome.result_path = str(streams.envelope_path) if outcome.reason is None or outcome.result_binding is not None else None
+    outcome.cleanup_failed = False
+    candidate_data.reconciliation_manifest_sha = None
+    candidate_data.derived_selected_sha = None
+    candidate_data.derived_selected_files = None
+    candidate_data.derived_selected_trees = None
+    candidate_data.derived_transmission_sha = None
+
+
+def _cleanup_controller_stage(
+    job: Path,
+    binding: _ControllerBinding,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+) -> None:
+    if launch.stage_dir is not None and launch.stage_dir.exists():
+        try:
+            if (
+                launch.narrow_source_snapshot is None
+                or WORKTREE._worktree_snapshot(binding.command["workdir"]) != launch.narrow_source_snapshot
+            ):
+                raise DispatchError(
+                    "source worktree changed while the narrow provider stage was active"
+                )
+            mutations, op_manifest = WORKTREE._scan_stage_mutations(launch.stage_dir, cast(dict[str, Any], launch.scope), cast(list[dict[str, Any]], launch.selected_manifest))
+            if outcome.result_binding is not None and not _declared_scoped_mutations_match(
+                streams.envelope_path, outcome.result_binding, mutations, launch.stage_dir,
+            ):
+                raise DispatchError(
+                    "worker files_changed does not match scoped stage mutations"
+                )
+            if outcome.result_binding is not None and outcome.outer_status in {
+                "SUCCESS", "ERROR", "CANCELLED",
+            }:
+                candidate_data.reconciliation_manifest_sha = WORKTREE._reconcile_stage_to_source(
+                    binding.command["workdir"], launch.stage_dir, mutations, job,
+                )
+                if WORKTREE._build_selected_content_manifest(
+                    binding.command["workdir"], cast(dict[str, Any], launch.scope),
+                ) != WORKTREE._build_selected_content_manifest(
+                    launch.stage_dir, cast(dict[str, Any], launch.scope), is_stage=True,
+                ):
+                    raise DispatchError(
+                        "source reconciliation does not match the provider stage"
+                    )
+            else:
+                candidate_data.reconciliation_manifest_sha = WORKTREE._selected_content_digest([])
+        except Exception:
+            outcome.cleanup_failed = True
+        finally:
+            try:
+                if launch.stage_identity is None:
+                    raise DispatchError("stage cleanup identity is unavailable")
+                WORKTREE._cleanup_stage(launch.stage_dir, launch.stage_identity)
+            except (OSError, DispatchError):
+                outcome.cleanup_failed = True
+    try:
+        cast(selectors.BaseSelector, streams.selector).close()
+        os.close(streams.stdout_fd); streams.stdout_fd = -1
+        os.close(streams.stderr_fd); streams.stderr_fd = -1
+        _stage(binding.command, False)
+        _load_bound_command(job, binding.state, stage_readonly=False)
+        _bound_schemas(binding.command, binding.state)
+        if binding.state["attempt_origin"] == "conversation-continue":
+            _bound_verification(job, binding.state)
+    except (OSError, DispatchError):
+        outcome.cleanup_failed = True
+    if outcome.cleanup_failed:
+        outcome.reason, outcome.final_status = "status_unavailable", "failed"
+        outcome.exit_code = EXIT_BY_REASON["status_unavailable"]
+        outcome.result_path = None
+        outcome.result_binding = None
+        outcome.failure_stage = "binding_failure"
+
+
+def _observe_controller_cancel(
+    job: Path,
+    binding: _ControllerBinding,
+    outcome: _ControllerOutcome,
+) -> None:
+    # A SHA-approved cancellation may arrive after the last pipe-loop
+    # observation (or after reaping) and before candidate work begins.
+    # Observe it under the short ownership lock before selecting the
+    # expensive reconciliation path.  The final transition reloads
+    # again, but that later check is too late to keep a cheap cancel
+    # from being delayed by a repository-controlled Git probe.
+    with state_lock(job):
+        current, current_raw, _current_sha = load_state(job)
+        if (
+            current["attempt"] != binding.state["attempt"]
+            or current["controller_pid"] != os.getpid()
+            or current["status"] in TERMINAL
+        ):
+            raise DispatchError("dispatch changed before terminal reconciliation")
+        binding.state, binding.prior_raw = current, current_raw
+        if current["cancel_requested"]:
+            outcome.reason, outcome.final_status = "cancelled", "cancelled"
+            outcome.exit_code = EXIT_BY_REASON["cancelled"]
+            outcome.result_path = None
+            outcome.result_binding = None
+            outcome.failure_stage = None
+
+
+def _reconcile_controller_candidate(
+    binding: _ControllerBinding,
+    launch: _ScopedLaunch,
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+) -> None:
+    # This may use a bounded Git fallback.  The provider clock was
+    # already frozen above, so keep this outside the final short state
+    # lock: status/control readers can observe the frozen record and
+    # reject stale extensions while reconciliation is in progress.
+    # A local cancellation/interruption with no current terminal
+    # report has no new worktree fact to reconcile.  Do not make the
+    # cheap control wait for a candidate/worktree Git scan after the
+    # provider group is already reaped.  A continuation's prior
+    # candidate remains exact-bound and unreviewed; result/finalize
+    # rebind it before use.  A provider-CANCELLED report still has a
+    # current result_binding and retains the reconciliation path.
+    skip_cancel_reconciliation = bool(
+        outcome.reason in {"cancelled", "interrupted"}
+        and outcome.result_binding is None
+    )
+    if skip_cancel_reconciliation:
+        candidate_data.candidate_worktree = None
+        candidate_data.reconciliation = {
+            "worktree_reconciliation": "unavailable",
+            "worktree_changes_present": None,
+            "worktree_changed_since_dispatch": None,
+        }
+    else:
+        candidate_data.candidate_worktree = (
+            _state_worktree_snapshot(binding.state, binding.command["workdir"])
+            if outcome.result_binding is not None else None
+        )
+        candidate_data.reconciliation = (
+            _reconciliation_from_snapshot(
+                candidate_data.candidate_worktree, binding.state["worktree_baseline"],
+            )
+            if outcome.result_binding is not None else _reconcile_worktree(
+                binding.command["workdir"], binding.state["worktree_baseline"], state=binding.state,
+            )
+        )
+    if (
+        outcome.result_binding is not None
+        and candidate_data.candidate_worktree is not None
+        and candidate_data.reconciliation_manifest_sha is not None
+        and launch.scope is not None
+    ):
+        try:
+            derived_readable = WORKTREE._scan_readable_worktree(binding.command["workdir"])
+            WORKTREE._validate_scope_against_worktree(
+                launch.scope, binding.command["workdir"], derived_readable,
+            )
+            derived_selected = WORKTREE._build_selected_content_manifest(
+                binding.command["workdir"], launch.scope,
+            )
+            candidate_data.derived_selected_sha = WORKTREE._selected_content_digest(derived_selected)
+            candidate_data.derived_selected_files = sum(
+                1 for item in derived_selected if item["kind"] == "file"
+            )
+            candidate_data.derived_selected_trees = sum(
+                1 for item in derived_selected if item["kind"] == "directory"
+            )
+            candidate_data.derived_transmission_sha = _bound_transmission_sha256(
+                binding.command, WORKTREE._canonical_digest(launch.scope),
+                WORKTREE._manifest_digest(derived_readable), candidate_data.derived_selected_sha,
+            )
+        except Exception:
+            candidate_data.derived_selected_sha = None
+            candidate_data.derived_selected_files = None
+            candidate_data.derived_selected_trees = None
+            candidate_data.derived_transmission_sha = None
+
+
+def _classify_controller_candidate(
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+    current: dict[str, Any],
+) -> tuple[_ControllerOutcome, _CandidateDisposition]:
+    outcome = dataclasses.replace(outcome)
+    disposition = _CandidateDisposition()
+    if current["cancel_requested"]:
+        outcome.reason, outcome.final_status, outcome.exit_code = "cancelled", "cancelled", EXIT_BY_REASON["cancelled"]
+        outcome.result_path = None
+        outcome.result_binding = None
+        outcome.failure_stage = None
+    if outcome.reason != "provider_quota_exhausted":
+        outcome.provider_retry_after = None
+        outcome.provider_retry_observed = None
+    prior_candidate_exists = bool(
+        current["attempt_origin"] == "conversation-continue"
+        and current["candidate_recognized"]
+    )
+    prior_candidate_is_bound = bool(
+        prior_candidate_exists
+        and current["candidate_source"] != "none"
+        and current["result_available"]
+        and current["failure_stage"] is None
+        and all(current[key] is not None for key in (
+            "result_path", "result_sha256", "result_identity",
+            "candidate_worktree_sha256", "candidate_worktree_entries",
+        ))
+    )
+    # An old continuation candidate remains readable only when all
+    # of its exact report/worktree bindings are still complete.
+    # Keep an incomplete one as inaccessible forensic state and
+    # fail closed; do not let a concurrent local cancel convert it
+    # into an apparently usable candidate.
+    _preserve_candidate = bool(
+        outcome.result_binding is None and prior_candidate_is_bound
+    )
+    disposition.preserve_candidate_forensics = bool(
+        outcome.result_binding is None and prior_candidate_exists
+    )
+    disposition.terminal_snapshot_unavailable = bool(
+        outcome.result_binding is not None
+        and outcome.outer_status in {"SUCCESS", "ERROR", "CANCELLED"}
+        and candidate_data.candidate_worktree is None
+    )
+    if disposition.terminal_snapshot_unavailable:
+        # Keep the exact terminal report binding and its outer
+        # provenance for forensics, but it is not a reviewable
+        # candidate without a worktree binding.
+        outcome.reason, outcome.final_status = "status_unavailable", "failed"
+        outcome.exit_code = EXIT_BY_REASON["status_unavailable"]
+        outcome.failure_stage = "binding_failure"
+    if disposition.preserve_candidate_forensics and not prior_candidate_is_bound:
+        outcome.reason, outcome.final_status = "status_unavailable", "failed"
+        outcome.exit_code = EXIT_BY_REASON["status_unavailable"]
+        outcome.failure_stage = "binding_failure"
+    disposition.candidate_recognized = outcome.result_binding is not None or disposition.preserve_candidate_forensics
+    disposition.candidate_unavailable = bool(
+        disposition.candidate_recognized and outcome.failure_stage == "binding_failure"
+    )
+    disposition.candidate_source = (
+        "provider_success" if outcome.result_binding is not None and outcome.outer_status == "SUCCESS"
+        else "provider_error" if outcome.result_binding is not None and outcome.outer_status == "ERROR"
+        else "provider_cancelled" if outcome.result_binding is not None and outcome.outer_status == "CANCELLED"
+        else current["candidate_source"] if disposition.preserve_candidate_forensics
+        else "none"
+    )
+    if outcome.failure_stage in {"schema_rejection", "binding_failure", "framing", "outer_status", "invalid_envelope"}:
+        disposition.provider_terminal_status = "unknown"
+    else:
+        disposition.provider_terminal_status = (
+            "success" if outcome.outer_status == "SUCCESS"
+            else "error" if outcome.outer_status == "ERROR"
+            else "cancelled" if outcome.outer_status in {"CANCELLED", "CANCELED"}
+            else "unknown"
+        )
+    disposition.preserved_path = current["result_path"] if disposition.preserve_candidate_forensics else None
+    disposition.preserved_sha = current["result_sha256"] if disposition.preserve_candidate_forensics else None
+    disposition.preserved_identity = current["result_identity"] if disposition.preserve_candidate_forensics else None
+    return outcome, disposition
+
+
+def _controller_repair_lineage(
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    repair_lineage_updates: dict[str, Any] = {}
+    if current["schema_version"] >= 12 and outcome.result_binding is not None:
+        repair_lineage_updates = {
+            "repair_lineage_sha256": None,
+            "repair_parent_result_sha256": None,
+            "repair_parent_worktree_sha256": None,
+            "repair_lineage_attempt": None,
+        }
+        if (
+            candidate_data.derived_selected_sha is not None
+            and candidate_data.derived_selected_files is not None
+            and candidate_data.derived_selected_trees is not None
+            and candidate_data.derived_transmission_sha is not None
+        ):
+            repair_lineage_updates.update({
+                "selected_content_sha256": candidate_data.derived_selected_sha,
+                "selected_file_count": candidate_data.derived_selected_files,
+                "selected_tree_count": candidate_data.derived_selected_trees,
+                "transmission_sha256": candidate_data.derived_transmission_sha,
+            })
+        if (
+            current["allow_scoped_repair"]
+            and candidate_data.candidate_worktree is not None
+            and candidate_data.reconciliation_manifest_sha is not None
+            and candidate_data.derived_selected_sha is not None
+            and candidate_data.derived_selected_files is not None
+            and candidate_data.derived_selected_trees is not None
+            and candidate_data.derived_transmission_sha is not None
+        ):
+            parent_result_sha = (
+                current["result_sha256"]
+                if current["attempt_origin"] == "conversation-continue"
+                else None
+            )
+            parent_worktree_sha = (
+                current["candidate_worktree_sha256"]
+                if current["attempt_origin"] == "conversation-continue"
+                else current["worktree_baseline"]["sha256"]
+            )
+            repair_lineage_updates = {
+                **repair_lineage_updates,
+                "repair_parent_result_sha256": parent_result_sha,
+                "repair_parent_worktree_sha256": parent_worktree_sha,
+                "repair_lineage_attempt": current["attempt"],
+                "repair_lineage_sha256": _compute_repair_lineage_sha256(
+                    authority_sha256=current["repair_authority_sha256"],
+                    attempt=current["attempt"],
+                    parent_result_sha256=parent_result_sha,
+                    parent_worktree_sha256=parent_worktree_sha,
+                    reconciliation_sha256=candidate_data.reconciliation_manifest_sha,
+                    result_sha256=outcome.result_binding[0],
+                    candidate_worktree_sha256=candidate_data.candidate_worktree["sha256"],
+                    selected_content_sha256=candidate_data.derived_selected_sha,
+                    transmission_sha256=candidate_data.derived_transmission_sha,
+                ),
+            }
+    return repair_lineage_updates
+
+
+def _controller_terminal_updates(
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+    disposition: _CandidateDisposition,
+    current: dict[str, Any],
+    repair_lineage_updates: dict[str, Any],
+    is_boost: bool,
+) -> dict[str, Any]:
+    updates = {
+        "status": outcome.final_status,
+        "reason": outcome.reason,
+        "exit_code": outcome.exit_code,
+        "controller_pid": None,
+        "finished_epoch": time.time(),
+        "elapsed_seconds": execution.elapsed,
+        "agy_returncode": execution.returncode,
+        "result_path": str(streams.envelope_path) if outcome.result_binding is not None else disposition.preserved_path,
+        "result_sha256": outcome.result_binding[0] if outcome.result_binding is not None else disposition.preserved_sha,
+        "result_identity": list(outcome.result_binding[1]) if outcome.result_binding is not None else disposition.preserved_identity,
+        "candidate_recognized": disposition.candidate_recognized,
+        "candidate_source": disposition.candidate_source,
+        "provider_terminal_status": disposition.provider_terminal_status,
+        # Preserve an exact old candidate after a binding failure for
+        # forensics, but never claim it can still be read or reviewed.
+        "result_available": disposition.candidate_recognized and not disposition.candidate_unavailable,
+        "candidate_worktree_sha256": (
+            candidate_data.candidate_worktree["sha256"] if candidate_data.candidate_worktree is not None
+            else current["candidate_worktree_sha256"] if disposition.preserve_candidate_forensics else None
+        ),
+        "candidate_worktree_entries": (
+            candidate_data.candidate_worktree["entries"] if candidate_data.candidate_worktree is not None
+            else current["candidate_worktree_entries"] if disposition.preserve_candidate_forensics else None
+        ),
+        "driver_disposition": "unreviewed" if disposition.candidate_recognized else "not_applicable",
+        "failure_stage": outcome.failure_stage,
+        "last_activity": "terminal_received" if outcome.saw_terminal else current["last_activity"],
+        "next_action": (
+            "blocked" if disposition.candidate_unavailable else "driver_review"
+        ) if disposition.candidate_recognized else (
+            "none" if outcome.reason in {"selection_preflight_failed", "permission_required"} else
+            "resume" if current["conversation_id"] and not is_boost else "blocked"
+        ),
+        "next_action_command": None,
+        **(
+            {
+                "worktree_reconciliation": "unavailable",
+                "worktree_changes_present": None,
+                "worktree_changed_since_dispatch": None,
+            }
+            if disposition.terminal_snapshot_unavailable else candidate_data.reconciliation
+        ),
+        "resume_available": bool(
+            current["conversation_id"] and not disposition.candidate_recognized
+            and outcome.final_status == "failed"
+            and outcome.reason not in {"selection_preflight_failed", "permission_required"} and not is_boost
+        ),
+        "continue_available": False,
+        "remote_cancel_unverified": outcome.reason in {"cancelled", "interrupted"},
+        "limit_kind": outcome.limit_kind,
+        "provider_retry_after_seconds": outcome.provider_retry_after,
+        "provider_retry_observed_epoch": outcome.provider_retry_observed,
+        **repair_lineage_updates,
+    }
+    if current.get("provider_scope_path") is not None:
+        updates["reconciliation_manifest_sha256"] = candidate_data.reconciliation_manifest_sha
+    if outcome.result_binding is not None:
+        # Continuation feedback remains bound audit evidence for
+        # the prior candidate. A newly returned candidate starts
+        # unreviewed, so it cannot inherit prior check evidence.
+        updates.update({
+            "check_summary": None,
+            "check_counts": {
+                "passed": 0, "failed": 0,
+                "advisory": 0, "missing": 0,
+            },
+        })
+    if current["schema_version"] >= 5:
+        if outcome.boundary_failed or disposition.candidate_unavailable:
+            updates.update({"phase": "blocked", "assurance": "blocked"})
+        elif disposition.candidate_recognized:
+            updates.update({
+                "phase": (
+                    "repair-failed"
+                    if outcome.final_status == "failed" and current["attempt_origin"] == "conversation-continue"
+                    else "awaiting-verification"
+                ),
+                "assurance": "pending",
+                "continue_available": bool(
+                    outcome.final_status in {"succeeded", "failed"}
+                    and outcome.reason not in {"selection_preflight_failed", "permission_required"}
+                    and disposition.candidate_source != "provider_cancelled"
+                    and current["conversation_id"] and not is_boost
+                    and current["attempt"] < current["max_cycles"]
+                    and execution.elapsed < _provider_max_seconds(current)
+                    and (
+                        current.get("provider_scope_path") is None
+                        or candidate_data.derived_transmission_sha
+                        == current.get("approved_transmission_sha256")
+                        or repair_lineage_updates.get(
+                            "repair_lineage_sha256"
+                        ) is not None
+                        or (
+                            outcome.result_binding is None
+                            and (
+                                current.get("transmission_sha256")
+                                == current.get("approved_transmission_sha256")
+                                or current.get("repair_lineage_sha256") is not None
+                            )
+                        )
+                    )
+                ),
+            })
+        else:
+            updates.update({
+                "phase": (
+                    "repair-failed"
+                    if outcome.final_status == "failed" and current["attempt_origin"] == "conversation-continue"
+                    else "attempt-failed"
+                ),
+                "assurance": "pending",
+                "continue_available": False,
+            })
+    return updates
+
+
+def _publish_controller_terminal(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    outcome: _ControllerOutcome,
+    candidate_data: _CandidateReconciliation,
+) -> int:
+    # An approved control may land after the last loop observation.  Bind
+    # finalization to the current state under the same short transition lock.
+    with state_lock(job):
+        current, current_raw, _current_sha = load_state(job)
+        if (
+            current["attempt"] != binding.state["attempt"]
+            or current["controller_pid"] != os.getpid()
+            or current["status"] in TERMINAL
+        ):
+            raise DispatchError("dispatch changed before terminalization")
+        # Persist the provider runtime measured before local terminal
+        # parsing/reconciliation.  Those controller-local checks must
+        # not silently consume a later repair/recovery budget.
+        execution.elapsed = max(
+            execution.elapsed,
+            float(current["elapsed_seconds"]),
+        )
+        outcome, disposition = _classify_controller_candidate(outcome, candidate_data, current)
+        is_boost = bool(binding.command.get("boost"))
+        repair_lineage_updates = _controller_repair_lineage(outcome, candidate_data, current)
+        updates = _controller_terminal_updates(execution, streams, outcome, candidate_data, disposition, current, repair_lineage_updates, is_boost)
+        binding.state, binding.prior_raw, _sha = _transition_locked(job, current, current_raw, updates)
+    return outcome.exit_code
+
+
+def _cleanup_controller_resources(
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    streams: _ControllerStreams,
+    launch: _ScopedLaunch,
+) -> None:
+    if execution.process is not None:
+        # If an exception is leaving the provider loop, transfer
+        # ownership to the outer recovery only after this exact group
+        # termination/reap has succeeded.  It then freezes elapsed
+        # time from this reap boundary.  If termination itself raises,
+        # keep ``process`` live so the outer recovery retains the one
+        # retry opportunity instead of assuming the group is gone.
+        _terminate_provider_process(
+            execution.process, launch.contained_root,
+            contained=launch.prepared_containment is not None,
+        )
+        execution.runtime_end_mono = time.monotonic()
+        execution.process = None
+    with contextlib.suppress(Exception):
+        cast(selectors.BaseSelector, streams.selector).close()
+    if streams.stdout_fd >= 0:
+        os.close(streams.stdout_fd)
+    if streams.stderr_fd >= 0:
+        os.close(streams.stderr_fd)
+    with contextlib.suppress(OSError):
+        _stage(binding.command, False)
+
+
+def _recover_controller_failure(
+    job: Path,
+    binding: _ControllerBinding,
+    execution: _ProviderExecution,
+    launch: _ScopedLaunch,
+) -> int:
+    # Once Popen succeeds, no ordinary controller exception may be left to
+    # the cleanup-only finally path.  Reap first, freeze if the state still
+    # belongs to this controller, then publish one fail-closed terminal
+    # projection.  Pre-launch errors retain their narrower existing paths.
+    if execution.process is not None:
+        with contextlib.suppress(Exception):
+            _terminate_provider_process(
+                execution.process, launch.contained_root,
+                contained=launch.prepared_containment is not None,
+            )
+        execution.process = None
+        execution.runtime_end_mono = time.monotonic()
+    frozen_elapsed = float(binding.state["elapsed_seconds"])
+    if not execution.runtime_frozen:
+        frozen_elapsed = float(binding.state["attempt_base_elapsed"])
+        if execution.started_mono is not None:
+            end = execution.runtime_end_mono if execution.runtime_end_mono is not None else time.monotonic()
+            frozen_elapsed += max(0.0, end - execution.started_mono)
+        try:
+            binding.state, binding.prior_raw, _sha, _limit = _freeze_reaped_runtime(
+                job, binding.state["attempt"], os.getpid(), frozen_elapsed,
+            )
+            execution.runtime_frozen = True
+        except Exception:
+            # The final state write below still clears an active controller
+            # record; preserve the largest local elapsed observation if the
+            # dedicated freeze CAS itself could not complete.
+            pass
+    try:
+        terminal, _raw, _sha = _terminalize_owned(
+            job, binding.state, status="failed", reason="status_unavailable",
+            exit_code=EXIT_BY_REASON["status_unavailable"],
+            failure_stage="binding_failure", expected_controller_pid=os.getpid(),
+            elapsed_seconds=frozen_elapsed, postlaunch_cancel=True,
+        )
+        return int(terminal["exit_code"])
+    except Exception:
+        # A failed final write is still not allowed to disguise the
+        # controller exception; the strict helper has already attempted
+        # its unavailable fallback without holding a scan under the lock.
+        return EXIT_BY_REASON["status_unavailable"]
+
+
+def controller(job: Path, ownership_fd: int) -> int:
+    binding = _ControllerBinding()
+    execution = _ProviderExecution()
+    launch = _ScopedLaunch()
 
     def interrupted(number: int, _frame: Any) -> None:
-        nonlocal stop_signal
-        if stop_signal is None:
-            stop_signal = number
+        _latch_controller_signal(execution, number)
 
     prior_handlers = {
         number: signal.getsignal(number)
@@ -4419,1272 +5989,37 @@ def controller(job: Path, ownership_fd: int) -> int:
     for number in prior_handlers:
         signal.signal(number, interrupted)
     try:
-      with inherited_lifecycle_lock(job, ownership_fd):
-        # Claim the queued attempt under one state lock.  A cancel can land
-        # between process spawn and this point, but never between this exact
-        # queued observation and controller ownership publication.
-        cancelled_before_claim = False
-        with state_lock(job):
-            state, prior_raw, _sha = load_state(job)
-            if state["status"] == "cancel-requested" and state["cancel_requested"]:
-                cancelled_before_claim = True
-            elif state["status"] != "queued" or state["cancel_requested"]:
-                raise DispatchError("dispatch is not queued")
-            else:
-                # A queued state with this exact PID is the startup handshake; it
-                # means the private controller is alive, not that a provider
-                # process exists or that provider runtime has started.
-                state, prior_raw, _sha = _transition_locked(job, state, prior_raw, {
-                    "controller_pid": os.getpid(),
-                })
-        if cancelled_before_claim:
-            _terminalize_owned(
-                job, state, status="cancelled", reason="cancelled",
-                exit_code=EXIT_BY_REASON["cancelled"], expected_controller_pid=None,
-            )
-            return EXIT_BY_REASON["cancelled"]
-        feedback: Path | None = None
-        schema_paths: tuple[Path, Path] | None = None
-        try:
-            command = _load_bound_command(job, state, stage_readonly=False)
-            MODEL_SELECTION.ACTIVE_CHILD_ENV = list(command["provider_env"])
-            _load_bound_selection(command, state)
-            schema_paths = _bound_schemas(command, state)
-            if not WORKTREE._worktree_symlink_boundary(command["workdir"]):
-                raise DispatchError("dispatch worktree symlink boundary changed")
-            if state["workflow"] == "project":
-                if WORKTREE._project_boundary(command["workdir"]) != state["project_boundary"]:
-                    raise DispatchError("project worktree boundary changed")
-            if state["attempt_origin"] == "conversation-continue":
-                feedback = _bound_verification(job, state)
-                if feedback is None:
-                    raise DispatchError("project continuation has no verification feedback")
-                command, _candidate_raw = _bound_current_candidate(job, state)
-        except (OSError, DispatchError):
-            terminal, _raw, _sha = _terminalize_owned(
-                job, state, status="failed", reason="status_unavailable",
-                exit_code=EXIT_BY_REASON["status_unavailable"],
-                failure_stage="binding_failure", expected_controller_pid=os.getpid(),
-            )
-            return int(terminal["exit_code"])
-        attempt = state["attempt"]
-        stream_path, stderr_path, envelope_path = _attempt_paths(job, attempt)
-        stdout_fd = -1; stderr_fd = -1
-        # ``elapsed_seconds`` is provider execution time.  The strict local
-        # command/root/schema/worktree proofs below happen before a provider
-        # process exists, so they cannot consume the provider hard, maximum,
-        # or idle budgets.  This is especially important when a safe platform
-        # Git fallback makes those bounded probes materially slower.
-        elapsed = float(state["attempt_base_elapsed"])
-        try:
-            stdout_fd = _ensure_new_private(stream_path)
-            stderr_fd = _ensure_new_private(stderr_path)
-            _stage(command, True)
-            _load_bound_command(job, state, stage_readonly=True)
-            _load_bound_selection(command, state)
-            schema_paths = _bound_schemas(command, state)
-        except (OSError, DispatchError):
-            if stdout_fd >= 0: os.close(stdout_fd)
-            if stderr_fd >= 0: os.close(stderr_fd)
-            with contextlib.suppress(OSError): _stage(command, False)
-            terminal, _raw, _sha = _terminalize_owned(
-                job, state, status="failed", reason="status_unavailable",
-                exit_code=EXIT_BY_REASON["status_unavailable"],
-                failure_stage="binding_failure", expected_controller_pid=os.getpid(),
-            )
-            return int(terminal["exit_code"])
-        argv = list(command["argv"])
-        if state["attempt_origin"] in {"conversation-resume", "conversation-continue"}:
-            conversation = state["conversation_id"]
-            if not isinstance(conversation, str):
-                raise DispatchError("resume has no conversation")
-            print_index = argv.index("--print")
-            prefix = ["--conversation", conversation]
-            prompt = command["resume_prompt"]
-            if state["attempt_origin"] == "conversation-continue":
-                if feedback is None:
-                    raise DispatchError("project continuation feedback was not prevalidated")
-                if state.get("provider_scope_path") is None:
-                    prefix.extend(["--add-dir", str(feedback.parent)])
-                    prompt = command["continue_prompt"] + f" Feedback file: '{feedback}'."
-                else:
-                    feedback_raw, _feedback_info = read_regular(
-                        feedback, MAX_VERIFICATION_BYTES, "verification feedback",
-                        allowed_modes=(0o400,),
-                    )
-                    prompt = (
-                        command["continue_prompt"]
-                        + " Driver verification JSON follows inline:\n"
-                        + feedback_raw.decode("utf-8", "strict")
-                    )
-            argv[print_index + 1] = prompt
-            argv[print_index:print_index] = prefix
-        selector = selectors.DefaultSelector()
-        buffers = {"stdout": bytearray(), "stderr": bytearray()}
-        sizes = {"stdout": 0, "stderr": 0}
-        next_notice = 0.0
-        reason: str | None = None
-        limit_kind: str | None = None
-        failure_stage: str | None = None
-        saw_init = False
-        saw_terminal = False
-        stage_dir: Path | None = None
-        scope: dict[str, Any] | None = None
-        selected_manifest: list[dict[str, Any]] | None = None
-        stage_manifest_sha: str | None = None
-        stage_identity: tuple[int, int, int, int, int] | None = None
-        narrow_source_snapshot: dict[str, Any] | None = None
-        scoped_executable: str | None = None
-        prepared_containment: CONTAINMENT.PreparedContainedLaunch | None = None
-        contained_root: CONTAINMENT.ProcessIdentity | None = None
-
-        def controller_transition(updates: dict[str, Any]) -> bool:
-            """Do not turn a concurrent approved control into a controller crash."""
-            nonlocal state, prior_raw
+        with inherited_lifecycle_lock(job, ownership_fd):
+            early_exit = _claim_controller_attempt(job, binding)
+            if early_exit is not None:
+                return early_exit
+            early_exit = _bind_controller_inputs(job, binding)
+            if early_exit is not None:
+                return early_exit
+            streams = _ControllerStreams(*_attempt_paths(job, binding.state["attempt"]))
+            early_exit = _open_controller_artifacts(job, binding, execution, streams)
+            if early_exit is not None:
+                return early_exit
+            _build_controller_argv(binding, launch)
+            streams.selector = selectors.DefaultSelector()
+            outcome = _ControllerOutcome()
+            candidate_data = _CandidateReconciliation()
             try:
-                state, prior_raw, _sha = transition(job, state, prior_raw, updates)
-                return True
-            except DispatchError as exc:
-                if str(exc) != "dispatch state changed before transition":
-                    raise
-                current, current_raw, _current_sha = read_state_snapshot(job)
-                if current["attempt"] != state["attempt"]:
-                    raise DispatchError("dispatch attempt changed during control")  # noqa: B904 -- preserve existing exception context and public diagnostics
-                state, prior_raw = current, current_raw
-                return False
-
-        def refresh_control_snapshot() -> None:
-            """Reload an approved control transition before using live limits."""
-            nonlocal state, prior_raw
-            current, current_raw, _current_sha = read_state_snapshot(job)
-            if current_raw == prior_raw:
-                return
-            if (
-                current["previous_state_sha256"] != digest(prior_raw)
-                or current["sequence"] != state["sequence"] + 1
-                or current["attempt"] != state["attempt"]
-            ):
-                raise DispatchError("dispatch changed during provider control")
-            state, prior_raw = current, current_raw
-
-        def drain_reaped_streams() -> None:
-            """Bind bytes emitted before reap without treating them as activity."""
-            nonlocal reason, failure_stage
-            for key in list(selector.get_map().values()):
-                name = key.data
-                while True:
-                    try:
-                        chunk = os.read(key.fd, 65536)
-                    except BlockingIOError:
-                        break
-                    except OSError:
-                        reason = "status_unavailable"
-                        failure_stage = "binding_failure"
-                        return
-                    if not chunk:
-                        try:
-                            selector.unregister(key.fileobj)
-                            cast(IO[bytes], key.fileobj).close()
-                        except OSError:
-                            reason = "status_unavailable"
-                            failure_stage = "binding_failure"
-                        break
-                    sizes[name] += len(chunk)
-                    if sizes[name] > MAX_STREAM_BYTES:
-                        reason = "output_oversized"
-                        return
-                    try:
-                        os.write(stdout_fd if name == "stdout" else stderr_fd, chunk)
-                    except OSError:
-                        reason = "status_unavailable"
-                        failure_stage = "binding_failure"
-                        return
-        try:
-            try:
-                # Re-read the frozen record and re-probe *after* all controller
-                # mutations and immediately before the provider-causing launch.
-                # argv[0] stays the portable public spelling while executable=
-                # pins the safe, freshly-probed target for this one process.
-                executable_binding = _reprobe_direct_selection(command, state, argv)
-                _bound_worktree_baseline(state, command)
-                if not WORKTREE._worktree_symlink_boundary(command["workdir"]):
-                    raise DispatchError("dispatch worktree symlink boundary changed")
-                launch_cwd = command["workdir"]
-                if state.get("provider_scope_path") is not None:
-                    _scope_path, raw_scope, scope_info = _read_provider_scope_file(
-                        state["provider_scope_path"], MAX_COMMAND_BYTES,
-                    )
-                    if digest(raw_scope) != state["provider_scope_sha256"]:
-                        raise DispatchError("provider scope file changed since dispatch")
-                    if list(_identity(scope_info)) != state["provider_scope_identity"]:
-                        raise DispatchError("provider scope file identity changed since dispatch")
-                    scope = WORKTREE._parse_provider_scope(raw_scope)
-                    readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
-                    manifest_sha = WORKTREE._manifest_digest(readable_manifest)
-                    WORKTREE._validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
-                    selected_manifest = WORKTREE._build_selected_content_manifest(command["workdir"], scope)
-                    selected_sha = WORKTREE._selected_content_digest(selected_manifest)
-                    policy_sha = WORKTREE._canonical_digest(scope)
-                    transmission_sha = _bound_transmission_sha256(
-                        command, policy_sha, manifest_sha, selected_sha,
-                    )
-                    _require_scoped_transmission_authority(
-                        command, state,
-                        selected_content_sha256=selected_sha,
-                        transmission_sha256=transmission_sha,
-                        provider_origin=state["attempt_origin"],
-                    )
-                    narrow_source_snapshot = WORKTREE._worktree_snapshot(command["workdir"])
-                    stage_dir = job / f"stage-{attempt:03d}"
-                    stage_identity, stage_manifest_sha = WORKTREE._materialize_stage(command["workdir"], stage_dir, scope, selected_manifest)
-                    launch_cwd = str(stage_dir)
-                    if executable_binding is None:
-                        try:
-                            executable_binding = MODEL_SELECTION.resolve_safe_executable()
-                        except MODEL_SELECTION.EvidenceUnavailable as exc:
-                            raise SelectionPreflightError(
-                                "scoped dispatch executable binding is unavailable",
-                            ) from exc
-                    scoped_executable = executable_binding[0]
-                else:
-                    approved_whole_sha = command.get("approved_whole_worktree_sha256")
-                    if (
-                        approved_whole_sha is not None
-                        and (
-                            state["attempt_origin"] == "initial"
-                            or (
-                                command["schema_version"] == 11
-                                and state.get("conversation_id") is None
-                            )
-                        )
-                    ):
-                        readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
-                        if command["schema_version"] == 11:
-                            content = WORKTREE.whole_worktree_content_manifest(command["workdir"])
-                            content_sha = content["manifest_sha256"]
-                            if content_sha != command["whole_worktree_content_sha256"]:
-                                raise DispatchError("whole-worktree content binding changed")
-                            expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
-                                _provider_isolation_for_command(command), command["native_grant_profile"],
-                                whole_worktree_content_sha256=content_sha,
-                                readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
-                            )
-                        else:
-                            expected_approval = WORKTREE._compute_provider_launch_approval_sha256(
-                                _provider_isolation_for_command(command), WORKTREE._manifest_digest(readable_manifest),
-                            ) if command["schema_version"] == 10 else WORKTREE._manifest_digest(readable_manifest)
-                        if expected_approval != approved_whole_sha:
-                            raise DispatchError("whole-worktree transmission binding changed")
-                _bind_workspace_prompt(
-                    argv, Path(os.path.realpath(launch_cwd)),
-                    scoped=scope is not None, boost=bool(command["boost"]),
-                    provider_isolation=_provider_isolation_for_command(command),
-                    legacy_sandbox=command["schema_version"] < 9,
-                )
-                if scoped_executable is not None and _provider_isolation_for_command(command) == "native":
-                    if stage_dir is None:
-                        raise DispatchError("scoped provider stage is unavailable")
-                    contained_argv = [scoped_executable, *argv[1:]]
-                    if contained_argv.count("--json-schema") != 1:
-                        raise DispatchError("scoped provider schema argument is invalid")
-                    schema_index = contained_argv.index("--json-schema") + 1
-                    if schema_index >= len(contained_argv):
-                        raise DispatchError("scoped provider schema argument is invalid")
-                    # The native binder canonicalizes the exact file. Use the
-                    # same spelling in argv so /var -> /private/var aliases do
-                    # not make the provider's approved schema unreadable.
-                    contained_argv[schema_index] = os.path.realpath(schema_paths[0])
-                    prepared_containment = CONTAINMENT.prepare_contained_launch(
-                        role=CONTAINMENT.ROLE_PROVIDER,
-                        network_policy=CONTAINMENT.NETWORK_PROVIDER_TLS,
-                        job_dir=job,
-                        attempt=attempt,
-                        stage_dir=stage_dir,
-                        target_executable=scoped_executable,
-                        target_argv=contained_argv,
-                        child_environment=MODEL_SELECTION.child_environment(
-                            command["provider_env"],
-                        ),
-                        allow_keychain=True,
-                        read_only_inputs=(contained_argv[schema_index],),
-                        provider_max_cycles=command["max_cycles"],
-                        provider_write_selectors=cast(dict[str, Any], scope)["write"],
-                        grant_profile=command["native_grant_profile"],
-                    )
-                # The prior attempt budget is still a hard stop, but bounded
-                # controller-local proofs do not become a provider timeout.
-                # Commit the running state/CAS boundary after slow preflight.
-                # The provider hard/runtime lease starts at the invocation
-                # boundary, immediately before Popen.  The value is committed
-                # only after Popen succeeds, so failed local creation still
-                # has no provider runtime.  This leaves no post-Popen window
-                # in which a child can schedule work beyond the hard limit.
-                # The final executable confirmation remains immediately
-                # adjacent to the provider-causing call.
-                if stop_signal is not None:
-                    reason = "interrupted"
-                    returncode = 128 + stop_signal
-                elif elapsed >= _provider_max_seconds(state):
-                    reason, limit_kind = "hard_deadline_exceeded", "max-runtime"
-                    returncode = EXIT_BY_REASON[reason]
-                elif elapsed >= float(state["hard_seconds"]):
-                    reason, limit_kind = "hard_deadline_exceeded", "hard"
-                    returncode = EXIT_BY_REASON[reason]
-                else:
-                    # Linearize cancellation against the provider-causing
-                    # operation.  The final executable confirmation and Popen
-                    # stay in this same short critical section: cancellation
-                    # before it wins without a provider; cancellation after
-                    # it is necessarily a post-launch request.
-                    with state_lock(job):
-                        current, current_raw, _current_sha = load_state(job)
-                        if (
-                            current["attempt"] != state["attempt"]
-                            or current["controller_pid"] != os.getpid()
-                            or current["status"] in TERMINAL
-                        ):
-                            raise DispatchError("dispatch changed before provider launch")
-                        state, prior_raw = current, current_raw
-                        if state["cancel_requested"]:
-                            reason = "cancelled"
-                            returncode = EXIT_BY_REASON[reason]
-                        else:
-                            running_updates = {
-                                "status": "running", "controller_pid": os.getpid(),
-                                "started_epoch": None, "last_progress_epoch": None,
-                                "stream_path": str(stream_path), "stderr_path": str(stderr_path),
-                                "next_action": "wait",
-                            }
-                            if stage_dir is not None:
-                                running_updates.update({
-                                    "provider_stage_path": str(stage_dir),
-                                    "provider_stage_identity": list(stage_identity) if stage_identity is not None else None,
-                                    "provider_stage_manifest_sha256": stage_manifest_sha,
-                                })
-                            state, prior_raw, _sha = _transition_locked(job, state, prior_raw, running_updates)
-                            exact_executable = None
-                            if executable_binding is not None:
-                                try:
-                                    exact_executable = MODEL_SELECTION.confirm_executable_binding(
-                                        *executable_binding,
-                                    )
-                                except MODEL_SELECTION.EvidenceUnavailable as exc:
-                                    raise SelectionPreflightError(
-                                        "dispatch direct selection launch binding changed",
-                                    ) from exc
-                            provider_argv: list[str] | tuple[str, ...] = argv
-                            provider_cwd = launch_cwd
-                            provider_environment = _provider_environment(command)
-                            if prepared_containment is not None:
-                                if (
-                                    stage_dir is None
-                                    or scope is None
-                                    or selected_manifest is None
-                                    or stage_identity is None
-                                    or stage_manifest_sha is None
-                                ):
-                                    raise DispatchError("scoped provider launch binding is incomplete")
-                                _revalidate_scoped_provider_stage(
-                                    stage_dir, scope, selected_manifest,
-                                    stage_identity, stage_manifest_sha,
-                                )
-                                confirmed_containment = CONTAINMENT.confirm_contained_launch(
-                                    prepared_containment,
-                                )
-                                provider_argv = confirmed_containment.argv
-                                exact_executable = confirmed_containment.executable
-                                provider_cwd = confirmed_containment.cwd
-                                provider_environment = confirmed_containment.environment
-                            launch_mono = time.monotonic()
-                            process = subprocess.Popen(
-                                provider_argv,
-                                executable=exact_executable,
-                                cwd=provider_cwd,
-                                stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE,
-                                env=provider_environment,
-                                start_new_session=True,
-                                close_fds=True,
-                                preexec_fn=lambda: os.umask(int(command["child_umask"], 8)),
-                            )
-                            started_mono = launch_mono
-                            heartbeat_mono = started_mono
-                            next_notice = started_mono + float(command["notice_seconds"])
-                            if prepared_containment is not None:
-                                contained_root = CONTAINMENT.bind_new_process_group(
-                                    process.pid,
-                                )
-                            state, prior_raw, _sha = _transition_locked(
-                                job, state, prior_raw, {"started_epoch": time.time()},
-                            )
-            except MODEL_SELECTION.ProbeInterrupted as exc:
-                # model_selection owns and reaps its short-lived probe group;
-                # the controller owns the terminal dispatch projection.
-                stop_signal = exc.signal_number
-                reason = "interrupted"
-                returncode = 128 + exc.signal_number
-            except SelectionPreflightError:
-                reason = "selection_preflight_failed"
-                failure_stage = "selection_preflight"
-                returncode = EXIT_BY_REASON[reason]
-            except WorktreeBaselineError as exc:
-                reason = "resolve_undo_present" if isinstance(exc, ResolveUndoPresentError) else "status_unavailable"
-                failure_stage = "binding_failure"
-                returncode = EXIT_BY_REASON[reason]
-            except (DispatchError, CONTAINMENT.ContainmentError):
-                reason = "status_unavailable"
-                returncode = EXIT_BY_REASON["status_unavailable"]
-            except OSError:
-                # A legacy tier deliberately reaches this point even when agy is
-                # absent.  Publish a terminal, sanitized dispatch failure rather
-                # than leaking an interpreter traceback or leaving a queued job.
-                reason = "agy_failed_unclassified"
-                returncode = 127
-            else:
-                if process is not None:
-                    try:
-                        assert process.stdout is not None and process.stderr is not None
-                        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
-                            os.set_blocking(pipe.fileno(), False)
-                            selector.register(pipe, selectors.EVENT_READ, name)
-                    except (OSError, DispatchError):
-                        reason = "status_unavailable"
-                        failure_stage = "binding_failure"
-            # Pipe EOF is the completion observation.  Do not poll/reap the leader
-            # before process-group closure; its PID reserves the group identifier.
-            while process is not None and selector.get_map() and reason is None:
-                now_mono = time.monotonic()
-                elapsed = float(state["attempt_base_elapsed"]) + now_mono - cast(float, started_mono)
-                try:
-                    refresh_control_snapshot()
-                except DispatchError:
-                    reason = "status_unavailable"
-                    break
-                if state["cancel_requested"] or stop_signal is not None:
-                    reason = "cancelled" if stop_signal is None else "interrupted"
-                    break
-                if elapsed >= _provider_max_seconds(state):
-                    reason, limit_kind = "hard_deadline_exceeded", "max-runtime"
-                    break
-                if elapsed >= state["hard_seconds"]:
-                    reason, limit_kind = "hard_deadline_exceeded", "hard"
-                    break
-                if now_mono - heartbeat_mono >= float(state["idle_seconds"]):
-                    reason, limit_kind = "idle_timeout", "idle"
-                    break
-                if now_mono >= next_notice:
-                    try:
-                        controller_transition({
-                            "notice_count": state["notice_count"] + 1,
-                            "elapsed_seconds": elapsed,
-                        })
-                    except DispatchError:
-                        reason = "status_unavailable"
-                        failure_stage = "binding_failure"
-                        break
-                    next_notice += float(command["notice_seconds"])
-                    if sys.stderr.isatty():
-                        print(
-                            f"agy-worker: still running; elapsed={int(elapsed)}s "
-                            f"progress={state['progress_count']}", file=sys.stderr, flush=True,
-                        )
-                try:
-                    # A fixed poll can return after a nearer hard, maximum,
-                    # idle, or notice boundary.  Bound the kernel wait to the
-                    # first controller-owned clock, then reload any extension
-                    # and classify the resampled time before consuming ready
-                    # bytes as semantic progress.
-                    wait_until = min(
-                        cast(float, started_mono)
-                        + max(0.0, _provider_max_seconds(state) - float(state["attempt_base_elapsed"])),
-                        cast(float, started_mono)
-                        + max(0.0, float(state["hard_seconds"]) - float(state["attempt_base_elapsed"])),
-                        heartbeat_mono + float(state["idle_seconds"]),
-                        next_notice,
-                    )
-                    wait_seconds = min(CONTROL_POLL, max(0.0, wait_until - now_mono))
-                    events = selector.select(wait_seconds)
-                except OSError:
-                    reason = "status_unavailable"
-                    failure_stage = "binding_failure"
-                    break
-                post_wait_mono = time.monotonic()
-                try:
-                    refresh_control_snapshot()
-                except DispatchError:
-                    reason = "status_unavailable"
-                    failure_stage = "binding_failure"
-                    break
-                elapsed = (
-                    float(state["attempt_base_elapsed"])
-                    + post_wait_mono - cast(float, started_mono)
-                )
-                if state["cancel_requested"] or stop_signal is not None:
-                    reason = "cancelled" if stop_signal is None else "interrupted"
-                    break
-                if elapsed >= _provider_max_seconds(state):
-                    reason, limit_kind = "hard_deadline_exceeded", "max-runtime"
-                    break
-                if elapsed >= float(state["hard_seconds"]):
-                    reason, limit_kind = "hard_deadline_exceeded", "hard"
-                    break
-                if post_wait_mono - heartbeat_mono >= float(state["idle_seconds"]):
-                    reason, limit_kind = "idle_timeout", "idle"
-                    break
-                for key, _mask in events:
-                    name = key.data
-                    try:
-                        chunk = os.read(key.fd, 65536)
-                    except BlockingIOError:
-                        continue
-                    except OSError:
-                        reason = "status_unavailable"
-                        failure_stage = "binding_failure"
-                        break
-                    if not chunk:
-                        try:
-                            selector.unregister(key.fileobj)
-                            cast(IO[bytes], key.fileobj).close()
-                        except OSError:
-                            reason = "status_unavailable"
-                            failure_stage = "binding_failure"
-                            break
-                        continue
-                    sizes[name] += len(chunk)
-                    if sizes[name] > MAX_STREAM_BYTES:
-                        reason = "output_oversized"
-                        break
-                    try:
-                        os.write(stdout_fd if name == "stdout" else stderr_fd, chunk)
-                    except OSError:
-                        reason = "status_unavailable"
-                        failure_stage = "binding_failure"
-                        break
-                    if name == "stdout" and reason is None:
-                        buffers[name].extend(chunk)
-                        while b"\n" in buffers[name]:
-                            line, _, remainder = buffers[name].partition(b"\n")
-                            buffers[name] = bytearray(remainder)
-                            if len(line) > MAX_EVENT_BYTES:
-                                reason = "output_oversized"
-                                break
-                            valid, conversation, event_kind = _event(line)
-                            if valid:
-                                if saw_terminal or (event_kind == "init" and saw_init) or (
-                                    event_kind != "init" and not saw_init
-                                ):
-                                    reason = "invalid_envelope"
-                                    failure_stage = "framing"
-                                    break
-                                if event_kind == "init":
-                                    try:
-                                        init_frame = json.loads(
-                                            line.decode("utf-8", "strict"),
-                                            object_pairs_hook=_duplicates,
-                                        )
-                                    except (UnicodeError, json.JSONDecodeError, ValueError, OverflowError, DispatchError):
-                                        init_frame = None
-                                    init_value = init_frame.get("init") if isinstance(init_frame, dict) else None
-                                    if not isinstance(init_value, dict) or not _init_cwd_matches_launch(init_value, launch_cwd):
-                                        reason = "status_unavailable"
-                                        failure_stage = "binding_failure"
-                                        break
-                                    if command.get("boost") and (
-                                        init_value.get("agent") != "Boost"
-                                        or init_value.get("permission_mode") != "request-review"
-                                    ):
-                                        reason = "invalid_envelope"
-                                        failure_stage = "boost_contract"
-                                        break
-                                    saw_init = True
-                                elif event_kind == "result":
-                                    saw_terminal = True
-                                heartbeat_mono = time.monotonic()
-                                updates: dict[str, Any] = {
-                                    "progress_count": state["progress_count"] + 1,
-                                    "last_progress_epoch": time.time(),
-                                    "elapsed_seconds": float(state["attempt_base_elapsed"]) + heartbeat_mono - cast(float, started_mono),
-                                    "last_activity": (
-                                        "provider_initialized" if event_kind == "init"
-                                        else "progress_signal" if event_kind == "step_update"
-                                        else "terminal_received"
-                                    ),
-                                }
-                                if conversation is not None:
-                                    if state["conversation_id"] not in {None, conversation}:
-                                        reason = "status_unavailable"
-                                        break
-                                    updates["conversation_id"] = conversation
-                                    updates["resume_available"] = True
-                                try:
-                                    controller_transition(updates)
-                                except DispatchError:
-                                    reason = "status_unavailable"
-                                    failure_stage = "binding_failure"
-                                    break
-                        if len(buffers[name]) > MAX_EVENT_BYTES:
-                            # A newline-free oversized frame cannot be safely
-                            # resynchronized.  It is neither a heartbeat nor a
-                            # candidate terminal result.
-                            reason = "output_oversized"
-                    if reason is not None:
-                        break
-                if reason is not None:
-                    break
-            if process is not None:
-                # The candidate worktree binding below is taken only after the
-                # provider process group has been terminated and reaped.  The
-                # controller-owned stream artifacts are flushed afterward.
-                # Freeze first: fsync, envelope parsing, and reconciliation
-                # are controller-local work and must not keep the provider
-                # clock or extension window alive.
-                returncode = _terminate_provider_process(
-                    process, contained_root,
-                    contained=prepared_containment is not None,
-                )
-                idle_timeout_with_exited_provider = bool(
-                    reason == "idle_timeout" and returncode == 0
-                )
-                process = None
-                runtime_end_mono = time.monotonic()
-                # A hard/max boundary stops semantic event processing, but a
-                # complete terminal frame already present in the reaped pipes
-                # remains bounded provider evidence.  Drain it without
-                # incrementing progress or moving the heartbeat.
-                drain_reaped_streams()
-                assert started_mono is not None
-                elapsed = float(state["attempt_base_elapsed"]) + max(
-                    0.0, runtime_end_mono - started_mono,
-                )
-                state, prior_raw, _sha, frozen_limit = _freeze_reaped_runtime(
-                    job, state["attempt"], os.getpid(), elapsed,
-                )
-                runtime_frozen = True
-                if reason == "hard_deadline_exceeded":
-                    # A valid extension may have landed after this controller
-                    # observed its old limit but before the reaped-runtime CAS.
-                    # The frozen locked limit is authoritative in either
-                    # direction; do not retain a stale timeout projection.
-                    if frozen_limit is None:
-                        reason, limit_kind = None, None
-                    else:
-                        reason, limit_kind = "hard_deadline_exceeded", frozen_limit
-                elif reason is None and frozen_limit is not None:
-                    reason, limit_kind = "hard_deadline_exceeded", frozen_limit
-            try:
-                os.fsync(stdout_fd)
-                os.fsync(stderr_fd)
-            except OSError:
-                reason = "status_unavailable"
-                failure_stage = "binding_failure"
-            result_binding: tuple[str, tuple[int, int, int, int, int]] | None = None
-            outer_status: str | None = None
-            provider_retry_after: int | None = None
-            provider_retry_observed: float | None = None
-            reviewed_idle_partial = bool(
-                idle_timeout_with_exited_provider
-                and _has_reviewed_provider_timeout(
-                    stderr_path,
-                    command["agy_version"] if command["agy_version_observed"] else "",
-                    command["max_seconds"],
-                )
-            )
-            # A deadline is a controller fact, not a reason to discard a
-            # terminal report already emitted by the bounded provider.  Parse
-            # that report for candidate/provenance evidence, but never let its
-            # outer SUCCESS/ERROR/CANCELLED disposition publish past the
-            # frozen deadline.  Cancellation and binding failures retain their
-            # existing fail-closed precedence and do not enter this path.
-            if reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:
-                if reason is None:
-                    terminal_failure = _quota_terminal_failure(
-                        stream_path,
-                        command["agy_version"] if command["agy_version_observed"] else "",
-                    )
-                    if terminal_failure is not None:
-                        reason, provider_retry_after = terminal_failure
-                        outer_status = "ERROR"
-                        # The exact 1.1.13 quota terminal has a valid outer ERROR
-                        # fact but intentionally carries no structured report.
-                        # Preserve both facts without treating quota as a report.
-                        failure_stage = "missing_structured_output"
-                        if provider_retry_after is not None:
-                            provider_retry_observed = time.time()
-                if reason in {None, "hard_deadline_exceeded"} and sizes["stdout"] == 0:
-                    if reason is None:
-                        reason = (
-                            _classify_stderr(
-                                stderr_path,
-                                command["agy_version"] if command["agy_version_observed"] else "",
-                                returncode,
-                                command["max_seconds"],
-                            )
-                        )
-                elif reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:
-                    try:
-                        if schema_paths is None:
-                            raise DispatchError("dispatch schema binding is unavailable")
-                        schema_paths = _bound_schemas(command, state)
-                        result_binding, outer_status, failure_stage = _validate_terminal_envelope(
-                            stream_path, envelope_path, schema_paths[0], schema_paths[1],
-                            boost=bool(command.get("boost")), stage_dir=stage_dir,
-                        )
-                        if result_binding is None and reason is None:
-                            if (
-                                failure_stage == "missing_structured_output"
-                                and returncode == 0
-                                and _has_reviewed_terminal_refusal(
-                                    stream_path,
-                                    command["agy_version"] if command["agy_version_observed"] else "",
-                                )
-                            ):
-                                reason, limit_kind = "permission_required", None
-                                failure_stage = None
-                            else:
-                                reason = "invalid_envelope"
-                        elif (
-                            result_binding is not None
-                            and reason != "hard_deadline_exceeded"
-                            and _has_reviewed_denied_actions(
-                                stream_path,
-                                command["agy_version"] if command["agy_version_observed"] else "",
-                            )
-                        ):
-                            reason, limit_kind = "permission_required", None
-                        elif (
-                            result_binding is not None
-                            and reason != "hard_deadline_exceeded"
-                            and _has_reviewed_provider_timeout(
-                                stderr_path,
-                                command["agy_version"] if command["agy_version_observed"] else "",
-                                command["max_seconds"],
-                            )
-                        ):
-                            reason, limit_kind = "provider_timeout", None
-                        elif reason is None and outer_status == "ERROR":
-                            reason = "provider_terminal_error"
-                        elif reason is None and outer_status == "CANCELLED":
-                            reason = "provider_terminal_cancelled"
-                    except DispatchError:
-                        # A binding/schema failure is security-relevant even
-                        # when a deadline was observed.  Do not preserve a
-                        # candidate whose terminal bytes could not be bound.
-                        reason = "status_unavailable"
-                        result_binding = None
-                        failure_stage = "binding_failure"
-            boundary_failed = False
-            if command["workflow"] == "project":
-                try:
-                    if WORKTREE._project_boundary(command["workdir"]) != state["project_boundary"]:
-                        raise DispatchError("project worktree boundary changed")
-                except DispatchError:
-                    boundary_failed = True
-                    reason = "status_unavailable"
-                    result_binding = None
-                    failure_stage = "binding_failure"
-            # One blocked completion snapshot linearizes terminal state against
-            # late HUP/INT/TERM just as the foreground result publisher does.
-            watched = tuple(prior_handlers)
-            signal.pthread_sigmask(signal.SIG_BLOCK, watched)
-            pending = signal.sigpending()
-            completion_signal = stop_signal
-            for candidate in watched:
-                if candidate in pending or candidate == stop_signal:
-                    completion_signal = candidate
-                    break
-            if completion_signal is not None:
-                stop_signal = completion_signal
-                reason = "interrupted"
-                result_binding = None
-                failure_stage = None
-            if reason is None:
-                final_status, exit_code = "succeeded", 0
-                _result_path: str | None = str(envelope_path)
-            else:
-                final_status = "cancelled" if reason in {"cancelled", "interrupted"} else "failed"
-                if reason == "provider_terminal_cancelled":
-                    final_status = "cancelled"
-                exit_code = 128 + stop_signal if stop_signal is not None else EXIT_BY_REASON[reason]
-                _result_path = str(envelope_path) if result_binding is not None else None
-            cleanup_failed = False
-            reconciliation_manifest_sha: str | None = None
-            derived_selected_sha: str | None = None
-            derived_selected_files: int | None = None
-            derived_selected_trees: int | None = None
-            derived_transmission_sha: str | None = None
-            if stage_dir is not None and stage_dir.exists():
-                try:
-                    if (
-                        narrow_source_snapshot is None
-                        or WORKTREE._worktree_snapshot(command["workdir"]) != narrow_source_snapshot
-                    ):
-                        raise DispatchError(
-                            "source worktree changed while the narrow provider stage was active"
-                        )
-                    mutations, op_manifest = WORKTREE._scan_stage_mutations(stage_dir, cast(dict[str, Any], scope), cast(list[dict[str, Any]], selected_manifest))
-                    if result_binding is not None and not _declared_scoped_mutations_match(
-                        envelope_path, result_binding, mutations, stage_dir,
-                    ):
-                        raise DispatchError(
-                            "worker files_changed does not match scoped stage mutations"
-                        )
-                    if result_binding is not None and outer_status in {
-                        "SUCCESS", "ERROR", "CANCELLED",
-                    }:
-                        reconciliation_manifest_sha = WORKTREE._reconcile_stage_to_source(
-                            command["workdir"], stage_dir, mutations, job,
-                        )
-                        if WORKTREE._build_selected_content_manifest(
-                            command["workdir"], cast(dict[str, Any], scope),
-                        ) != WORKTREE._build_selected_content_manifest(
-                            stage_dir, cast(dict[str, Any], scope), is_stage=True,
-                        ):
-                            raise DispatchError(
-                                "source reconciliation does not match the provider stage"
-                            )
-                    else:
-                        reconciliation_manifest_sha = WORKTREE._selected_content_digest([])
-                except Exception:
-                    cleanup_failed = True
-                finally:
-                    try:
-                        if stage_identity is None:
-                            raise DispatchError("stage cleanup identity is unavailable")
-                        WORKTREE._cleanup_stage(stage_dir, stage_identity)
-                    except (OSError, DispatchError):
-                        cleanup_failed = True
-            try:
-                selector.close()
-                os.close(stdout_fd); stdout_fd = -1
-                os.close(stderr_fd); stderr_fd = -1
-                _stage(command, False)
-                _load_bound_command(job, state, stage_readonly=False)
-                _bound_schemas(command, state)
-                if state["attempt_origin"] == "conversation-continue":
-                    _bound_verification(job, state)
-            except (OSError, DispatchError):
-                cleanup_failed = True
-            if cleanup_failed:
-                reason, final_status = "status_unavailable", "failed"
-                exit_code = EXIT_BY_REASON["status_unavailable"]
-                _result_path = None
-                result_binding = None
-                failure_stage = "binding_failure"
-            # A SHA-approved cancellation may arrive after the last pipe-loop
-            # observation (or after reaping) and before candidate work begins.
-            # Observe it under the short ownership lock before selecting the
-            # expensive reconciliation path.  The final transition reloads
-            # again, but that later check is too late to keep a cheap cancel
-            # from being delayed by a repository-controlled Git probe.
-            with state_lock(job):
-                current, current_raw, _current_sha = load_state(job)
-                if (
-                    current["attempt"] != state["attempt"]
-                    or current["controller_pid"] != os.getpid()
-                    or current["status"] in TERMINAL
-                ):
-                    raise DispatchError("dispatch changed before terminal reconciliation")
-                state, prior_raw = current, current_raw
-                if current["cancel_requested"]:
-                    reason, final_status = "cancelled", "cancelled"
-                    exit_code = EXIT_BY_REASON["cancelled"]
-                    _result_path = None
-                    result_binding = None
-                    failure_stage = None
-            # This may use a bounded Git fallback.  The provider clock was
-            # already frozen above, so keep this outside the final short state
-            # lock: status/control readers can observe the frozen record and
-            # reject stale extensions while reconciliation is in progress.
-            # A local cancellation/interruption with no current terminal
-            # report has no new worktree fact to reconcile.  Do not make the
-            # cheap control wait for a candidate/worktree Git scan after the
-            # provider group is already reaped.  A continuation's prior
-            # candidate remains exact-bound and unreviewed; result/finalize
-            # rebind it before use.  A provider-CANCELLED report still has a
-            # current result_binding and retains the reconciliation path.
-            skip_cancel_reconciliation = bool(
-                reason in {"cancelled", "interrupted"}
-                and result_binding is None
-            )
-            if skip_cancel_reconciliation:
-                candidate_worktree = None
-                reconciliation = {
-                    "worktree_reconciliation": "unavailable",
-                    "worktree_changes_present": None,
-                    "worktree_changed_since_dispatch": None,
-                }
-            else:
-                candidate_worktree = (
-                    _state_worktree_snapshot(state, command["workdir"])
-                    if result_binding is not None else None
-                )
-                reconciliation = (
-                    _reconciliation_from_snapshot(
-                        candidate_worktree, state["worktree_baseline"],
-                    )
-                    if result_binding is not None else _reconcile_worktree(
-                        command["workdir"], state["worktree_baseline"], state=state,
-                    )
-                )
-            if (
-                result_binding is not None
-                and candidate_worktree is not None
-                and reconciliation_manifest_sha is not None
-                and scope is not None
-            ):
-                try:
-                    derived_readable = WORKTREE._scan_readable_worktree(command["workdir"])
-                    WORKTREE._validate_scope_against_worktree(
-                        scope, command["workdir"], derived_readable,
-                    )
-                    derived_selected = WORKTREE._build_selected_content_manifest(
-                        command["workdir"], scope,
-                    )
-                    derived_selected_sha = WORKTREE._selected_content_digest(derived_selected)
-                    derived_selected_files = sum(
-                        1 for item in derived_selected if item["kind"] == "file"
-                    )
-                    derived_selected_trees = sum(
-                        1 for item in derived_selected if item["kind"] == "directory"
-                    )
-                    derived_transmission_sha = _bound_transmission_sha256(
-                        command, WORKTREE._canonical_digest(scope),
-                        WORKTREE._manifest_digest(derived_readable), derived_selected_sha,
-                    )
-                except Exception:
-                    derived_selected_sha = None
-                    derived_selected_files = None
-                    derived_selected_trees = None
-                    derived_transmission_sha = None
-            # An approved control may land after the last loop observation.  Bind
-            # finalization to the current state under the same short transition lock.
-            with state_lock(job):
-                current, current_raw, _current_sha = load_state(job)
-                if (
-                    current["attempt"] != state["attempt"]
-                    or current["controller_pid"] != os.getpid()
-                    or current["status"] in TERMINAL
-                ):
-                    raise DispatchError("dispatch changed before terminalization")
-                # Persist the provider runtime measured before local terminal
-                # parsing/reconciliation.  Those controller-local checks must
-                # not silently consume a later repair/recovery budget.
-                elapsed = max(
-                    elapsed,
-                    float(current["elapsed_seconds"]),
-                )
-                if current["cancel_requested"]:
-                    reason, final_status, exit_code = "cancelled", "cancelled", EXIT_BY_REASON["cancelled"]
-                    _result_path = None
-                    result_binding = None
-                    failure_stage = None
-                if reason != "provider_quota_exhausted":
-                    provider_retry_after = None
-                    provider_retry_observed = None
-                prior_candidate_exists = bool(
-                    current["attempt_origin"] == "conversation-continue"
-                    and current["candidate_recognized"]
-                )
-                prior_candidate_is_bound = bool(
-                    prior_candidate_exists
-                    and current["candidate_source"] != "none"
-                    and current["result_available"]
-                    and current["failure_stage"] is None
-                    and all(current[key] is not None for key in (
-                        "result_path", "result_sha256", "result_identity",
-                        "candidate_worktree_sha256", "candidate_worktree_entries",
-                    ))
-                )
-                # An old continuation candidate remains readable only when all
-                # of its exact report/worktree bindings are still complete.
-                # Keep an incomplete one as inaccessible forensic state and
-                # fail closed; do not let a concurrent local cancel convert it
-                # into an apparently usable candidate.
-                _preserve_candidate = bool(
-                    result_binding is None and prior_candidate_is_bound
-                )
-                preserve_candidate_forensics = bool(
-                    result_binding is None and prior_candidate_exists
-                )
-                terminal_snapshot_unavailable = bool(
-                    result_binding is not None
-                    and outer_status in {"SUCCESS", "ERROR", "CANCELLED"}
-                    and candidate_worktree is None
-                )
-                if terminal_snapshot_unavailable:
-                    # Keep the exact terminal report binding and its outer
-                    # provenance for forensics, but it is not a reviewable
-                    # candidate without a worktree binding.
-                    reason, final_status = "status_unavailable", "failed"
-                    exit_code = EXIT_BY_REASON["status_unavailable"]
-                    failure_stage = "binding_failure"
-                if preserve_candidate_forensics and not prior_candidate_is_bound:
-                    reason, final_status = "status_unavailable", "failed"
-                    exit_code = EXIT_BY_REASON["status_unavailable"]
-                    failure_stage = "binding_failure"
-                candidate_recognized = result_binding is not None or preserve_candidate_forensics
-                candidate_unavailable = bool(
-                    candidate_recognized and failure_stage == "binding_failure"
-                )
-                candidate_source = (
-                    "provider_success" if result_binding is not None and outer_status == "SUCCESS"
-                    else "provider_error" if result_binding is not None and outer_status == "ERROR"
-                    else "provider_cancelled" if result_binding is not None and outer_status == "CANCELLED"
-                    else current["candidate_source"] if preserve_candidate_forensics
-                    else "none"
-                )
-                if failure_stage in {"schema_rejection", "binding_failure", "framing", "outer_status", "invalid_envelope"}:
-                    provider_terminal_status = "unknown"
-                else:
-                    provider_terminal_status = (
-                        "success" if outer_status == "SUCCESS"
-                        else "error" if outer_status == "ERROR"
-                        else "cancelled" if outer_status in {"CANCELLED", "CANCELED"}
-                        else "unknown"
-                    )
-                preserved_path = current["result_path"] if preserve_candidate_forensics else None
-                preserved_sha = current["result_sha256"] if preserve_candidate_forensics else None
-                preserved_identity = current["result_identity"] if preserve_candidate_forensics else None
-                is_boost = bool(command.get("boost"))
-                repair_lineage_updates: dict[str, Any] = {}
-                if current["schema_version"] >= 12 and result_binding is not None:
-                    repair_lineage_updates = {
-                        "repair_lineage_sha256": None,
-                        "repair_parent_result_sha256": None,
-                        "repair_parent_worktree_sha256": None,
-                        "repair_lineage_attempt": None,
-                    }
-                    if (
-                        derived_selected_sha is not None
-                        and derived_selected_files is not None
-                        and derived_selected_trees is not None
-                        and derived_transmission_sha is not None
-                    ):
-                        repair_lineage_updates.update({
-                            "selected_content_sha256": derived_selected_sha,
-                            "selected_file_count": derived_selected_files,
-                            "selected_tree_count": derived_selected_trees,
-                            "transmission_sha256": derived_transmission_sha,
-                        })
-                    if (
-                        current["allow_scoped_repair"]
-                        and candidate_worktree is not None
-                        and reconciliation_manifest_sha is not None
-                        and derived_selected_sha is not None
-                        and derived_selected_files is not None
-                        and derived_selected_trees is not None
-                        and derived_transmission_sha is not None
-                    ):
-                        parent_result_sha = (
-                            current["result_sha256"]
-                            if current["attempt_origin"] == "conversation-continue"
-                            else None
-                        )
-                        parent_worktree_sha = (
-                            current["candidate_worktree_sha256"]
-                            if current["attempt_origin"] == "conversation-continue"
-                            else current["worktree_baseline"]["sha256"]
-                        )
-                        repair_lineage_updates = {
-                            **repair_lineage_updates,
-                            "repair_parent_result_sha256": parent_result_sha,
-                            "repair_parent_worktree_sha256": parent_worktree_sha,
-                            "repair_lineage_attempt": current["attempt"],
-                            "repair_lineage_sha256": _compute_repair_lineage_sha256(
-                                authority_sha256=current["repair_authority_sha256"],
-                                attempt=current["attempt"],
-                                parent_result_sha256=parent_result_sha,
-                                parent_worktree_sha256=parent_worktree_sha,
-                                reconciliation_sha256=reconciliation_manifest_sha,
-                                result_sha256=result_binding[0],
-                                candidate_worktree_sha256=candidate_worktree["sha256"],
-                                selected_content_sha256=derived_selected_sha,
-                                transmission_sha256=derived_transmission_sha,
-                            ),
-                        }
-                updates = {
-                    "status": final_status,
-                    "reason": reason,
-                    "exit_code": exit_code,
-                    "controller_pid": None,
-                    "finished_epoch": time.time(),
-                    "elapsed_seconds": elapsed,
-                    "agy_returncode": returncode,
-                    "result_path": str(envelope_path) if result_binding is not None else preserved_path,
-                    "result_sha256": result_binding[0] if result_binding is not None else preserved_sha,
-                    "result_identity": list(result_binding[1]) if result_binding is not None else preserved_identity,
-                    "candidate_recognized": candidate_recognized,
-                    "candidate_source": candidate_source,
-                    "provider_terminal_status": provider_terminal_status,
-                    # Preserve an exact old candidate after a binding failure for
-                    # forensics, but never claim it can still be read or reviewed.
-                    "result_available": candidate_recognized and not candidate_unavailable,
-                    "candidate_worktree_sha256": (
-                        candidate_worktree["sha256"] if candidate_worktree is not None
-                        else current["candidate_worktree_sha256"] if preserve_candidate_forensics else None
-                    ),
-                    "candidate_worktree_entries": (
-                        candidate_worktree["entries"] if candidate_worktree is not None
-                        else current["candidate_worktree_entries"] if preserve_candidate_forensics else None
-                    ),
-                    "driver_disposition": "unreviewed" if candidate_recognized else "not_applicable",
-                    "failure_stage": failure_stage,
-                    "last_activity": "terminal_received" if saw_terminal else current["last_activity"],
-                    "next_action": (
-                        "blocked" if candidate_unavailable else "driver_review"
-                    ) if candidate_recognized else (
-                        "none" if reason in {"selection_preflight_failed", "permission_required"} else
-                        "resume" if current["conversation_id"] and not is_boost else "blocked"
-                    ),
-                    "next_action_command": None,
-                    **(
-                        {
-                            "worktree_reconciliation": "unavailable",
-                            "worktree_changes_present": None,
-                            "worktree_changed_since_dispatch": None,
-                        }
-                        if terminal_snapshot_unavailable else reconciliation
-                    ),
-                    "resume_available": bool(
-                        current["conversation_id"] and not candidate_recognized
-                        and final_status == "failed"
-                        and reason not in {"selection_preflight_failed", "permission_required"} and not is_boost
-                    ),
-                    "continue_available": False,
-                    "remote_cancel_unverified": reason in {"cancelled", "interrupted"},
-                    "limit_kind": limit_kind,
-                    "provider_retry_after_seconds": provider_retry_after,
-                    "provider_retry_observed_epoch": provider_retry_observed,
-                    **repair_lineage_updates,
-                }
-                if current.get("provider_scope_path") is not None:
-                    updates["reconciliation_manifest_sha256"] = reconciliation_manifest_sha
-                if result_binding is not None:
-                    # Continuation feedback remains bound audit evidence for
-                    # the prior candidate. A newly returned candidate starts
-                    # unreviewed, so it cannot inherit prior check evidence.
-                    updates.update({
-                        "check_summary": None,
-                        "check_counts": {
-                            "passed": 0, "failed": 0,
-                            "advisory": 0, "missing": 0,
-                        },
-                    })
-                if current["schema_version"] >= 5:
-                    if boundary_failed or candidate_unavailable:
-                        updates.update({"phase": "blocked", "assurance": "blocked"})
-                    elif candidate_recognized:
-                        updates.update({
-                            "phase": (
-                                "repair-failed"
-                                if final_status == "failed" and current["attempt_origin"] == "conversation-continue"
-                                else "awaiting-verification"
-                            ),
-                            "assurance": "pending",
-                            "continue_available": bool(
-                                final_status in {"succeeded", "failed"}
-                                and reason not in {"selection_preflight_failed", "permission_required"}
-                                and candidate_source != "provider_cancelled"
-                                and current["conversation_id"] and not is_boost
-                                and current["attempt"] < current["max_cycles"]
-                                and elapsed < _provider_max_seconds(current)
-                                and (
-                                    current.get("provider_scope_path") is None
-                                    or derived_transmission_sha
-                                    == current.get("approved_transmission_sha256")
-                                    or repair_lineage_updates.get(
-                                        "repair_lineage_sha256"
-                                    ) is not None
-                                    or (
-                                        result_binding is None
-                                        and (
-                                            current.get("transmission_sha256")
-                                            == current.get("approved_transmission_sha256")
-                                            or current.get("repair_lineage_sha256") is not None
-                                        )
-                                    )
-                                )
-                            ),
-                        })
-                    else:
-                        updates.update({
-                            "phase": (
-                                "repair-failed"
-                                if final_status == "failed" and current["attempt_origin"] == "conversation-continue"
-                                else "attempt-failed"
-                            ),
-                            "assurance": "pending",
-                            "continue_available": False,
-                        })
-                state, prior_raw, _sha = _transition_locked(job, current, current_raw, updates)
-            return exit_code
-        finally:
-            if process is not None:
-                # If an exception is leaving the provider loop, transfer
-                # ownership to the outer recovery only after this exact group
-                # termination/reap has succeeded.  It then freezes elapsed
-                # time from this reap boundary.  If termination itself raises,
-                # keep ``process`` live so the outer recovery retains the one
-                # retry opportunity instead of assuming the group is gone.
-                _terminate_provider_process(
-                    process, contained_root,
-                    contained=prepared_containment is not None,
-                )
-                runtime_end_mono = time.monotonic()
-                process = None
-            with contextlib.suppress(Exception):
-                selector.close()
-            if stdout_fd >= 0:
-                os.close(stdout_fd)
-            if stderr_fd >= 0:
-                os.close(stderr_fd)
-            with contextlib.suppress(OSError):
-                _stage(command, False)
+                _launch_controller_provider(job, binding, execution, streams, launch, outcome)
+                _monitor_controller_provider(job, binding, execution, streams, launch, outcome)
+                _reap_controller_provider(job, binding, execution, streams, launch, outcome)
+                _observe_controller_terminal(binding, execution, streams, launch, outcome)
+                _begin_controller_completion(execution, streams, outcome, candidate_data, prior_handlers)
+                _cleanup_controller_stage(job, binding, streams, launch, outcome, candidate_data)
+                _observe_controller_cancel(job, binding, outcome)
+                _reconcile_controller_candidate(binding, launch, outcome, candidate_data)
+                return _publish_controller_terminal(job, binding, execution, streams, outcome, candidate_data)
+            finally:
+                _cleanup_controller_resources(binding, execution, streams, launch)
     except Exception:
-        # Once Popen succeeds, no ordinary controller exception may be left to
-        # the cleanup-only finally path.  Reap first, freeze if the state still
-        # belongs to this controller, then publish one fail-closed terminal
-        # projection.  Pre-launch errors retain their narrower existing paths.
-        if process is None and started_mono is None:
+        if execution.process is None and execution.started_mono is None:
             raise
-        if process is not None:
-            with contextlib.suppress(Exception):
-                _terminate_provider_process(
-                    process, contained_root,
-                    contained=prepared_containment is not None,
-                )
-            process = None
-            runtime_end_mono = time.monotonic()
-        frozen_elapsed = float(state["elapsed_seconds"])
-        if not runtime_frozen:
-            frozen_elapsed = float(state["attempt_base_elapsed"])
-            if started_mono is not None:
-                end = runtime_end_mono if runtime_end_mono is not None else time.monotonic()
-                frozen_elapsed += max(0.0, end - started_mono)
-            try:
-                state, prior_raw, _sha, _limit = _freeze_reaped_runtime(
-                    job, state["attempt"], os.getpid(), frozen_elapsed,
-                )
-                runtime_frozen = True
-            except Exception:
-                # The final state write below still clears an active controller
-                # record; preserve the largest local elapsed observation if the
-                # dedicated freeze CAS itself could not complete.
-                pass
-        try:
-            terminal, _raw, _sha = _terminalize_owned(
-                job, state, status="failed", reason="status_unavailable",
-                exit_code=EXIT_BY_REASON["status_unavailable"],
-                failure_stage="binding_failure", expected_controller_pid=os.getpid(),
-                elapsed_seconds=frozen_elapsed, postlaunch_cancel=True,
-            )
-            return int(terminal["exit_code"])
-        except Exception:
-            # A failed final write is still not allowed to disguise the
-            # controller exception; the strict helper has already attempted
-            # its unavailable fallback without holding a scan under the lock.
-            return EXIT_BY_REASON["status_unavailable"]
+        return _recover_controller_failure(job, binding, execution, launch)
     finally:
         for number, handler in prior_handlers.items():
             signal.signal(number, handler)

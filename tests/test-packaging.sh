@@ -3681,8 +3681,8 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
         && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (303 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
-        && grep -Fq 'EXPECTED_CHECKS = 116' "$ROOT/tests/test-agy-worker-remediation.py" \
-        && grep -Fq '`tests/test-agy-worker-remediation.py` (116 focused cases)' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'EXPECTED_CHECKS = 120' "$ROOT/tests/test-agy-worker-remediation.py" \
+        && grep -Fq '`tests/test-agy-worker-remediation.py` (120 focused cases)' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq '`tests/test-doctor.sh` (219 cases)' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Do not pin exact suite counts in this instruction file' "$ROOT/AGENTS.md" \
         && grep -Fq '`docs/REPO_MAP.md` owns focused-suite inventory' "$ROOT/AGENTS.md" \
