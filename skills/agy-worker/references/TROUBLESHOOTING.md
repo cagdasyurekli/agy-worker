@@ -1,8 +1,7 @@
 # Troubleshooting
 
-Start from the first failing boundary. Do not turn a local preflight, provider,
-lifecycle, or verification failure into an automatic retry, a changed model, or a
-weaker check. Preserve the current candidate and state until the cause is classified.
+Classify the first failure; preserve the candidate and caller choices. Do not silently
+retry, change models or weaken checks.
 
 For the normal command sequence, read
 [Project lifecycle and verification](PROJECT_LIFECYCLE_AND_VERIFICATION.md). For
@@ -45,20 +44,14 @@ boundary to recover a preview.
 
 ## Preflight fails before provider launch
 
-Tell the user that the task was not sent to AGY. Keep the caller's model, effort,
-permissions, authentication, scope, and task unchanged while classifying the local
-failure. A model change cannot repair a permission, missing executable, invalid
-worktree, approval, environment, quota, or human-decision blocker.
+Tell the user the task was not sent to AGY. Missing capabilities, malformed help or a
+changed executable reject before launch. Version text is diagnostic; approval flags
+cannot bypass readiness. Resolve the actual prerequisite without changing model,
+effort, authentication, scope, permissions or task.
 
-Every provider launch checks the required AGY capabilities and immediately rechecks
-the same executable. A missing flag, malformed help or changed binary stops before
-the task starts. The version is diagnostic only; no compatibility-disposition or
-help-SHA approval can bypass a failed probe. Preserve the caller's selection and
-resolve the named prerequisite before starting new work.
-For a lifecycle attempt, status keeps `selection_preflight_failed` (exit `26`);
-inspect the existing private `stderr_path` for the missing capability names. That
-diagnostic contains fixed flag names, not raw help output. Initial CLI preflight
-reports the missing names directly.
+Lifecycle status reports `selection_preflight_failed` (exit 26). Inspect the existing
+private `stderr_path` for fixed missing-capability names, not raw help. Initial CLI
+preflight reports those names directly.
 
 ## agy exits zero but ordinary output is empty
 
@@ -113,9 +106,8 @@ Mutating lifecycle commands require the current `state_sha256`; `wait` uses
 candidate-bound evidence, and use the newly reported approval only if the intended
 action remains available. Never copy a stale digest forward blindly.
 
-Refreshing this mechanical state binding does not by itself require another human
-approval. Reuse the approved job scope when the action remains covered; request new
-authority only when its scope, transmission, destination, or budget materially changes.
+Refreshing a binding does not itself require new approval. Reuse covered authority;
+changed exposure, scope, destination, isolation, permissions or budget needs approval.
 
 For facade finalization of a bound dispatch, use `dispatch.state_sha256` as
 `--approve-dispatch-sha`. It is distinct from a convenient current facade state hash.
@@ -124,18 +116,11 @@ job lifecycle commands still use their own `--approve-state-sha` flag.
 
 ## Unsupported job schema or removed flag
 
-This agy-worker release accepts only current dispatch and workflow job
-formats. Finish or discard an older job using the release that created it; the last
-documented release with legacy-schema support is v0.22.0. Preserve its artifacts;
-do not rewrite a schema number to bypass rejection. Current dispatch records use
-state V15 and command V13, and selection records use V4. Earlier formats reject,
-including ordinary jobs that used no removed feature. Use the actual creating release.
-There is no in-place migration.
-`--boost`, `--approve-boost-risk-sha`, and `--persona` were removed after v0.22.0;
-start new work through the ordinary workflow with task instructions in the prompt.
-Use current explicit transmission approvals instead of facade `--approve-preview-sha`
-and `--legacy-preview-approval`; use `--approve-dispatch-sha` for facade finalization.
-See [controller state and actions](PROJECT_LIFECYCLE_AND_VERIFICATION.md#controller-state-and-actions).
+Use the creating release to finish or discard old-format jobs. Preserve their artifacts;
+do not rewrite schema numbers or use removed options to bypass rejection. There is no
+in-place migration, including for ordinary old jobs without removed features.
+Use current explicit transmission approvals and `--approve-dispatch-sha` for facade
+finalization. See [controller state and actions](PROJECT_LIFECYCLE_AND_VERIFICATION.md#controller-state-and-actions).
 
 ## Candidate drift or verification-copy failure
 

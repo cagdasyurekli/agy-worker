@@ -1429,9 +1429,9 @@ for package_doc in (
         resolved = (package_doc.parent / target).resolve()
         assert resolved.is_relative_to(package_root.resolve()), (package_doc, target)
         assert resolved.is_file() and not resolved.is_symlink(), (package_doc, target)
-assert 'After a green full run, classify later changes before rerunning it.' in agents_flat
-assert 'do not repeat the full local suite solely to attach it to a new commit SHA' in agents_flat
-assert 'Treat the required GitHub check as the exact PR-head full gate.' in agents_flat
+assert 'Run the owning focused suite for what you changed, then the dev gate' in agents_flat
+assert '`./scripts/ci-offline.sh` once on the final bytes.' in agents_flat
+assert 'No author is the sole acceptor of material work.' in agents_flat
 PY
 then ok "dual-host skill metadata matches the plugin version and public legal links"; else bad "dual-host skill metadata matches the plugin version and public legal links"; fi
 
@@ -1762,8 +1762,8 @@ if grep -Fq 'is process-owning: it keeps signal rollback authority' \
         "$ROOT/skills/agy-worker/runtime/scripts/evidence_report.py" \
         && grep -Fq 'The `--output` CLI path is deliberately process-owning' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
-        && grep -Fq 'file-output `main(argv)` is process-owning through `os._exit(0)`' \
-            "$ROOT/docs/REPO_MAP.md"; then
+        && grep -Fq 'documented command or a subprocess; do not call its `main(argv)` from a host process.' \
+            "$ROOT/docs/PROJECT_WORKFLOW.md"; then
     ok "Evidence Report documents its process-owning file-output boundary"
 else
     bad "Evidence Report documents its process-owning file-output boundary"
@@ -1787,12 +1787,13 @@ else
     bad "project workflow guide keeps GitHub Step Summary redirection explicit and fork-safe"
 fi
 
-if grep -Fq 'or implicit environment-file write was added' "$ROOT/docs/ROADMAP.md" \
+if grep -Fq 'step. The reporter never discovers or writes `GITHUB_STEP_SUMMARY` itself and does' \
+        "$ROOT/docs/PROJECT_WORKFLOW.md" \
         && grep -Fq 'never discovers or writes `GITHUB_STEP_SUMMARY`' \
             "$ROOT/PRIVACY.md"; then
-    ok "roadmap and privacy docs bound the local-only CI reporter surface"
+    ok "workflow and privacy docs bound the local-only CI reporter surface"
 else
-    bad "roadmap and privacy docs bound the local-only CI reporter surface"
+    bad "workflow and privacy docs bound the local-only CI reporter surface"
 fi
 
 if python3 - "$ROOT" <<'PYCODE'
@@ -2163,7 +2164,8 @@ if [[ -x "$ROOT/conformance/run.sh" ]] \
         && [[ -f "$ROOT/docs/CONFORMANCE.md" ]] \
         && grep -Fq 'MANIFEST_SHA256 = "9741584060f5391e5a79df1022c9cd574c28fdddefc75006b8b6e7ff0e5e36a0"' \
             "$ROOT/conformance/v1/run.py" \
-        && grep -Fq 'fixture compatibility only' "$ROOT/README.md" \
+        && grep -Fq '[Conformance](docs/CONFORMANCE.md)' "$ROOT/README.md" \
+        && grep -Fq 'for these fixed fixtures. It is not a' "$ROOT/docs/CONFORMANCE.md" \
         && grep -Fq 'security certification' "$ROOT/docs/CONFORMANCE.md" \
         && ci_stage_registered '/usr/bin/python3 -I -S -B tests/test-conformance.py'; then
     ok "distribution includes the bounded non-certifying v1 conformance contract"
@@ -2636,13 +2638,9 @@ else
 fi
 
 governance_clauses=(
-    'For material UX, lifecycle, trust-boundary, security, data-semantics, or other domain plans:'
-    'A coordinator and suitable domain expert must co-plan.'
-    'Freeze user journeys, acceptance tests, and authority/privacy constraints before implementation.'
-    'The final acceptor must be a different agent or fresh context; no planner or implementer may self-accept.'
-    'Purely mechanical changes are exempt.'
-    'Verification v2 and the controller bind candidate evidence, not agent identity or governance.'
-    'The final human-readable handoff must report the planner/reviewer separation.'
+    'For trust-boundary changes, write a short design note covering options considered and residual risk, and obtain independent review.'
+    'No author is the sole acceptor of material work.'
+    'Verification v2 binds candidate evidence; it does not establish reviewer identity.'
 )
 
 governance_lifecycle_contract() {
@@ -2653,18 +2651,20 @@ governance_lifecycle_contract() {
 }
 
 if [[ "$installed_root" == "$(cd "$ROOT" && pwd -P)" ]] \
-        && governance_lifecycle_contract "$TMP/installed/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md"; then
-    ok "installed lifecycle guide preserves independent material-plan governance and handoff disclosure"
+        && governance_lifecycle_contract "$TMP/installed/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
+        && governance_lifecycle_contract "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md"; then
+    ok "installed lifecycle guide preserves trust-boundary design notes and independent acceptance"
 else
-    bad "installed lifecycle guide preserves independent material-plan governance and handoff disclosure"
+    bad "installed lifecycle guide preserves trust-boundary design notes and independent acceptance"
 fi
 
 governance_mutants_rejected=1
 governance_mutant_index=0
 for clause in "${governance_clauses[@]}"; do
-    governance_mutant_index=$((governance_mutant_index + 1))
-    mutant="$TMP/governance-lifecycle-mutant-$governance_mutant_index.md"
-    if ! python3 -B - "$TMP/installed/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" "$mutant" "$clause" <<'PY'
+    for mutation in delete optional; do
+        governance_mutant_index=$((governance_mutant_index + 1))
+        mutant="$TMP/governance-lifecycle-mutant-$governance_mutant_index.md"
+        if ! python3 -B - "$TMP/installed/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" "$mutant" "$clause" "$mutation" <<'PY'
 from pathlib import Path
 import sys
 
@@ -2674,28 +2674,30 @@ clause = sys.argv[3]
 text = source.read_text(encoding="utf-8")
 if text.count(clause) != 1:
     raise SystemExit(1)
-target.write_text(text.replace(clause, "", 1), encoding="utf-8")
+replacement = "" if sys.argv[4] == "delete" else "Optional: " + clause
+target.write_text(text.replace(clause, replacement, 1), encoding="utf-8")
 PY
-    then
-        governance_mutants_rejected=0
-        break
-    fi
-    if governance_lifecycle_contract "$mutant"; then
-        governance_mutants_rejected=0
-        break
-    fi
+        then
+            governance_mutants_rejected=0
+            break
+        fi
+        if governance_lifecycle_contract "$mutant"; then
+            governance_mutants_rejected=0
+            break
+        fi
+    done
 done
 if [[ "$governance_mutants_rejected" == "1" ]]; then
-    ok "installed governance contract rejects every independent clause deletion"
+    ok "source and installed governance reject each clause deletion or optionalization"
 else
-    bad "installed governance contract rejects every independent clause deletion"
+    bad "source and installed governance reject each clause deletion or optionalization"
 fi
 
 provider_notice_clauses=(
-    'Before every provider-launch attempt (initial start/run, resume, continue, and restart), tell the user in one or two concise user-facing sentences what task is being sent to AGY.'
-    'Include a short public-safe task label, caller-selected model information, caller-selected effort when separately selectable, and the exact resolved model slug.'
-    'For default selection where no model is selected or the default tier is used, state truthfully that the provider default model is used and that model or effort is unresolved, without inventing a resolved slug or thinking level.'
-    'For fixed/compound/literal models where effort is not separately selectable, state that accurately without inferring backend reasoning or inventing a thinking level.'
+    'Before every provider-launch attempt (initial start/run, resume, continue, and restart), tell the user what task is being sent to AGY.'
+    'Include a short public-safe task label and the exact resolved model slug when known.'
+    'For default selection, say the provider default is used and the model is unresolved; do not invent a slug.'
+    'Report caller-supplied effort when present; otherwise say effort is unresolved, without inferring backend reasoning.'
     'The notice must precede every dispatch attempt and remain accurate afterward.'
     'If preflight fails before provider launch, explicitly state that the task was not sent to AGY.'
     'If provider reach is genuinely uncertain, state that it is unverified rather than claiming success.'
@@ -2752,10 +2754,10 @@ fi
 provider_notice_weakening_mutants_rejected=1
 provider_notice_weakening_mutant_index=0
 weakening_replacements=(
-    'tell the user in one or two concise user-facing sentences::tell the user if convenient'
-    'caller-selected model information, caller-selected effort::default model information'
-    'state truthfully that the provider default model is used and that model or effort is unresolved::invent a model slug'
-    'without inferring backend reasoning or inventing a thinking level::inferring backend reasoning'
+    'tell the user what task is being sent to AGY::tell the user only if convenient'
+    'the exact resolved model slug when known::any approximate model label'
+    'the model is unresolved; do not invent a slug::invent a resolved model slug'
+    'Report caller-supplied effort when present; otherwise say effort is unresolved, without inferring backend reasoning::Infer backend reasoning and effort'
     'precede every dispatch attempt::follow completion of the job'
     'explicitly state that the task was not sent to AGY::state that the task was sent to AGY'
     'state that it is unverified rather than claiming success::claim success'
@@ -2795,22 +2797,25 @@ else
 fi
 
 if [[ "$installed_root" == "$(cd "$ROOT" && pwd -P)" ]] \
-        && grep -Fq '[Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices)' "$ROOT/skills/agy-worker/SKILL.md" \
-        && grep -Fq '[Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices)' "$TMP/installed/agy-worker/SKILL.md" \
-        && grep -Fq '[Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#material-planning-governance)' "$ROOT/skills/agy-worker/SKILL.md" \
-        && grep -Fq '[Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#material-planning-governance)' "$TMP/installed/agy-worker/SKILL.md"; then
+        && grep -Fq '[launch notices](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices)' "$ROOT/skills/agy-worker/SKILL.md" \
+        && grep -Fq '[launch notices](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices)' "$TMP/installed/agy-worker/SKILL.md" \
+        && grep -Fq '[Material planning governance](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#material-planning-governance)' "$ROOT/skills/agy-worker/SKILL.md" \
+        && grep -Fq '[Material planning governance](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#material-planning-governance)' "$TMP/installed/agy-worker/SKILL.md"; then
     ok "source and installed skill entrypoints link to lifecycle-owned notice and governance contracts"
 else
     bad "source and installed skill entrypoints link to lifecycle-owned notice and governance contracts"
 fi
 
 provider_read_scope_clauses=(
-    'Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds exact reviewed read entries, their selected-content digest, and a write subset, then stages only selected entries in a fresh owner-private mode-`0700` Gitless provider cwd.'
-    'Whole-worktree dispatch remains an explicit exception. New approvals bind content, kinds, permissions, symlink targets, and execution mode; the controller rechecks this binding before provider start. Retired dispatch and workflow job formats are rejected; finish or discard those jobs with the release that created them. Treat the entire disposable worktree passed as `--workdir` as worker-readable and potentially transmissible to Google/Gemini, regardless of requested edit paths; `--add-dir`, prompt denylist instructions, `qa-gate --only`, and `--allow` do not narrow that read boundary.'
-    'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode: launch requires either `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` or the scoped pair above. The removed facade-only `--approve-preview-sha` and `--legacy-preview-approval` flags cannot authorize launch; use the current approval flags above.'
-    'New jobs default to `--provider-isolation session`, which uses the existing AGY session without AGY sandbox or native host containment. AGY has normal user filesystem/network authority; selected-file staging and reconciliation are not host isolation. Include this execution mode in the initial approval alongside task/content, then reuse that approval while its scope remains unchanged. Explicit `--provider-isolation native` retains supported macOS scoped containment with private HOME/TMP and reviewed network/Keychain access; it never falls back to session mode. The native `/usr/bin/security` exception allows broader same-user Keychain operations, and its listener rule permits wildcard binds. Read [Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md) for those limits. Preserve the job'"'"'s selected mode across continuation and repair.'
+    'Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds reviewed read entries, their content digest, and a write subset in a fresh owner-private mode-`0700` Gitless stage.'
+    'Whole-worktree dispatch requires `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`. Every disposable-worktree entry is provider-readable and may reach Google/Gemini; `--add-dir`, prompt denylists and gate path policies do not narrow that read boundary.'
+    'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode.'
+    'Approvals bind content, kinds, permissions, symlink targets and execution mode; the controller rechecks this binding before provider start.'
+    'Retired dispatch and workflow job formats are rejected; finish or discard them with their creating release, without migration.'
+    'Default `--provider-isolation session` uses the existing AGY session. AGY has normal user filesystem/network authority; staging and reconciliation are not host isolation.'
+    'Explicit `--provider-isolation native` requires supported macOS scoped containment; it never falls back to session mode. Preserve the recorded isolation mode and grant profile across repairs.'
     'Provider-scope approval grants neither provider execution, Git action, driver acceptance, nor publication.'
-    'Before each launch, ensure secrets, credentials, private keys, user-denied paths, and unrelated private files are absent from every entry approved for provider transmission; telling the worker not to read an approved entry is not a control.'
+    'Exclude secrets, denied paths and unrelated private content from every approved entry; telling the worker not to read an approved entry is not a control.'
 )
 
 provider_read_scope_skill_contract() {
@@ -2822,9 +2827,9 @@ provider_read_scope_skill_contract() {
 
 if provider_read_scope_skill_contract "$ROOT/skills/agy-worker/SKILL.md" \
         && provider_read_scope_skill_contract "$TMP/installed/agy-worker/SKILL.md"; then
-    ok "source and installed skills preserve default and scoped provider read contracts"
+    ok "source and installed skills preserve whole-worktree and scoped provider read contracts"
 else
-    bad "source and installed skills preserve default and scoped provider read contracts"
+    bad "source and installed skills preserve whole-worktree and scoped provider read contracts"
 fi
 
 provider_read_scope_mutants_rejected=1
@@ -2854,9 +2859,9 @@ PY
     fi
 done
 if [[ "$provider_read_scope_mutants_rejected" == "1" ]]; then
-    ok "default and scoped provider contracts reject every independent clause deletion"
+    ok "whole-worktree and scoped provider contracts reject every independent clause deletion"
 else
-    bad "default and scoped provider contracts reject every independent clause deletion"
+    bad "whole-worktree and scoped provider contracts reject every independent clause deletion"
 fi
 
 provider_read_scope_weakening_mutants_rejected=1
@@ -2901,9 +2906,37 @@ PY
     fi
 done
 if [[ "$provider_read_scope_weakening_mutants_rejected" == "1" ]]; then
-    ok "default and scoped provider contracts reject every weakening mutation"
+    ok "whole-worktree and scoped provider contracts reject every weakening mutation"
 else
-    bad "default and scoped provider contracts reject every weakening mutation"
+    bad "whole-worktree and scoped provider contracts reject every weakening mutation"
+fi
+
+if python3 -B - "$ROOT/skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md" \
+        "$TMP/installed/agy-worker/references/SECURITY_AND_COMPATIBILITY.md" <<'PY_NATIVE_DOC'
+from pathlib import Path
+import sys
+
+clauses = (
+    "private persistent provider HOME, per-attempt TMP",
+    "Preserve the selected mode and grant profile throughout repairs.",
+    "wildcard binds, not just loopback",
+    "arguments, operations or items; broader same-user Keychain reads, additions, changes and deletions may be allowed by the OS.",
+    "detached descendants remain confined but are not proven reaped.",
+)
+for filename in sys.argv[1:]:
+    text = " ".join(Path(filename).read_text(encoding="utf-8").split())
+    def native_contract(value: str) -> bool:
+        return all(clause in value for clause in clauses)
+    assert native_contract(text), filename
+    for clause in clauses:
+        assert text.count(clause) == 1, clause
+        assert not native_contract(text.replace(clause, "", 1)), clause
+        assert not native_contract(text.replace(clause, "Full isolation and guaranteed cleanup.", 1)), clause
+PY_NATIVE_DOC
+then
+    ok "source and installed security guides preserve native limits and reject stronger-isolation claims"
+else
+    bad "source and installed security guides preserve native limits and reject stronger-isolation claims"
 fi
 
 if python3 -B - "$ROOT" <<'PY'
@@ -2915,8 +2948,8 @@ required = {
     "README.md": (
         "Prefer `--provider-scope` for bounded jobs",
         "Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception",
-        "The facade requires an explicit choice",
-        "Facade `--provider-scope` dispatch instead binds exact reviewed read/write entries",
+        "requires an explicit transmission choice",
+        "it binds reviewed read entries, their content digest, and a write subset",
         "New jobs use the existing AGY session by default",
         "--provider-isolation native` optionally adds macOS containment",
     ),
@@ -2931,8 +2964,9 @@ required = {
         "Whole-worktree dispatch remains an explicit manifest-bound exception",
     ),
     "AGENTS.md": (
-        "Prefer `--provider-scope` for bounded jobs",
-        "Whole-worktree dispatch remains an explicit exception",
+        "Prefer scoped mode: `--provider-scope` plus `transmission_sha256`.",
+        "Whole-worktree mode needs `launch_approval_sha256`.",
+        "everything in the worktree is agy-readable and may reach Google/Gemini",
     ),
     "docs/USAGE.md": (
         "Prefer scoped dispatch for bounded jobs",
@@ -2950,11 +2984,7 @@ required = {
         "new jobs default to `--provider-isolation session`",
     ),
     "docs/REPO_MAP.md": (
-        "No initial facade or raw dispatch has an implicit provider-read mode",
-        "Whole-worktree mode exposes the entire disposable `--workdir`",
-        "Recommended provider-scope mode binds exact reviewed read entries",
-        "The current state/command contract supports",
-        "`CURRENT_STATE_SCHEMA`",
+        "agy_dispatch.py", "agy_dispatch_worktree.py", "tests/test-agy-worker-remediation.py",
     ),
     "docs/index.md": (
         "No initial launch path has an implicit provider-read mode.",
@@ -2979,23 +3009,21 @@ for relative, phrases in required.items():
     flattened = " ".join((root / relative).read_text(encoding="utf-8").split())
     assert all(phrase in flattened for phrase in phrases), (relative, phrases)
 
-# Historical lessons are not rewritten merely because an optional scoped mode now exists.
-lessons = (root / "docs/lessons_learned.md").read_text(encoding="utf-8")
-assert "Prompt denylist and gate path policies govern task writes" in lessons
-assert "Use a clean disposable worktree or explicit file scope." not in lessons
+# Read authority is owned by the usage guide, independently of its write policy.
+usage = " ".join((root / "docs/USAGE.md").read_text(encoding="utf-8").split())
+assert "`--add-dir`, prompt instructions, and later gate paths do not narrow it." in usage
+assert "AGY retains normal user filesystem/network authority" in usage
 PY
 then
-    ok "public and contributor docs distinguish default whole-worktree and scoped staging boundaries"
+    ok "public and contributor docs distinguish explicit whole-worktree and scoped staging boundaries"
 else
-    bad "public and contributor docs distinguish default whole-worktree and scoped staging boundaries"
+    bad "public and contributor docs distinguish explicit whole-worktree and scoped staging boundaries"
 fi
 
 if grep -Fq 'Before every provider-launch attempt—initial `run`/`start`, `resume`, `continue`, and' \
         "$ROOT/docs/USAGE.md" \
-        && grep -Fq 'mandatory user-facing provider dispatch notices across initial, resume, continue, and restart launches' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '## Transparent provider dispatch notice and truthful boundaries' \
-            "$ROOT/docs/lessons_learned.md"; then
+        && provider_notice_lifecycle_contract "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
+        && provider_notice_lifecycle_contract "$TMP/installed/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md"; then
     ok "package documentation describes mandatory user-facing provider dispatch notice contract"
 else
     bad "package documentation describes mandatory user-facing provider dispatch notice contract"
@@ -3067,7 +3095,7 @@ PY
 if governance_docs_contract \
         && grep -Fq 'The canonical offline stages' "$ROOT/docs/OPERATIONS.md" \
         && grep -Fq 'all registered offline stages' "$ROOT/CONTRIBUTING.md" \
-        && grep -Fq '`tests/test-update-notifier.py` with offline fake controls' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'tests/test-update-notifier.py' "$ROOT/docs/REPO_MAP.md" \
         && [[ -x "$ROOT/update-notifier.sh" ]] \
         && grep -Fq 'Google/Gemini' "$ROOT/PRIVACY.md" \
         && grep -Fq 'logs/' "$ROOT/PRIVACY.md" \
@@ -3080,10 +3108,11 @@ fi
 
 if grep -Fq '## AGY capability requirements' "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq 'Model and effort are forwarded as caller-selected values.' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'version text is diagnostic only' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Only current state and command formats load' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'retired dispatch formats are rejected before projection or mutation' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'preserve semantic-v1 candidate snapshots' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'Version text is diagnostic only' "$ROOT/docs/INSTALLATION.md" \
+        && grep -Fq 'This agy-worker release accepts only the current dispatcher state and' "$ROOT/docs/PROJECT_WORKFLOW.md" \
+        && grep -Fq 'Older records fail closed before partial projection, migration, or job mutation.' "$ROOT/docs/PROJECT_WORKFLOW.md" \
+        && grep -Fq 'WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"' "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
+        && grep -Fq 'CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1' "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses the caller-resolved' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
         && grep -Fq 'Current controller-private state also persists a sanitized' \
@@ -3099,24 +3128,18 @@ if grep -Fq '## AGY capability requirements' "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq '| `hardest` | `claude-opus-4-6-thinking` |' "$ROOT/docs/USAGE.md" \
         && grep -Fq './model-recommendation.sh --stage pre-dispatch' "$ROOT/docs/USAGE.md" \
         && grep -Fq './model-recommendation.sh --stage post-gate' "$ROOT/docs/USAGE.md" \
-        && grep -Fq 'caller-resolved symbolic launcher `"$PIPELINE/agy-worker.sh"`' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'deterministic external state root derivation' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'prospective and post-resolution fail-closed rejection of project roots inside the target worktree' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`status`, `wait`, `result`, `resume`, `restart`,' \
-            "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'symbolic launcher `"$PIPELINE/agy-worker.sh"`; export `PIPELINE` before copying it.' \
+            "$ROOT/docs/PROJECT_WORKFLOW.md" \
+        && grep -Fq 'deterministic state, worktree, and branch bindings under an owner-private' "$ROOT/docs/PROJECT_WORKFLOW.md" \
+        && grep -Fq 'Keep `STATE_DIR` owner-private and outside both the repository and worktree.' \
+            "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && grep -Fq '`tests/test-agy-worker.sh`' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-agy-worker-remediation.py`' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-doctor.sh`' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Do not pin exact suite counts in this instruction file' "$ROOT/AGENTS.md" \
-        && grep -Fq '`docs/REPO_MAP.md` owns focused-suite inventory' "$ROOT/AGENTS.md" \
-        && grep -Fq '`scripts/ci_stages.py` owns the' "$ROOT/AGENTS.md" \
-        && ! grep -Eq '[0-9]+ offline' "$ROOT/AGENTS.md" \
+        && grep -Fq 'tests/test-agy-worker.sh' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'tests/test-agy-worker-remediation.py' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'tests/test-doctor.sh' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'export PYTHONDONTWRITEBYTECODE=1' "$ROOT/tests/test-agy-worker.sh" \
         && [[ ! -e "$ROOT/skills/agy-worker/runtime/scripts/legacy_dispatch_state.py" ]] \
-        && ! grep -Eq '`tests/test-agy-worker.sh` \((338|348) cases\)' "$ROOT/docs/REPO_MAP.md" \
         && ! grep -Fq 'resolution remains blocked until installed agy exactly matches' \
             "$ROOT/docs/INSTALLATION.md"; then
     ok "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode imports, and registered focused coverage"
@@ -3143,11 +3166,10 @@ if grep -Fq 'same-UID processes' "$ROOT/docs/CONFORMANCE.md" \
         && grep -Fq 'It never scans for or chases a moved directory.' \
             "$ROOT/docs/CONFORMANCE.md" \
         && grep -Fq 'may leave a private residual' "$ROOT/PRIVACY.md" \
-        && grep -Fq 'does not establish same-user tamper resistance' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Final pathname removal still trusts that TCB.' \
-            "$ROOT/docs/lessons_learned.md" \
-        && grep -Fq 'same-user tamper-resistance or guaranteed' "$ROOT/AGENTS.md"; then
+        && grep -Fq 'not claim same-user tamper resistance; review the supplied gate and loaded code' \
+            "$ROOT/docs/CONFORMANCE.md" \
+        && grep -Fq 'targets. The final pathname removal is explicitly inside the same-UID TCB.' \
+            "$ROOT/docs/CONFORMANCE.md"; then
     ok "conformance docs bind the same-UID TCB and fail-closed residual boundary"
 else
     bad "conformance docs bind the same-UID TCB and fail-closed residual boundary"
@@ -3233,12 +3255,13 @@ else
     bad "homepage SoftwareSourceCode structured data is valid JSON with truthful core fields"
 fi
 
-python3 "$ROOT/scripts/validate-docs.py" "$ROOT" --readme-max-lines 450 \
+python3 "$ROOT/scripts/validate-docs.py" "$ROOT" --readme-max-lines 250 \
     > "$TMP/docs-valid.out" 2> "$TMP/docs-valid.err"
 docs_valid_rc=$?
 python3 - "$ROOT/scripts/validate-docs.py" "$ROOT/README.md" "$ROOT" <<'PY'
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 
@@ -3251,34 +3274,99 @@ spec.loader.exec_module(module)
 readme_path = Path(sys.argv[2])
 root_path = Path(sys.argv[3])
 readme = readme_path.read_text(encoding="utf-8")
-assert module.validate_onboarding(readme, 450) == []
-max_lines = 450
+assert module.validate_onboarding(readme, 250) == []
+max_lines = 250
 padding = ["<!-- budget mutation -->"] * (max_lines + 1 - len(readme.splitlines()))
 over_budget = "\n".join([*readme.splitlines(), *padding])
-assert len(over_budget.splitlines()) == 451
-assert any("maximum is 450" in error for error in module.validate_onboarding(over_budget, max_lines))
+assert len(over_budget.splitlines()) == 251
+assert any("maximum is 250" in error for error in module.validate_onboarding(over_budget, max_lines))
+assert any("maximum is 250" in error for error in module.validate_onboarding(over_budget, 1000))
+exact_limit = "\n".join([*readme.splitlines(), *(["padding"] * (250 - len(readme.splitlines())))])
+assert module.validate_onboarding(exact_limit, 250) == []
+assert any("maximum is 249" in error for error in module.validate_onboarding(exact_limit, 249))
+
+# Exercise the public CLI on one otherwise-valid minimal documentation tree.
+with tempfile.TemporaryDirectory(prefix="agy-doc-budgets-") as temporary:
+    budget_root = Path(temporary)
+    (budget_root / "docs").mkdir()
+    markers = [marker + module.STANDALONE_ONBOARDING_SUFFIX.get(label, "")
+               for label, marker in module.ONBOARDING_MARKERS]
+    boundary_readme = "\n".join([*markers, *(["padding"] * (250 - len(markers)))]) + "\n"
+    (budget_root / "README.md").write_text(boundary_readme, encoding="utf-8")
+    (budget_root / "LICENSE").write_text("fixture", encoding="utf-8")
+    for filename in ("index.md", "VERIFYING_AGENT_OUTPUT.md"):
+        (budget_root / "docs" / filename).write_text("# Guide\n", encoding="utf-8")
+    (budget_root / "docs/sitemap.xml").write_text(
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>'
+        + module.PAGES_BASE + '</loc></url></urlset>', encoding="utf-8",
+    )
+    limits = {"docs/ROADMAP.md": 600, "docs/lessons_learned.md": 1200, "docs/REPO_MAP.md": 1500}
+    for relative, limit in limits.items():
+        (budget_root / relative).write_text(" ".join(["word"] * limit) + "\n", encoding="utf-8")
+    public_files = ["docs/public-files.allowlist", "docs/sitemap.xml", "docs/index.md",
+                    "docs/VERIFYING_AGENT_OUTPUT.md", *limits]
+    (budget_root / "docs/public-files.allowlist").write_text(
+        "\n".join(sorted(public_files)) + "\n", encoding="utf-8",
+    )
+
+    def budget_cli(cap: int = 450) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-B", str(script), str(budget_root), "--readme-max-lines", str(cap)],
+            capture_output=True, text=True, check=False,
+        )
+
+    assert budget_cli().returncode == 0
+    (budget_root / "README.md").write_text(boundary_readme + "extra\n", encoding="utf-8")
+    for requested in (250, 450, 1000):
+        rejected = budget_cli(requested)
+        assert rejected.returncode == 1 and "README has 251 lines; maximum is 250" in rejected.stderr
+    (budget_root / "README.md").write_text(boundary_readme, encoding="utf-8")
+    assert "maximum is 249" in budget_cli(249).stderr
+    for requested in (0, -1):
+        rejected = budget_cli(requested)
+        assert rejected.returncode == 2 and "must be positive" in rejected.stderr
+    for relative, limit in limits.items():
+        path = budget_root / relative
+        # Headings, tables, comments and fenced tokens all count as full-source words.
+        prefix = "# Heading\n| table |\n<!-- comment -->\n```text\nfenced\n```\n"
+        at_limit = prefix + "\t".join(["word"] * (limit - len(prefix.split()))) + "\n"
+        path.write_text(at_limit, encoding="utf-8")
+        assert budget_cli().returncode == 0, relative
+        path.write_text(at_limit + "extra\n", encoding="utf-8")
+        rejected = budget_cli()
+        assert rejected.returncode == 1 and f"{relative} has {limit + 1} words; maximum is {limit}" in rejected.stderr
+        path.unlink()
+        assert f"{relative} must be a regular file" in budget_cli().stderr
+        path.mkdir()
+        assert f"{relative} must be a regular file" in budget_cli().stderr
+        path.rmdir()
+        path.symlink_to(budget_root / "docs/index.md")
+        assert f"{relative} must be a regular file" in budget_cli().stderr
+        path.unlink()
+        path.write_text(at_limit, encoding="utf-8")
+    assert budget_cli().returncode == 0
 
 hidden_markers = "\n".join(
     f"<!-- {marker} -->" for _label, marker in module.ONBOARDING_MARKERS
 )
-assert module.validate_onboarding(hidden_markers, 450)
+assert module.validate_onboarding(hidden_markers, 250)
 unclosed_comment = "<!--\n" + "\n".join(marker for _label, marker in module.ONBOARDING_MARKERS)
-assert module.validate_onboarding(unclosed_comment, 450)
+assert module.validate_onboarding(unclosed_comment, 250)
 fenced_markers = "```text\n" + "\n".join(
     marker for _label, marker in module.ONBOARDING_MARKERS
 ) + "\n```"
-assert module.validate_onboarding(fenced_markers, 450)
+assert module.validate_onboarding(fenced_markers, 250)
 full_tutorial = module.ONBOARDING_MARKERS[-1][1]
 broken_tutorial = readme.replace(full_tutorial, full_tutorial.split("](", 1)[0] + "]")
-assert any("verification tutorial" in error for error in module.validate_onboarding(broken_tutorial, 450))
+assert any("verification tutorial" in error for error in module.validate_onboarding(broken_tutorial, 250))
 inline_code_tutorial = readme.replace(full_tutorial + ".", f"`{full_tutorial}`")
-assert any("verification tutorial" in error for error in module.validate_onboarding(inline_code_tutorial, 450))
+assert any("verification tutorial" in error for error in module.validate_onboarding(inline_code_tutorial, 250))
 
 lines = readme.splitlines()
 positioning = next(index for index, line in enumerate(lines) if module.ONBOARDING_MARKERS[0][1] in line)
 workflow_badge = next(index for index, line in enumerate(lines) if module.ONBOARDING_MARKERS[1][1] in line)
 lines[positioning], lines[workflow_badge] = lines[workflow_badge], lines[positioning]
-assert any("out of order" in error for error in module.validate_onboarding("\n".join(lines), 450))
+assert any("out of order" in error for error in module.validate_onboarding("\n".join(lines), 250))
 
 guide_links = {
     "INSTALLATION.md": "[Installation and compatibility](docs/INSTALLATION.md)",
@@ -3437,12 +3525,14 @@ if [[ "$docs_valid_rc" == "0" ]] \
         && [[ "$evidence_pathspec_rc" == "0" ]] \
         && [[ "$removed_report_ignore_rc" == "0" ]] \
         && grep -Fq 'complete public docs inventory, README onboarding order and line budget' "$TMP/docs-valid.out" \
-        && grep -Fq 'Follow `docs/DOCUMENTATION_POLICY.md`' "$ROOT/AGENTS.md" \
         && grep -Fq '[documentation policy](docs/DOCUMENTATION_POLICY.md)' "$ROOT/CONTRIBUTING.md" \
         && grep -Fq '`README.md` is the first-visit product page' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
         && grep -Fq 'one authoritative documentation owner' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
-        && grep -Fq 'permanent hard ceiling of **450 physical lines**' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
+        && grep -Fq 'permanent hard ceiling of **250 physical lines**' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
         && grep -Fq 'Never raise it' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
+        && grep -Fq '`docs/ROADMAP.md` to **600 words**' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
+        && grep -Fq '`docs/lessons_learned.md` to **1,200 words**' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
+        && grep -Fq '`docs/REPO_MAP.md` to **1,500 words**' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
         && grep -Fq 'Packaging tests pin operational literals to their authoritative task guide' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
         && grep -Fq '`docs/public-files.allowlist` is the complete set' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
         && grep -Fq 'Installation never authorizes provider dispatch or repository transmission' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
@@ -3652,8 +3742,8 @@ fi
 
 if grep -Fq 'There is no version-specific quota countdown or automatic retry.' \
         "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
-        && grep -Fq 'terminal phases are `completed` or `blocked`; exact Codex driver decisions/dispositions' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Controller terminal phases are `completed` or' "$ROOT/docs/lessons_learned.md" \
+        && grep -Fq '| `completed` / `blocked` | The local controller is terminal. |' "$ROOT/docs/PROJECT_WORKFLOW.md" \
+        && grep -Fq 'The separate driver dispositions are `verified`, `partially_verified`, `rejected`,' "$ROOT/docs/PROJECT_WORKFLOW.md" \
         && grep -Fq 'strict terminal' "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
         && grep -Fq 'private `stderr_path`' "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md"; then
     ok "package documents version-independent failures and private preflight diagnostics"

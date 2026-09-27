@@ -23,7 +23,7 @@ Requires a POSIX-compatible environment with Bash, Python 3, git, a driver host,
 
 ### Codex
 
-Once the new plugin identity is published, install from its Git-backed marketplace:
+Confirm the reviewed marketplace source contains the `agy-worker` manifests before installing:
 
 ```bash
 codex plugin marketplace add cagdasyurekli/codex-agy-worker
@@ -34,14 +34,14 @@ Existing users: follow the [identity migration](docs/INSTALLATION.md#codex-plugi
 
 ### Claude Code — experimental: pending live verification
 
-After these manifests are published, use the Claude Code plugin interface:
+For a reviewed source containing the Claude manifests, use:
 
 ```text
 /plugin marketplace add cagdasyurekli/codex-agy-worker
 /plugin install agy-worker@agy-worker
 ```
 
-The plugin skill is `/agy-worker:agy-worker`. For this unpublished candidate, use the
+The plugin skill is `/agy-worker:agy-worker`. For checkout-based testing, use the
 [local installation instructions](docs/INSTALLATION.md#claude-code-experimental).
 
 ### GitHub fallback
@@ -103,260 +103,78 @@ the candidate diff, and runs its own checks. Unknown architecture does not block
 
 ## The evidence pipeline
 
-Bash + Python 3 + git. No Node runtime and no MCP daemon. A deliberately started job
-may have one private, per-job local controller; it is not a shared service.
+`workflow.sh run`, `status`, and `verify-finalize` coordinate a disposable worktree,
+provider approval, candidate inspection, and driver-owned verification. The facade
+requires an explicit transmission choice and never infers acceptance from a worker report.
 
-The primary lifecycle is `workflow.sh run`, `workflow.sh status`, and
-`workflow.sh verify-finalize`. For ordinary `run`, the driver supplies an absolute reviewed
-repository and job ID. The façade binds the current `HEAD` once when `--base` is
-omitted, derives owner-private state plus an isolated branch/worktree under
-`XDG_STATE_HOME` (or `HOME/.local/state`), and delegates their creation to the existing
-job lifecycle. It still creates no second state machine and never infers assurance.
+1. Review the content-bound preview and authorize the exact provider exposure.
+2. Let AGY explore or implement in the approved scope.
+3. Inspect the actual Git diff and run checks chosen by the driver.
+4. Request a bounded repair in the same conversation, or preserve and finalize the
+   candidate as verified, partially verified, rejected, or blocked.
 
-```bash
-# Review the canonical path/kind preview before provider approval.
-./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID"
-
-# The preview call retains its exact private lifecycle bindings. After approval,
-# repeat the repo/job ID with --approve-whole-worktree SHA256, --workflow task,
-# and --task "$TASK". For selected content, put --provider-scope on both calls
-# and approve the scoped transmission SHA. An optional full --base can be supplied.
-# Then use status, copy dispatch.state_sha256, and call verify-finalize with
-# --approve-dispatch-sha plus driver-authored --verify-argv and, for controller
-# finalization, --verification-json.
-```
-
-The former explicit `--state`, `--worktree`, `--branch`, and `--base` tuple remains
-available together as an advanced compatibility surface. A failed invocation may
-roll back only the clean façade-created resources that same invocation created before
-any dispatch evidence; preview and stale approval retain resources for inspection.
-
-`--verify-argv` accepts a canonical JSON array and runs it from the repository root
-without an implicit shell. Explicit `--verify-shell SCRIPT` is an advanced surface
-that requires both verifier network and credential-access acknowledgements. Historical
-`--verify SCRIPT` additionally requires `--legacy-shell-verification`.
-For a bound dispatch, `verify-finalize` requires the exact dispatch-state SHA reported
-by facade `status`, passed as `--approve-dispatch-sha`; it never substitutes a
-current state approval. Rejected or routed gate receipts are preserved without
-invoking the lifecycle finalizer. See [retired job formats and flags](docs/PROJECT_WORKFLOW.md#retired-job-formats-and-flags)
-when updating an existing installation.
-
-The worker envelope is input, not acceptance evidence:
-
-1. The driver freezes an immutable Git base in a disposable worktree.
-2. The facade requires an explicit choice. `--approve-whole-worktree` binds the
-   current content manifest and execution mode, acknowledging that `agy` may read the whole disposable
-   worktree; requested paths constrain the task, not provider read access. Facade
-   `--provider-scope` dispatch instead binds exact reviewed read/write entries and a
-   selected-content digest, then stages only selected entries in a fresh owner-private
-   mode-`0700` Gitless provider cwd. See
-   [selected-content dispatch](docs/USAGE.md#optional-selected-content-dispatch); the
-   default session mode preserves the existing AGY session; optional native mode
-   requires supported macOS containment. Scope approval alone grants
-   no provider execution, Git, acceptance, or publication authority.
-3. The gate derives changed paths from Git instead of trusting `files_changed`.
-4. The driver runs driver-owned verification; worker-reported commands are never executed.
-5. The driver reports `verified`, `partially_verified`, or `blocked` for that exact
-   candidate and those exact checks.
-
-| Observed condition | Gate outcome |
-|---|---|
-| declared paths disagree with Git | reject scope |
-| worker supplies shell/test claims | treat as untrusted data |
-| required verifier fails or mutates the candidate | reject verification |
-| worker needs a human or returns partial work | preserve and escalate honestly |
-
-See the [verification tutorial](docs/VERIFYING_AGENT_OUTPUT.md) for the full reasoning
-flow and the [fixture-only conformance contract](docs/CONFORMANCE.md) for bounded exit
-semantics. Passing the public fixtures means fixture compatibility only.
+`qa-gate.sh` checks Git-derived changed paths against declared scope and runs the
+specified verifiers. `verify-job.sh` can publish a private unsigned evidence receipt.
+Neither a successful envelope nor a green gate commits, merges, or publishes work.
+See [Project workflow](docs/PROJECT_WORKFLOW.md) for copyable commands, approval
+bindings, isolated verification copies, repair and recovery.
 
 ## What it is for
 
-Choose the workflow that matches the result you want:
+- **Explore:** repository understanding, review and planning with spot-checked findings.
+- **Task:** a bounded feature, refactor or test change with driver-owned checks.
+- **Project:** broader implementation or audit-and-fix work with bounded repair cycles.
 
-| Intent | Workflow | Result |
-|---|---|---|
-| Understand, review, or plan | `explore` | Read-only findings with coverage limits |
-| Implement a feature, refactor, or tests | `task` | A bounded candidate plus driver checks |
-| Build or repair across a project | `project` | Progress-aware work with bounded repair |
+An unknown file list, architecture or first test command does not prevent useful
+exploration. Optional self-verification is advisory; final acceptance stays with the
+host driver. Goal is opt-in.
 
-You do not need to know the final file list, architecture, or every test command before
-dispatch. The driver still owns repository scope, review, verification, and the final
-assurance statement.
-
-Assurance describes the evidence for one candidate, not the worker's confidence:
-
-| Status | Meaning |
-|---|---|
-| `verified` | The reviewed candidate passed the declared Git-scope and driver checks. |
-| `partially_verified` | Useful work was preserved, but at least one required check or review remains. |
-| `blocked` | The requested outcome needs new authority, input, or an external state change. |
-
-## What it is not
-
-- It is not an autonomous release, merge, or repository administration service.
-- It does not bypass driver approvals, agy permissions, or provider-transmission
-  consent.
-- It does not accept worker-reported tests, commands, or completion as evidence.
-- It does not support one job mutating multiple repositories or escaping its
-  disposable worktree.
-- It does not infer a generally best model from offline fixtures or advisory records.
-
-## Why another one of these?
-
-Several Codex-to-agy bridges already exist, and some offer more integration features.
-This project deliberately keeps one portable Agent Skill and one agy backend.
-
-Its differentiator is narrower: **The driver does not confuse a worker report with
-evidence.** Git-derived scope and driver-owned checks decide what was actually
-verified. That does not establish general correctness, security, provider quality, or
-task quality.
+This is not autonomous publication, a security certification, an exhaustive audit,
+or a replacement for reviewing untrusted code. Bash, Python and Git are sufficient;
+there is no Node runtime, MCP daemon or shared controller service.
 
 ## Documentation
 
-Choose a guide by what you need to do:
-
-| Goal | Guide |
+| Task | Guide |
 |---|---|
-| Install, configure the sandbox, or diagnose prerequisites | [Installation and compatibility](docs/INSTALLATION.md) |
-| Run explore, task, project, manual, or model-selected workflows | [Usage](docs/USAGE.md) |
-| Manage progress-aware jobs, verification, recovery, and receipts | [Project workflow](docs/PROJECT_WORKFLOW.md) |
-| Run CI, updates, notifier maintenance, or sanitized reporting | [Operations](docs/OPERATIONS.md) |
-| Inspect the host marketplace package contracts | [Marketplace](docs/MARKETPLACE.md) |
-| Verify a candidate without trusting its report | [Verification tutorial](docs/VERIFYING_AGENT_OUTPUT.md) |
-| Integrate against the bounded public gate fixtures | [Conformance](docs/CONFORMANCE.md) |
-| Understand source ownership or product direction | [Repository map](docs/REPO_MAP.md) · [Roadmap](docs/ROADMAP.md) |
+| Install, migrate an existing installation, or diagnose readiness | [Installation and compatibility](docs/INSTALLATION.md) |
+| Choose workflows, scope, models and options | [Usage](docs/USAGE.md) |
+| Verify, repair, finalize or recover a candidate | [Project workflow](docs/PROJECT_WORKFLOW.md) |
+| Run CI, check updates or maintain the notifier | [Operations](docs/OPERATIONS.md) |
+| Understand the evidence boundary | [Verification tutorial](docs/VERIFYING_AGENT_OUTPUT.md) |
+| Use the portable package | [Skill package](skills/agy-worker/README.md) |
+| Review marketplace packaging | [Marketplace](docs/MARKETPLACE.md) |
+| Find implementation owners and checks | [Repository map](docs/REPO_MAP.md) |
+| Read fixture-conformance limits | [Conformance](docs/CONFORMANCE.md) |
+| See product direction | [Roadmap](docs/ROADMAP.md) |
 
-Public documentation follows a single-owner and progressive-disclosure policy. See
-[the documentation policy](docs/DOCUMENTATION_POLICY.md) before changing README or
-adding a guide.
+## Limits and trust
 
-## Installation details and compatibility
+- `session` mode retains normal user host access. Selected-content staging limits
+  what is staged and reconciled; it is not host isolation.
+- Explicit native mode requires supported macOS scoped containment and has documented
+  network/Keychain exposure. It never falls back to session. See
+  [execution boundaries](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#execution-boundaries).
+- Each launch checks required AGY capabilities and the executable binding. Version
+  text is diagnostic; readiness does not prove authentication, model availability,
+  effective provider semantics or task quality.
+- Model and effort remain caller-owned. Provider failures do not authorize silent
+  model changes, new conversations or direct-driver fallback.
+- Verifiers may execute untrusted candidate code. Review commands and their exposure;
+  keep raw worker logs, credentials and controller state outside provider-readable content.
+- Offline fixtures prove only their exercised mechanisms. A green gate establishes
+  evidence for the bound candidate and commands, not general correctness or security.
 
-The quick-start installer copies only the canonical, self-contained
-`skills/agy-worker/` bundle. Repository-root scripts are compatibility wrappers for
-clone users. The Git marketplace and local installer resolve the same runtime; review
-[the marketplace contract](docs/MARKETPLACE.md) for the verified package boundary.
-
-Before spending provider quota, run the offline doctor against the target repository:
-
-```bash
-./doctor.sh --repo /absolute/path/to/target
-```
-
-A green doctor result covers offline prerequisites only. It does not predict live
-authentication, provider availability, sandbox permission, task quality, or dispatch
-success. Each launch checks required AGY capabilities and the exact executable;
-version text is diagnostic only. Model and effort remain caller-owned.
-
-agy needs network access and writable state under `~/.gemini`. Codex's
-`workspace-write` sandbox therefore needs both the reviewed network setting and an
-explicit `--add-dir ~/.gemini`. Follow the exact recipes and troubleshooting boundary
-in [Installation and compatibility](docs/INSTALLATION.md).
-
-## Use it from Codex
-
-Use normal language and state the repository, allowed scope, desired result, and
-driver-owned checks. For broader work, Codex can discover ordinary structure and test
-commands instead of requiring a predeclared file list.
-
-Model and effort selection remain caller-owned; recommendations remain advisory.
-
-See [Usage](docs/USAGE.md) for workflow examples, manual invocation, read-only
-inventory, common options, and explicit model-selection behavior.
-
-## Project workflow
-
-Progress-aware `project` jobs preserve useful candidates across status, wait,
-verification, repair, and finalization. Controller state is local coordination data,
-not provider truth. Only Codex's strict verification input may continue or finalize a
-candidate; a fresh restart remains an explicit user decision.
-
-See [Project workflow](docs/PROJECT_WORKFLOW.md) for lifecycle commands, Verification
-v2, quality gates, recovery, cleanup, and Evidence Receipt v1.
-
-## Explicit project updates
-
-Updates are deliberate and source-verified; the runtime does not self-update. The
-read-only update check and optional local notifier observe official project releases
-without authorizing an apply, release, dispatch, or provider call.
-
-If hosted Actions quota is unavailable, run the same provider-independent suite
-locally:
-
-```bash
-./scripts/ci-offline.sh
-```
-
-See [Operations](docs/OPERATIONS.md) for CI evidence, updates, notifier maintenance,
-project release observation, and privacy-safe reporting.
-
-## See the evidence boundary in under a minute
-
-Run `./proof-demo.sh` from the repository root. The quick-start section above owns
-the command and its claim boundary; [Conformance](docs/CONFORMANCE.md) documents the
-larger fixture contract.
-
-## Sanitized bug reports and improvement requests
-
-Use [SUPPORT.md](SUPPORT.md) to choose a public bug, feature request, or private
-security route and the information to include. Review and sanitize the report before
-posting; preparing a draft never implies permission to publish.
-
-## agy behaviour worth knowing
-
-Exit 0 with empty output is not success. The runtime accepts a terminal result only
-through its bounded structured envelope. Use `./ground-truth.sh` to inspect the local
-interface before changing agy-facing claims, and read the troubleshooting notes in
-[Installation and compatibility](docs/INSTALLATION.md).
-
-## Roadmap
-
-Current and deferred product slices live in the [product roadmap](docs/ROADMAP.md).
-Source and tests—not release narrative—remain authoritative for current behavior.
-
-## Layout
-
-The [repository map](docs/REPO_MAP.md) owns entry points, data flow, trust boundaries,
-and the verification command for each maintained surface.
-
-## Limitations
-
-- No persistent daemon, MCP server, or shared polling service. A started job has one
-  narrow local controller with owner-private state.
-- Native Windows is untested. Maintained entrypoints require a POSIX-compatible
-  Bash/Python/git environment; WSL may work on a best-effort basis.
-- agy is the only worker backend.
-- Partial/promisor Git clones are unsupported for disposable worker worktrees.
-- Unresolved merge resolve-undo metadata (REUC) rejects dispatch with resolve_undo_present; the controller never clears index metadata.
-- Each job audits one worktree. The controller rejects reconciliation outside it.
-- Provider transmission requires explicit approval for the selected mode and content;
-  installation is never that approval. Provider scope is recommended for bounded jobs
-  and binds exact reviewed entries for staging and reconciliation. Default session
-  mode uses normal user authority; native containment is an explicit scoped option
-  on supported macOS hosts. Whole-worktree mode remains manifest-bound. See the
-  privacy guide for network and cleanup limits.
-- Direct model/effort selection has strong offline mechanism coverage but does not
-  prove backend identity, availability, quality, cost, or quota efficiency.
-- A green gate proves only the exact candidate, immutable base, path policy, and
-  driver-owned commands it exercised. Human review and broader validation remain
-  separate decisions.
-- Public conformance proves only fixed fixture behavior. It is not certification or
-  hostile same-user tamper resistance.
-- GitHub submission is exercised with fake infrastructure; no live submission is
-  implied by offline tests.
-
-Deeper platform, lifecycle, compatibility, and maintenance limits are kept with their
-task guides rather than duplicated here.
+Release state, a local checkout, an installed bundle and an external catalog listing
+are separate facts. The [installation guide](docs/INSTALLATION.md) owns provider
+qualification and host compatibility details.
 
 ## Contributing and support
 
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing source or public claims.
-- Use [SUPPORT.md](SUPPORT.md) for help and reporting routes.
-- Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
-- Review [PRIVACY.md](PRIVACY.md) before any provider-backed dispatch.
-- See [TERMS.md](TERMS.md) for the project terms.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for the focused and full checks,
+[SUPPORT.md](SUPPORT.md) for sanitized reports, and [SECURITY.md](SECURITY.md) for
+private vulnerability reporting. Data handling is described in [PRIVACY.md](PRIVACY.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE). See [TERMS.md](TERMS.md) for scope and disclaimers.

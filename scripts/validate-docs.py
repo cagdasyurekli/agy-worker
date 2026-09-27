@@ -13,6 +13,14 @@ from collections import Counter
 from pathlib import Path
 
 
+README_MAX_LINES = 250
+DOC_WORD_LIMITS = {
+    "docs/ROADMAP.md": 600,
+    "docs/lessons_learned.md": 1200,
+    "docs/REPO_MAP.md": 1500,
+}
+
+
 ONBOARDING_MARKERS = (
     ("positioning", "An Agent Skill for bounded Antigravity CLI delegation"),
     (
@@ -68,6 +76,7 @@ PAGES_BASE = "https://cagdasyurekli.github.io/codex-agy-worker/"
 def validate_onboarding(readme: str, max_lines: int) -> list[str]:
     """Return ordered-onboarding and line-budget violations."""
 
+    max_lines = min(max_lines, README_MAX_LINES)
     raw_lines = readme.splitlines()
     visible_readme = HTML_COMMENT_RE.sub(
         lambda match: "\n" * match.group(0).count("\n"), readme
@@ -392,12 +401,28 @@ def validate_public_docs_inventory(root: Path) -> list[str]:
     return errors
 
 
+def validate_doc_word_limits(root: Path) -> list[str]:
+    """Count all whitespace-separated words, including headings and fenced text."""
+
+    errors: list[str] = []
+    for relative, maximum in DOC_WORD_LIMITS.items():
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            errors.append(f"{relative} must be a regular file")
+            continue
+        words = len(path.read_text(encoding="utf-8").split())
+        if words > maximum:
+            errors.append(f"{relative} has {words} words; maximum is {maximum}")
+    return errors
+
+
 def validate(root: Path, readme_max_lines: int) -> list[str]:
     root = root.resolve()
     readme = root / "README.md"
     if not readme.is_file() or readme.is_symlink():
         return ["README.md must be a regular file"]
     errors = validate_onboarding(readme.read_text(encoding="utf-8"), readme_max_lines)
+    errors.extend(validate_doc_word_limits(root))
     errors.extend(validate_public_docs_inventory(root))
     errors.extend(validate_markdown_links(root))
     errors.extend(validate_pages_sitemap(root))
@@ -418,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         "ok: complete public docs inventory, README onboarding order and line budget, inline "
-        "local Markdown links/anchors, and Pages sitemap mappings are valid"
+        "local Markdown links/anchors, fixed guide word budgets, and Pages sitemap mappings are valid"
     )
     return 0
 

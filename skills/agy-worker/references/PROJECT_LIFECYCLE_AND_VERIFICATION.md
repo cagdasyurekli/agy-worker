@@ -11,58 +11,40 @@ lifecycle, or verifier step fails.
 
 ## Approval, bindings, and launch notices
 
-Human approval authorizes an exact provider transmission boundary and its intended
-work. `launch_approval_sha256`, `transmission_sha256`, `state_sha256`, candidate, and
-dispatch SHA values mechanically bind that decision to current reviewed facts; they do
-not themselves grant authority. Refresh a binding only when the already-approved
-action remains available. Request fresh human authority when content exposure,
-destination, isolation mode, scope, or budget materially changes. A normal job needs
-no hand-authored JSON or Goal. Preserve Goal as an ordinary-use
-opt-in, not a prerequisite.
+Human approval covers exact work and provider exposure. Preview, transmission, state,
+candidate and dispatch SHA values bind that decision; they grant no authority by
+themselves. Refresh them only for an action still covered and mechanically available.
+One upfront approval may cover predictable same-scope repairs; use initial
+`--allow-scoped-repair` for multi-turn scoped work. New exposure, destination,
+isolation, permissions or budget requires authority. A normal job needs neither
+hand-authored JSON nor Goal. Capability preflight and the executable recheck still
+run before every launch.
 
-One exact upfront approval may cover predictable same-scope repairs and mechanical
-digest/state refresh. Use initial `--allow-scoped-repair` for approved multi-turn
-scoped work; provider-launch notices are status, not repeated permission requests.
-For whole-worktree mode, use the preview's exact `launch_approval_sha256`; for provider
-scope, use the exact `transmission_sha256`. Approval reuse does not authorize a Git
-action, acceptance, publication, installation, account action, or a new provider
-execution beyond the approved job. New scope, content exposure, destination,
-isolation, permissions or budget still require authority. Preserve required current
-capability preflight and immediate executable-binding recheck on each launch;
-add no cache or alternate controller.
-
-Before every provider-launch attempt (initial start/run, resume, continue, and restart), tell the user in one or two concise user-facing sentences what task is being sent to AGY.
-Include a short public-safe task label, caller-selected model information, caller-selected effort when separately selectable, and the exact resolved model slug.
-For default selection where no model is selected or the default tier is used, state truthfully that the provider default model is used and that model or effort is unresolved, without inventing a resolved slug or thinking level.
-For fixed/compound/literal models where effort is not separately selectable, state that accurately without inferring backend reasoning or inventing a thinking level.
+Before every provider-launch attempt (initial start/run, resume, continue, and restart), tell the user what task is being sent to AGY.
+Include a short public-safe task label and the exact resolved model slug when known.
+For default selection, say the provider default is used and the model is unresolved; do not invent a slug.
+Report caller-supplied effort when present; otherwise say effort is unresolved, without inferring backend reasoning.
 The notice must precede every dispatch attempt and remain accurate afterward.
 If preflight fails before provider launch, explicitly state that the task was not sent to AGY.
 If provider reach is genuinely uncertain, state that it is unverified rather than claiming success.
 Direct model and effort selection remain caller-owned; recommendations are advisory.
 
-The notice does not require another response while the existing approval applies.
+The notice is status, not another approval request. Covered repairs do not authorize
+Git actions, acceptance, publication, installation, account actions or provider work
+outside the approved job.
 
 ## Lifecycle at a glance
 
-1. Capture an immutable base commit and create a branch-backed disposable worktree.
-2. Keep owner-private controller state outside the worktree.
-3. Generate the content-free transmission preview and review its exact digest.
-4. Obtain approval for the complete provider-readable content and dispatch with the
-   same repository, worktree, base, branch, and job bindings.
-5. Retrieve the bound candidate, inspect its Git diff, and select checks independently
-   of worker prose.
-6. Run writable checks in an isolated verification copy.
-7. Bind sanitized findings to the current candidate in Verification v2.
-8. Continue the same conversation for a bounded repair or finalize an honest
-   disposition. Preserve useful partial work when the budget ends.
+1. Bind an immutable base and branch-backed disposable worktree; keep private state outside it.
+2. Review the content-free preview and obtain exact transmission/execution approval.
+3. Dispatch, retrieve the bound candidate and inspect its actual Git diff.
+4. Run driver-selected checks in an isolated copy; bind sanitized Verification v2 findings.
+5. Repair in the same conversation within budget, or finalize and preserve useful work.
 
-Whole-worktree mode requires the preview’s `launch_approval_sha256`, binding content, kinds, permissions, symlink targets, and execution mode; requested paths
-and gate policies constrain writes or candidate acceptance, not provider reads.
-Provider-scope mode narrows staged content and reconciled writes. New jobs default
-to `--provider-isolation session`, retaining the existing AGY session and normal user
-host access. Explicit native mode adds macOS containment with private HOME for scoped
-jobs. The selected mode stays bound through the lifecycle; failures do not switch it.
-Read [Security and compatibility](SECURITY_AND_COMPATIBILITY.md) for the limits.
+Whole-worktree approval covers every entry; provider scope stages reviewed content
+and limits reconciliation. Session mode retains normal host access. Native mode adds
+supported macOS scoped containment without fallback. See
+[Security and compatibility](SECURITY_AND_COMPATIBILITY.md).
 
 ## Primary `run`, `status`, `verify-finalize` path
 
@@ -126,9 +108,8 @@ to both facade calls and approve the scoped preview with
 `--approve-transmission-sha SHA256`. It stages only selected entries, but remains subject to
 the boundaries in [Security and compatibility](SECURITY_AND_COMPATIBILITY.md).
 
-Omitting both modes fails before provider launch. The facade flags
-`--approve-preview-sha` and `--legacy-preview-approval` were removed after
-v0.22.0; use the explicit transmission modes above.
+Omitting both transmission modes fails before provider launch; use only the current
+approval flags above.
 
 The facade does not choose a model, assurance label, repair, retry, Git action, or
 external write. `status --state "$STATE_DIR/workflow.json"` is read-only. For a bound
@@ -171,19 +152,12 @@ Current bound jobs expose `provider_isolation` (`session` or `native`) and
 `provider_execution` facts (`scope`, `agy_sandbox`, `native_containment`, `legacy`,
 with `legacy` false). Unbound jobs may have no execution facts yet.
 
-This agy-worker release rejects retired dispatch state, command, and
-workflow job formats before partial reads or mutation. The current formats are
-identified by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
-`runtime/scripts/agy_dispatch.py`, and `BOUND_SCHEMA_VERSION` and
-`BOUND_FACADE_SCHEMA_VERSION` in `runtime/scripts/workflow.py`; workflow status output
-has its own version. Finish or discard an older job using the release that created
-it. Current dispatcher records use state V15 and command V13; selection records use
-V4. Earlier formats reject before mutation, including ordinary jobs that used no
-removed feature. Workflow record formats retain their current version constants.
-Keep old artifacts untouched and use their actual creating release.
-`--boost`, `--approve-boost-risk-sha`, `--persona`, `--approve-migration-sha`,
-`--compatibility-disposition`, and `--approve-help-sha` are retired. There is no
-in-place migration or capability-approval bypass; use ordinary workflows for new work.
+Only current dispatch/command formats load; finish or discard older jobs with their
+creating release. Keep old artifacts untouched: there is no in-place migration or
+capability-approval bypass. Format constants are `CURRENT_STATE_SCHEMA` and
+`CURRENT_COMMAND_SCHEMA` in `runtime/scripts/agy_dispatch.py`, and
+`BOUND_SCHEMA_VERSION`/`BOUND_FACADE_SCHEMA_VERSION` in `runtime/scripts/workflow.py`.
+This also applies to ordinary old-format jobs that used no removed feature.
 
 The current state (defined by `CURRENT_STATE_SCHEMA` in
 `runtime/scripts/agy_dispatch.py`) uses `dispatching` for an active initial, resume, or restart attempt;
@@ -224,38 +198,26 @@ There is no automatic retry or continuation:
 
 ## Optional checks and scoped repair
 
-At initial dispatch, `--allow-scoped-repair` binds permission to continue the same
-scoped task/project within its approved write scope, selected model, conversation,
-and budgets. One exact upfront approval may cover predictable same-scope repairs and
-mechanical digest/state refresh; candidate evolution inside that grant does not
-require a new human approval. External drift or a changed grant is rejected before
-another provider turn. Without that initial grant, a scoped candidate is result/finalize-only.
-A fresh state or candidate binding does not by itself require fresh human approval, but it cannot
-extend the original grant.
+Initial `--allow-scoped-repair` binds the approved write scope, model, conversation
+and budgets for task/project continuation. Covered candidate evolution can reuse that
+approval; external drift or changed grants reject before another turn. Without the
+initial grant, a changed scoped candidate is result/finalize-only.
 
-For optional local checks, the driver prepares an owner-private manifest and supplies
-`--self-verification-manifest PATH` at initial task/project dispatch. Both options
-are available through `workflow.sh run`. Checks default off; explore does
-not support them. The driver chooses exact commands, required checks, optional IDs,
-and limits. The worker may request only approved optional IDs; required checks always
-run. Users need not prepare JSON or create a Goal.
+The optional `--self-verification-manifest PATH` is driver-authored and owner-private.
+It binds exact commands, required checks, optional IDs and limits at initial task/project
+dispatch; explore does not support it. The worker may request approved optional IDs,
+but required checks always run. Both options are available through `workflow.sh run`.
 
-After a candidate arrives, use the available `self-verify` action from status. It
-runs once per candidate attempt in a fresh copy of approved content, with no network
-or ambient credentials on supported macOS hosts. Approved system interpreters and
-explicit relative shell scripts are supported; unqualified toolchains fail before
-execution. Raw output stays private. Check execution and preparation spend the
-existing total job allowance; an interrupted action is conservatively charged and
-is not automatically rerun.
+Use the offered `self-verify` action once per candidate attempt. It runs in a fresh
+approved-content copy, without network or ambient credentials on supported macOS.
+Approved system interpreters and explicit relative shell scripts are supported;
+unqualified toolchains fail before execution. Logs stay private, preparation/execution
+spend the existing total budget, and interrupted work is charged without automatic replay.
 
-When bound advisory results are available, status offers `continue
---use-self-verification` to reuse them without a separate input JSON. The driver
-still decides whether repair is useful and issues the provider notice before using
-that action. Manual Verification v2 input remains available. Existing self-verification
-is optional advisory feedback when a focused command is known; an unknown first command
-or architecture does not prohibit useful delegation. Self-verification never
-finalizes a candidate or substitutes for independent diff review and driver checks.
-Keep final driver independent acceptance.
+Bound advisory results may be reused with the offered `continue --use-self-verification`.
+The driver decides whether to repair and emits the provider notice; manual Verification v2
+remains available. These checks are optional when a focused command is known, never
+finalize work and never substitute for independent diff review and driver acceptance.
 
 ## Isolated verification copy
 
@@ -287,12 +249,10 @@ Verification v2 has no separate public schema. The canonical validator is
 `"$PIPELINE/scripts/agy_dispatch.py"` after runtime resolution. It rejects unknown
 fields and requires the current public candidate digest.
 
-Build the record only from driver-owned observations. Do not include prompts, source
-bytes, raw logs, secrets, worker prose, account data, or private paths. Worker envelopes
-are not evidence. Reuse driver-owned checks only for identical candidate bytes and
-relevant environment; after changes rerun affected checks and run the required full
-suite once the final executable candidate is stable. This example
-records one passing check and a completed diff review:
+Use only sanitized driver observations, never prompts, source, raw logs, secrets,
+worker prose, account data or private paths. Reuse checks only for identical candidate
+bytes and relevant environment. This example records a passing check and completed
+diff review:
 
 ```bash
 : "${PIPELINE:?set PIPELINE to the resolved skill runtime}"
@@ -349,13 +309,9 @@ provider notice.
 
 ## Material planning governance
 
-For material UX, lifecycle, trust-boundary, security, data-semantics, or other domain plans:
-A coordinator and suitable domain expert must co-plan.
-Freeze user journeys, acceptance tests, and authority/privacy constraints before implementation.
-The final acceptor must be a different agent or fresh context; no planner or implementer may self-accept.
-Purely mechanical changes are exempt.
-Verification v2 and the controller bind candidate evidence, not agent identity or governance.
-The final human-readable handoff must report the planner/reviewer separation.
+For trust-boundary changes, write a short design note covering options considered and residual risk, and obtain independent review.
+No author is the sole acceptor of material work.
+Verification v2 binds candidate evidence; it does not establish reviewer identity.
 
 ## Assurance and preservation
 
