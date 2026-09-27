@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compatibility entry point; the distributable skill owns the canonical model intelligence runtime.
+# Repository-only tool; core workflow runtime remains in the skill package.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-exec "$SCRIPT_DIR/skills/agy-worker/runtime/model-intelligence.sh" "$@"
+exec /usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/model_intelligence.py" "$@"

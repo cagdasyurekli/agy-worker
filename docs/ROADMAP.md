@@ -12,6 +12,22 @@ scope; reuse existing authority when it covers the work. This roadmap does not i
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
 
+## Unreleased — smaller standalone core package
+
+This development candidate moves benchmark, SWE-bench study, Model Intelligence,
+model-evidence campaign, Codex usage, and feedback-triage tooling out of the skill
+bundle. The repository retains their root entrypoints, implementations, schemas,
+and assets; ordinary delegation, selection, gate, receipt, and lifecycle commands
+remain in the one portable core runtime. Folder-only skill copies do not acquire
+repository-only tools or fetch them on demand.
+
+Benchmark portable-source validation now applies to a copied repository layout with
+its required core files, rather than a skill-only bundle. Its exact source, mode,
+digest, and receipt checks remain required. This is an unreleased packaging change,
+not a version bump or publication claim. Skill size describes tracked source files
+or a fresh copy; it does not describe a full marketplace repository download or
+promise pruning of older installed files.
+
 ## Unreleased — retired job formats and approval aliases
 
 This development candidate makes a breaking change for in-flight jobs written in

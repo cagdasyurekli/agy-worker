@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compatibility entry point; the distributable skill owns the canonical usage observer.
+# Repository-only tool; core workflow runtime remains in the skill package.
 set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-exec bash "$SCRIPT_DIR/skills/agy-worker/runtime/codex-usage-report.sh" "$@"
+exec /usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/codex_usage_report.py" "$@"

@@ -5,15 +5,24 @@ checked-in synthetic task across an ordered, caller-preregistered set of selecti
 records. It does not call agy, a provider, or the network. It does not rank, score,
 route, recommend, retry, fall back, or change a selector.
 
+The benchmark, SWE-bench study, Model Intelligence, and model-evidence campaign tools
+in this guide are repository-only utilities. Run their root entrypoints from the
+repository checkout; they are not included in a standalone `skills/agy-worker/` copy.
+Their implementations live under `scripts/`, tool schemas under `schemas/`, and
+evidence assets under `benchmarks/v1/` or `compat/model-intelligence/`. They reuse the
+canonical core runtime without adding a second gate or receipt implementation.
+
 ## What is authoritative
 
-In a complete checkout the runner accepts only a clean commit and binds its exact
-commit. In a folder-only skill bundle it uses no Git authority: it binds the fixed
-`offline-benchmark-v1` portable revision and a canonical source manifest that
-rejects missing, extra, writable, wrong-mode, symlinked, or hash-drifted benchmark
-authority files. It never fabricates a commit. Both layouts bind the canonical
-benchmark runner, schemas, manifest, fixture set, `qa-gate.sh`, and
-`verify-job.sh` into `plan.v1.json`. The public manifest fixes the task order,
+In a checkout with a `.git` marker, the runner accepts only a clean commit and binds
+its exact commit. A malformed or unusable marker fails closed; it never falls back
+to portable authority. A copied repository layout with no `.git` marker uses no Git
+authority: it binds the fixed `offline-benchmark-v1` portable revision and a canonical
+source manifest that rejects missing, extra, writable, wrong-mode, symlinked, or
+hash-drifted benchmark authority files. This layout includes the repository-only tool
+and its required core files; a skill-folder-only copy cannot run the benchmark.
+It never fabricates a commit. Both layouts bind the canonical benchmark runner,
+schemas, manifest, fixture set, `qa-gate.sh`, and `verify-job.sh` into `plan.v1.json`. The public manifest fixes the task order,
 scope, exact fixture hashes, and verifier policy. Every variant-task pair has
 exactly one attempt. A driver wall duration is operational diagnostics only and is
 not a result field.
@@ -88,7 +97,7 @@ provider. Run its four stages against one external owner-only result root:
 ./swebench-workflow-study.sh advise --root /path/to/results
 ```
 
-The result root must be outside the checkout or relocated skill bundle, owned by
+The result root must be outside the checkout or copied repository layout, owned by
 the caller, mode `0700`, and empty at prepare time. Plan and record inputs must be
 caller-owned mode-`0600` one-link regular files. Every stage consumes the exact
 prior hash-linked artifact and publishes one flat canonical mode-`0600`

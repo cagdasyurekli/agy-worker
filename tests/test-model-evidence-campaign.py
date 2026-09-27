@@ -17,22 +17,22 @@ from typing import Any, Callable
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "skills" / "agy-worker" / "runtime" / "scripts" / "model_evidence_campaign.py"
+SCRIPT = ROOT / "scripts" / "model_evidence_campaign.py"
 SPEC = importlib.util.spec_from_file_location("model_evidence_campaign_tested", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-SHIPPED_DATASET_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "compat" / "model-intelligence" / "dataset.v1.json"
+SHIPPED_DATASET_PATH = ROOT / "compat" / "model-intelligence" / "dataset.v1.json"
 INVENTORY_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "compat" / "agy-models-inventory-binding.json"
 MATRIX_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "compat" / "agy-model-effort-matrix.json"
-PLAN_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-plan.schema.json"
-RECORD_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-record.schema.json"
-EVAL_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-evaluation.schema.json"
-AGG_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-aggregate.schema.json"
-AGG_PREVIEW_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-aggregate-preview.schema.json"
-ADVISORY_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-advisory-summary.schema.json"
-ADVISORY_PREVIEW_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-evidence-campaign-advisory-preview.schema.json"
+PLAN_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-plan.schema.json"
+RECORD_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-record.schema.json"
+EVAL_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-evaluation.schema.json"
+AGG_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-aggregate.schema.json"
+AGG_PREVIEW_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-aggregate-preview.schema.json"
+ADVISORY_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-advisory-summary.schema.json"
+ADVISORY_PREVIEW_SCHEMA_PATH = ROOT / "schemas" / "model-evidence-campaign-advisory-preview.schema.json"
 
 passed = 0
 failed = 0

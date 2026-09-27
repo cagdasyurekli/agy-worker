@@ -1331,6 +1331,7 @@ fi
 printf '{"event":"result","result":{"status":"%s","duration_seconds":0,"num_turns":1,"usage":{},"structured_output":%s}}\n' "$status" "$envelope"
 FAKE
 chmod +x "$TMP/bin/agy"
+cp "$TMP/bin/agy" "$TMP/bin/agy.package-original"
 
 run_worker() {
     local fake_provider_env_args=()
@@ -6509,6 +6510,89 @@ if [[ "$rc" == "0" && ! -e "$TMP/recommender-called-agy" && ! -e "$TMP/recommend
     ok "recommender invokes neither agy nor qa-gate"
 else
     bad "recommender invokes neither agy nor qa-gate"
+fi
+
+# Exercise the actual resolved core after copying only the public skill folder.
+if python3 -B - "$ROOT" "$TMP" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+root = Path(sys.argv[1]).resolve()
+tmp = Path(sys.argv[2]).resolve() / "folder-only-workflow"
+tmp.mkdir(mode=0o700)
+skill = tmp / "skill"
+shutil.copytree(root / "skills/agy-worker", skill)
+assert not (skill / ".pipeline-root").exists()
+assert not (skill / "runtime/scripts/benchmark.py").exists()
+assert not (skill / "runtime/scripts/model_intelligence.py").exists()
+resolved = subprocess.run(["bash", str(skill / "scripts/resolve-pipeline.sh")], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+runtime = Path(resolved.stdout.decode().strip())
+assert runtime == skill / "runtime" and not resolved.stderr
+bin_dir = tmp / "bin"
+bin_dir.mkdir(mode=0o700)
+shutil.copy2(Path(sys.argv[2]) / "bin/agy.package-original", bin_dir / "agy")
+env = {key: value for key, value in os.environ.items() if not key.startswith(("FAKE_", "AGY_WORKER_"))}
+env["PATH"] = str(bin_dir) + ":" + os.environ["PATH"]
+env["XDG_STATE_HOME"] = str(tmp / "state-home")
+Path(env["XDG_STATE_HOME"]).mkdir(mode=0o700)
+fake_outputs = ("FAKE_MODEL_FILE", "FAKE_PROMPT_FILE", "FAKE_DIRS_FILE", "FAKE_ARGV_FILE", "FAKE_STAGE_RESULT_FILE")
+for name in fake_outputs:
+    env[name] = str(tmp / name.lower())
+provider_arguments = [argument for name in fake_outputs for argument in ("--provider-env", name)]
+repo = tmp / "repo"
+repo.mkdir(mode=0o700)
+def call(*argv, expected=0):
+    result = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+    assert result.returncode == expected, (argv, result.returncode, result.stderr)
+    return result
+call("/usr/bin/git", "-C", str(repo), "init", "-q")
+(repo / "proof.txt").write_text("unchanged fixture\n")
+call("/usr/bin/git", "-C", str(repo), "add", "proof.txt")
+call("/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+workflow = str(runtime / "workflow.sh")
+preview = json.loads(call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--preview").stdout)
+call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--approve-whole-worktree", preview["launch_approval_sha256"], "--tier", "bulk", "--task", "Return the unchanged synthetic candidate", *provider_arguments)
+state_files = list(Path(env["XDG_STATE_HOME"]).glob("agy-worker/workflows/*/folder-only/workflow.json"))
+assert len(state_files) == 1
+state_file = state_files[0]
+workflow_state = json.loads(state_file.read_bytes())
+job = Path(workflow_state["dispatch_job_dir"])
+# The ordinary synchronous facade must expose the provider candidate for review.
+status = json.loads(call(workflow, "status", "--state", str(state_file)).stdout)
+dispatch = json.loads((job / "dispatch-state.json").read_bytes())
+assert dispatch["status"] == "succeeded" and dispatch["phase"] == "awaiting-verification"
+assert status["dispatch"]["state_sha256"]
+candidate_root = Path(workflow_state["worktree_path"])
+assert (candidate_root / "proof.txt").read_text() == "unchanged fixture\n"
+assert not call("/usr/bin/git", "-C", str(candidate_root), "status", "--porcelain=v1", "--untracked-files=all").stdout
+verification = {
+    "schema_version": 2, "summary": "Driver checked unchanged fixture",
+    "passed_checks": ["exact unchanged fixture", "driver diff review"], "failed_checks": [],
+    "advisory_checks": 0, "missing_checks": 0,
+    "candidate_sha256": dispatch["result_sha256"], "coverage": "complete",
+    "verified_findings": 0, "unresolved_gaps": 0, "diff_review_complete": True,
+}
+verification_path = tmp / "verification.json"
+verification_path.write_text(json.dumps(verification))
+verification_path.chmod(0o600)
+receipt = tmp / "receipt.json"
+call(workflow, "verify-finalize", "--state", str(state_file), "--receipt", str(receipt), "--envelope", dispatch["result_path"], "--verify-argv", '["/usr/bin/git","diff","--check"]', "--assurance", "verified", "--approve-dispatch-sha", status["dispatch"]["state_sha256"], "--verification-json", str(verification_path))
+assert json.loads(receipt.read_bytes())["verdict"] == "gate-passed"
+final = json.loads(call(workflow, "status", "--state", str(state_file)).stdout)
+assert final["dispatch"]["assurance"] == "verified"
+assert (Path(workflow_state["worktree_path"]) / "proof.txt").read_text() == "unchanged fixture\n"
+(runtime / "scripts/candidate_state.py").unlink()
+missing = call("bash", str(skill / "scripts/resolve-pipeline.sh"), expected=2)
+assert not missing.stdout and b"complete agy-worker skill bundle" in missing.stderr
+PY
+then
+    ok "folder-only core resolves and completes synthetic ordinary workflow verification"
+else
+    bad "folder-only core resolves and completes synthetic ordinary workflow verification"
 fi
 
 echo

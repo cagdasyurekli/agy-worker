@@ -2,8 +2,9 @@
 
 `agy-worker` is an Agent Skill for delegating repository exploration and
 implementation to Google Antigravity CLI (`agy`) while keeping acceptance with
-the driver. The package includes its complete portable runtime, so an installed skill does
-not need a repository checkout or a network fetch to resolve its commands.
+the driver. The package includes its complete portable core runtime, so an installed
+skill does not need a repository checkout or a network fetch for ordinary workflows.
+Research and maintenance tools require a repository checkout.
 
 Use it when a repository task benefits from delegated discovery or edits and the driver
 can independently inspect the candidate and run the relevant project checks. It is

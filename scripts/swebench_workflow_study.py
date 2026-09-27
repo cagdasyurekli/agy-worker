@@ -11,19 +11,8 @@ SCRIPT_DIR = Path(__file__).resolve(strict=True).parent
 RUNTIME = SCRIPT_DIR.parent
 
 def storage_boundary(runtime: Path) -> Path:
-    """Return the checkout root, or the owning skill-bundle root after relocation."""
-    checkout = runtime.parents[2] if len(runtime.parents) > 2 else None
-    if checkout is not None and runtime == checkout / "skills" / "agy-worker" / "runtime":
-        try:
-            wrapper = os.stat(
-                checkout / "swebench-workflow-study.sh", follow_symlinks=False
-            )
-        except OSError:
-            pass
-        else:
-            if stat.S_ISREG(wrapper.st_mode):
-                return checkout
-    return runtime.parent
+    """Return the repository or relocated repository-tooling root."""
+    return runtime
 
 STORAGE_BOUNDARY = storage_boundary(RUNTIME)
 

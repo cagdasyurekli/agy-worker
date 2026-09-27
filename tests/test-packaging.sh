@@ -1714,14 +1714,12 @@ else
 fi
 
 if [[ -x "$ROOT/feedback-triage.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/feedback-triage.sh" ]] \
         && [[ -x "$ROOT/scripts/feedback-triage.py" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/feedback-triage.py" ]] \
-        && cmp -s "$ROOT/scripts/feedback-triage.py" \
-            "$ROOT/skills/agy-worker/runtime/scripts/feedback-triage.py"; then
-    ok "root and portable packages include byte-identical bounded feedback triage"
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/feedback-triage.sh" ]] \
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/scripts/feedback-triage.py" ]]; then
+    ok "repository-only feedback triage keeps its canonical root implementation"
 else
-    bad "root and portable packages include byte-identical bounded feedback triage"
+    bad "repository-only feedback triage keeps its canonical root implementation"
 fi
 
 if [[ -x "$ROOT/model-selection.sh" ]] \
@@ -1761,31 +1759,31 @@ else
 fi
 
 if [[ -x "$ROOT/model-intelligence.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/model-intelligence.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/model_intelligence.py" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-intelligence-evidence.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-intelligence-advisory.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/compat/model-intelligence/dataset.v1.json" ]]; then
-    ok "root and portable packages include Model Intelligence v1"
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/model-intelligence.sh" ]] \
+        && [[ -x "$ROOT/scripts/model_intelligence.py" ]] \
+        && [[ -f "$ROOT/schemas/model-intelligence-evidence.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-intelligence-advisory.schema.json" ]] \
+        && [[ -f "$ROOT/compat/model-intelligence/dataset.v1.json" ]]; then
+    ok "repository-only tools include Model Intelligence v1"
 else
-    bad "root and portable packages include Model Intelligence v1"
+    bad "repository-only tools include Model Intelligence v1"
 fi
 
 if [[ -x "$ROOT/model-evidence-campaign.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/model-evidence-campaign.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/model_evidence_campaign.py" ]] \
-        && grep -Fq 'model-evidence-campaign.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
-        && grep -Fq 'scripts/model_evidence_campaign.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-plan.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-record.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-evaluation.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-aggregate.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-aggregate-preview.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-advisory-summary.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-evidence-campaign-advisory-preview.schema.json" ]]; then
-    ok "root and portable packages include Model Evidence Campaign"
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/model-evidence-campaign.sh" ]] \
+        && [[ -x "$ROOT/scripts/model_evidence_campaign.py" ]] \
+        && ! grep -Fq 'model-evidence-campaign.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
+        && ! grep -Fq 'scripts/model_evidence_campaign.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-plan.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-record.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-evaluation.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-aggregate.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-aggregate-preview.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-advisory-summary.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-evidence-campaign-advisory-preview.schema.json" ]]; then
+    ok "repository-only tools include Model Evidence Campaign"
 else
-    bad "root and portable packages include Model Evidence Campaign"
+    bad "repository-only tools include Model Evidence Campaign"
 fi
 
 if [[ -x "$ROOT/delegation-policy.sh" ]] \
@@ -1826,46 +1824,44 @@ else
 fi
 
 if [[ -x "$ROOT/benchmark.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/benchmark.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/benchmark.py" ]] \
+        && [[ -x "$ROOT/scripts/benchmark.py" ]] \
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/benchmark.sh" ]] \
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/scripts/benchmark.py" ]] \
         && [[ -f "$ROOT/benchmarks/v1/manifest.json" ]] \
-        && cmp -s "$ROOT/benchmarks/v1/manifest.json" \
-            "$ROOT/skills/agy-worker/runtime/benchmarks/v1/manifest.json" \
-        && cmp -s "$ROOT/benchmarks/v1/portable-source.json" \
-            "$ROOT/skills/agy-worker/runtime/benchmarks/v1/portable-source.json" \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/benchmark-plan.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/benchmark-result.schema.json" ]]; then
-    ok "root and portable packages include offline Benchmark v1"
+        && [[ -f "$ROOT/benchmarks/v1/portable-source.json" ]] \
+        && [[ -f "$ROOT/schemas/benchmark-plan.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/benchmark-result.schema.json" ]]; then
+    ok "repository-only Benchmark retains its assets and source authority"
 else
-    bad "root and portable packages include offline Benchmark v1"
+    bad "repository-only Benchmark retains its assets and source authority"
 fi
 
 if [[ -x "$ROOT/swebench-workflow-study.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/swebench-workflow-study.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/swebench_workflow_study.py" ]] \
-        && grep -Fq 'swebench-workflow-study.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
-        && grep -Fq 'scripts/swebench_workflow_study.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/swebench-workflow-study-plan.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/swebench-workflow-study-report.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/swebench-workflow-study-advisory.schema.json" ]] \
-        && grep -Fq '"additionalProperties":false' "$ROOT/skills/agy-worker/runtime/schemas/swebench-workflow-study-plan.schema.json" \
-        && grep -Fq '"exact_bindings_verified"' "$ROOT/skills/agy-worker/runtime/schemas/swebench-workflow-study-report.schema.json"; then
-    ok "root and portable packages include SWE-bench Workflow Study v1"
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/swebench-workflow-study.sh" ]] \
+        && [[ -x "$ROOT/scripts/swebench_workflow_study.py" ]] \
+        && ! grep -Fq 'swebench-workflow-study.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
+        && ! grep -Fq 'scripts/swebench_workflow_study.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
+        && [[ -f "$ROOT/schemas/swebench-workflow-study-plan.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/swebench-workflow-study-report.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/swebench-workflow-study-advisory.schema.json" ]] \
+        && grep -Fq '"additionalProperties":false' "$ROOT/schemas/swebench-workflow-study-plan.schema.json" \
+        && grep -Fq '"exact_bindings_verified"' "$ROOT/schemas/swebench-workflow-study-report.schema.json"; then
+    ok "repository-only tools include SWE-bench Workflow Study v1"
 else
-    bad "root and portable packages include SWE-bench Workflow Study v1"
+    bad "repository-only tools include SWE-bench Workflow Study v1"
 fi
 
 if [[ -x "$ROOT/model-intelligence.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/model-intelligence.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/model_intelligence.py" ]] \
-        && grep -Fq 'model-intelligence.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
-        && grep -Fq 'scripts/model_intelligence.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-intelligence-evidence.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/model-intelligence-advisory.schema.json" ]] \
-        && [[ -f "$ROOT/skills/agy-worker/runtime/compat/model-intelligence/dataset.v1.json" ]]; then
-    ok "root and portable packages include Model Intelligence v1"
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/model-intelligence.sh" ]] \
+        && [[ -x "$ROOT/scripts/model_intelligence.py" ]] \
+        && ! grep -Fq 'model-intelligence.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
+        && ! grep -Fq 'scripts/model_intelligence.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
+        && [[ -f "$ROOT/schemas/model-intelligence-evidence.schema.json" ]] \
+        && [[ -f "$ROOT/schemas/model-intelligence-advisory.schema.json" ]] \
+        && [[ -f "$ROOT/compat/model-intelligence/dataset.v1.json" ]]; then
+    ok "repository-only tools include Model Intelligence v1"
 else
-    bad "root and portable packages include Model Intelligence v1"
+    bad "repository-only tools include Model Intelligence v1"
 fi
 
 if [[ -x "$ROOT/delegation-policy.sh" ]] \
@@ -1893,18 +1889,17 @@ root = Path(sys.argv[1])
 temporary = Path(sys.argv[2])
 runtime = root / "skills/agy-worker/runtime"
 root_manifest = root / "benchmarks/v1/portable-source.json"
-portable_manifest = runtime / "benchmarks/v1/portable-source.json"
 raw = root_manifest.read_bytes()
-assert raw == portable_manifest.read_bytes()
+assert not (runtime / "benchmarks/v1/portable-source.json").exists()
 payload = json.loads(raw)
 expected = {
-    "benchmark.sh", "qa-gate.sh", "verify-job.sh",
-    "scripts/benchmark.py", "scripts/candidate_state.py",
-    "scripts/compatibility.py", "scripts/evidence_receipt.py",
-    "scripts/model_selection.py", "scripts/recommendation_record.py",
-    "scripts/validate-envelope.py", "schemas/benchmark-plan.schema.json",
-    "schemas/benchmark-result.schema.json", "schemas/evidence-receipt.schema.json",
-    "schemas/worker-result.schema.json", "schemas/worker-result.provider.schema.json",
+    "benchmark.sh", "skills/agy-worker/runtime/qa-gate.sh", "skills/agy-worker/runtime/verify-job.sh",
+    "scripts/benchmark.py", "skills/agy-worker/runtime/scripts/candidate_state.py",
+    "skills/agy-worker/runtime/scripts/compatibility.py", "skills/agy-worker/runtime/scripts/evidence_receipt.py",
+    "skills/agy-worker/runtime/scripts/model_selection.py", "skills/agy-worker/runtime/scripts/recommendation_record.py",
+    "skills/agy-worker/runtime/scripts/validate-envelope.py", "schemas/benchmark-plan.schema.json",
+    "schemas/benchmark-result.schema.json", "skills/agy-worker/runtime/schemas/evidence-receipt.schema.json",
+    "skills/agy-worker/runtime/schemas/worker-result.schema.json", "skills/agy-worker/runtime/schemas/worker-result.provider.schema.json",
 }
 
 def valid(value, source):
@@ -1941,25 +1936,25 @@ def valid(value, source):
     except (OSError, TypeError, ValueError):
         return False
 
-assert valid(payload, runtime)
+assert valid(payload, root)
 mutant = copy.deepcopy(payload); mutant["files"][0]["path"] = "../benchmark.sh"
-assert not valid(mutant, runtime)
+assert not valid(mutant, root)
 mutant = copy.deepcopy(payload); mutant["files"].pop()
-assert not valid(mutant, runtime)
+assert not valid(mutant, root)
 mutant = copy.deepcopy(payload); mutant["files"].append(copy.deepcopy(mutant["files"][0]))
-assert not valid(mutant, runtime)
+assert not valid(mutant, root)
 mutant = copy.deepcopy(payload); mutant["files"][0]["mode"] = "100600"
-assert not valid(mutant, runtime)
+assert not valid(mutant, root)
 mutant = copy.deepcopy(payload); mutant["files"][0]["sha256"] = "0" * 64
-assert not valid(mutant, runtime)
+assert not valid(mutant, root)
 
 fixture = temporary / "portable-source-fixture"
-shutil.copytree(runtime, fixture)
-missing = fixture / "scripts/model_selection.py"
+shutil.copytree(root, fixture, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+missing = fixture / "skills/agy-worker/runtime/scripts/model_selection.py"
 missing.unlink()
 assert not valid(payload, fixture)
-shutil.copytree(runtime, fixture, dirs_exist_ok=True)
-link = fixture / "scripts/model_selection.py"
+shutil.copytree(root, fixture, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+link = fixture / "skills/agy-worker/runtime/scripts/model_selection.py"
 link.unlink()
 os.symlink("benchmark.py", link)
 assert not valid(payload, fixture)
@@ -2012,6 +2007,18 @@ else
     bad "roadmap and privacy docs bound the local-only CI reporter surface"
 fi
 
+if python3 - "$ROOT" <<'PYCODE'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+runtime = root / "skills/agy-worker/runtime"
+tooling = ['benchmark.sh', 'benchmarks/v1/manifest.json', 'benchmarks/v1/portable-source.json', 'benchmarks/v1/tasks/exact-edit/candidate.txt', 'benchmarks/v1/tasks/exact-edit/envelope.json', 'benchmarks/v1/tasks/exact-edit/initial.txt', 'benchmarks/v1/variants/bulk.json', 'codex-usage-report.sh', 'compat/model-intelligence/dataset.v1.json', 'feedback-triage.sh', 'model-evidence-campaign.sh', 'model-intelligence.sh', 'schemas/benchmark-plan.schema.json', 'schemas/benchmark-result.schema.json', 'schemas/model-evidence-campaign-advisory-preview.schema.json', 'schemas/model-evidence-campaign-advisory-summary.schema.json', 'schemas/model-evidence-campaign-aggregate-preview.schema.json', 'schemas/model-evidence-campaign-aggregate.schema.json', 'schemas/model-evidence-campaign-evaluation.schema.json', 'schemas/model-evidence-campaign-plan.schema.json', 'schemas/model-evidence-campaign-record.schema.json', 'schemas/model-intelligence-advisory.schema.json', 'schemas/model-intelligence-evidence.schema.json', 'schemas/swebench-workflow-study-advisory.schema.json', 'schemas/swebench-workflow-study-plan.schema.json', 'schemas/swebench-workflow-study-report.schema.json', 'scripts/benchmark.py', 'scripts/codex_usage_report.py', 'scripts/feedback-triage.py', 'scripts/model_evidence_campaign.py', 'scripts/model_intelligence.py', 'scripts/swebench_workflow_study.py', 'swebench-workflow-study.sh']
+for relative in tooling:
+    assert not (runtime / relative).exists(), relative
+    assert (root / relative).is_file(), relative
+PYCODE
+then ok "research and maintenance tools remain repository-only"; else bad "research and maintenance tools remain repository-only"; fi
+
 required_runtime_dependencies=(
     workflow.sh
     agy-worker.sh
@@ -2019,22 +2026,15 @@ required_runtime_dependencies=(
     qa-gate.sh
     verify-job.sh
     evidence-report.sh
-    benchmark.sh
-    swebench-workflow-study.sh
     model-recommendation.sh
     model-selection.sh
     doctor.sh
     ground-truth.sh
-    feedback-triage.sh
-    model-intelligence.sh
-    model-evidence-campaign.sh
     delegation-policy.sh
     scripts/workflow.py
     scripts/validate-envelope.py
     scripts/evidence_receipt.py
     scripts/evidence_report.py
-    scripts/benchmark.py
-    scripts/swebench_workflow_study.py
     scripts/recommendation_record.py
     scripts/model-recommendation.py
     scripts/model_selection.py
@@ -2047,9 +2047,6 @@ required_runtime_dependencies=(
     scripts/version_manifest_engine.py
     scripts/job_lifecycle.py
     scripts/doctor-metadata.py
-    scripts/feedback-triage.py
-    scripts/model_intelligence.py
-    scripts/model_evidence_campaign.py
     scripts/delegation_policy.py
     schemas/workflow-state.schema.json
     schemas/worker-result.schema.json
@@ -2058,28 +2055,7 @@ required_runtime_dependencies=(
     schemas/model-selection.schema.json
     schemas/model-recommendation.schema.json
     schemas/job-state.schema.json
-    schemas/benchmark-plan.schema.json
-    schemas/benchmark-result.schema.json
-    schemas/swebench-workflow-study-plan.schema.json
-    schemas/swebench-workflow-study-report.schema.json
-    schemas/swebench-workflow-study-advisory.schema.json
-    schemas/model-intelligence-evidence.schema.json
-    schemas/model-intelligence-advisory.schema.json
-    schemas/model-evidence-campaign-plan.schema.json
-    schemas/model-evidence-campaign-record.schema.json
-    schemas/model-evidence-campaign-evaluation.schema.json
-    schemas/model-evidence-campaign-aggregate.schema.json
-    schemas/model-evidence-campaign-aggregate-preview.schema.json
-    schemas/model-evidence-campaign-advisory-summary.schema.json
-    schemas/model-evidence-campaign-advisory-preview.schema.json
     schemas/delegation-policy.schema.json
-    compat/model-intelligence/dataset.v1.json
-    benchmarks/v1/manifest.json
-    benchmarks/v1/portable-source.json
-    benchmarks/v1/tasks/exact-edit/initial.txt
-    benchmarks/v1/tasks/exact-edit/candidate.txt
-    benchmarks/v1/tasks/exact-edit/envelope.json
-    benchmarks/v1/variants/bulk.json
     agents/bulk-test-writer.md
     agents/repo-inventory.md
     agents/diff-reviewer.md
@@ -2144,7 +2120,7 @@ else
     bad "resolver accepts bundle-owned real runtime parent directories"
 fi
 
-for parent in scripts agents schemas compat benchmarks; do
+for parent in scripts agents schemas compat; do
     for link_kind in absolute relative in-root; do
         parent_copy="$TMP/parent-$parent-$link_kind"
         foreign_parent="$TMP/foreign-$parent-$link_kind"
@@ -2183,17 +2159,11 @@ for specification in \
     'qa-gate.sh:executable' \
     'verify-job.sh:executable' \
     'evidence-report.sh:executable' \
-    'benchmark.sh:executable' \
-    'swebench-workflow-study.sh:executable' \
-    'model-intelligence.sh:executable' \
-    'model-evidence-campaign.sh:executable' \
     'delegation-policy.sh:executable' \
     'scripts/workflow.py:executable' \
     'scripts/validate-envelope.py:executable' \
     'scripts/evidence_receipt.py:executable' \
     'scripts/evidence_report.py:executable' \
-    'scripts/benchmark.py:executable' \
-    'scripts/swebench_workflow_study.py:executable' \
     'scripts/recommendation_record.py:executable' \
     'scripts/candidate_state.py:executable' \
     'scripts/agy_dispatch.py:executable' \
@@ -2202,31 +2172,12 @@ for specification in \
     'scripts/agy_dispatch_verification.py:data' \
     'scripts/job_lifecycle.py:executable' \
     'scripts/model_selection.py:executable' \
-    'scripts/model_intelligence.py:executable' \
-    'scripts/model_evidence_campaign.py:executable' \
     'scripts/delegation_policy.py:executable' \
     'schemas/workflow-state.schema.json:data' \
     'schemas/worker-result.schema.json:data' \
     'schemas/evidence-receipt.schema.json:data' \
     'schemas/job-state.schema.json:data' \
-    'schemas/benchmark-plan.schema.json:data' \
-    'schemas/benchmark-result.schema.json:data' \
-    'schemas/swebench-workflow-study-plan.schema.json:data' \
-    'schemas/swebench-workflow-study-report.schema.json:data' \
-    'schemas/swebench-workflow-study-advisory.schema.json:data' \
-    'schemas/model-intelligence-evidence.schema.json:data' \
-    'schemas/model-intelligence-advisory.schema.json:data' \
-    'schemas/model-evidence-campaign-plan.schema.json:data' \
-    'schemas/model-evidence-campaign-record.schema.json:data' \
-    'schemas/model-evidence-campaign-evaluation.schema.json:data' \
-    'schemas/model-evidence-campaign-aggregate.schema.json:data' \
-    'schemas/model-evidence-campaign-aggregate-preview.schema.json:data' \
-    'schemas/model-evidence-campaign-advisory-summary.schema.json:data' \
-    'schemas/model-evidence-campaign-advisory-preview.schema.json:data' \
     'schemas/delegation-policy.schema.json:data' \
-    'compat/model-intelligence/dataset.v1.json:data' \
-    'benchmarks/v1/manifest.json:data' \
-    'benchmarks/v1/portable-source.json:data' \
     'agents/repo-inventory.md:data' \
     'compat/agy-verified-version.txt:data' \
     'compat/agy-model-effort-matrix.json:data'; do
@@ -3679,10 +3630,10 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
             "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (301 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
+        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (302 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
         && grep -Fq 'EXPECTED_CHECKS = 115' "$ROOT/tests/test-agy-worker-remediation.py" \
         && grep -Fq '`tests/test-agy-worker-remediation.py` (115 focused cases)' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-doctor.sh` (218 cases)' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-doctor.sh` (214 cases)' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Do not pin exact suite counts in this instruction file' "$ROOT/AGENTS.md" \
         && grep -Fq '`docs/REPO_MAP.md` owns focused-suite inventory' "$ROOT/AGENTS.md" \
         && grep -Fq '`scripts/ci_stages.py` owns the' "$ROOT/AGENTS.md" \

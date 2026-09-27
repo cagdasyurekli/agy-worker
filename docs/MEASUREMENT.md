@@ -109,7 +109,8 @@ be reconciled.
 
 To measure the orchestration overhead and token consumption of direct Codex task execution
 versus delegated `agy-worker` execution, use the privacy-safe `codex-usage-report.sh` tool
-with this manual three-run protocol. This protocol is strictly manual; do not build an
+from a repository checkout with this manual three-run protocol. This repository-only
+tool is not included in a standalone skill copy. This protocol is strictly manual; do not build an
 automatic task executor.
 
 ### 1. Preparation and controlled conditions

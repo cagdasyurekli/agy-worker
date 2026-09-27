@@ -22,7 +22,7 @@ from unittest import mock
 
 sys.dont_write_bytecode = True
 REPO_ROOT = Path(__file__).resolve(strict=True).parents[1]
-SCRIPT_PATH = str(REPO_ROOT / "skills/agy-worker/runtime/scripts/swebench_workflow_study.py")
+SCRIPT_PATH = str(REPO_ROOT / "scripts/swebench_workflow_study.py")
 PYTHON = "/usr/bin/python3"
 
 
@@ -1230,8 +1230,8 @@ class TestSWEBenchWorkflowStudy(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in overflow_root.iterdir()), ["plan.json"])
 
         relocated_skill = self.inputs / "relocated-skill"
-        shutil.copytree(REPO_ROOT / "skills" / "agy-worker", relocated_skill)
-        relocated_script = str(relocated_skill / "runtime" / "scripts" / "swebench_workflow_study.py")
+        shutil.copytree(REPO_ROOT, relocated_skill, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        relocated_script = str(relocated_skill / "scripts" / "swebench_workflow_study.py")
         relocated_plan = self.inputs / "relocated-plan.json"
         relocated_plan.write_text(json.dumps(make_valid_plan()), encoding="utf-8")
         os.chmod(relocated_plan, 0o600)

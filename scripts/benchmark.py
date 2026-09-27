@@ -28,21 +28,19 @@ from typing import Any, NoReturn, Callable
 sys.dont_write_bytecode = True
 SCRIPT_DIR = Path(__file__).resolve(strict=True).parent
 RUNTIME = SCRIPT_DIR.parent
+CORE_RUNTIME = RUNTIME / "skills" / "agy-worker" / "runtime"
 BENCH_ROOT = RUNTIME / "benchmarks" / "v1"
 MANIFEST_PATH = BENCH_ROOT / "manifest.json"
 PORTABLE_SOURCE_PATH = BENCH_ROOT / "portable-source.json"
-RECEIPT_SCHEMA = RUNTIME / "schemas" / "evidence-receipt.schema.json"
+RECEIPT_SCHEMA = CORE_RUNTIME / "schemas" / "evidence-receipt.schema.json"
 PLAN_SCHEMA = RUNTIME / "schemas" / "benchmark-plan.schema.json"
 RESULT_SCHEMA = RUNTIME / "schemas" / "benchmark-result.schema.json"
-VERIFY_JOB = RUNTIME / "verify-job.sh"
-QA_GATE = RUNTIME / "qa-gate.sh"
-_REPO_CANDIDATE = RUNTIME.parents[2]
-CHECKOUT_MODE = (
-    (_REPO_CANDIDATE / "skills" / "agy-worker" / "runtime").is_dir()
-    and Path(os.path.realpath(_REPO_CANDIDATE / "skills" / "agy-worker" / "runtime")) == RUNTIME
-)
-REPO_ROOT = _REPO_CANDIDATE if CHECKOUT_MODE else RUNTIME
-ROOT_BENCH = REPO_ROOT / "benchmarks" / "v1" if CHECKOUT_MODE else BENCH_ROOT
+VERIFY_JOB = CORE_RUNTIME / "verify-job.sh"
+QA_GATE = CORE_RUNTIME / "qa-gate.sh"
+# A present but invalid Git marker must fail Git authority validation, never
+# silently become a portable source bundle.
+CHECKOUT_MODE = os.path.lexists(RUNTIME / ".git")
+REPO_ROOT = RUNTIME
 MAX_JSON = 256 * 1024
 MAX_VARIANT = 64 * 1024
 MAX_STREAM = 128 * 1024
@@ -52,20 +50,20 @@ NAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?")
 PORTABLE_REVISION = "offline-benchmark-v1"
 PORTABLE_FILES = (
     ("benchmark.sh", 0o755),
-    ("qa-gate.sh", 0o755),
-    ("verify-job.sh", 0o755),
+    ("skills/agy-worker/runtime/qa-gate.sh", 0o755),
+    ("skills/agy-worker/runtime/verify-job.sh", 0o755),
     ("scripts/benchmark.py", 0o755),
-    ("scripts/candidate_state.py", 0o755),
-    ("scripts/compatibility.py", 0o755),
-    ("scripts/evidence_receipt.py", 0o755),
-    ("scripts/model_selection.py", 0o755),
-    ("scripts/recommendation_record.py", 0o755),
-    ("scripts/validate-envelope.py", 0o755),
+    ("skills/agy-worker/runtime/scripts/candidate_state.py", 0o755),
+    ("skills/agy-worker/runtime/scripts/compatibility.py", 0o755),
+    ("skills/agy-worker/runtime/scripts/evidence_receipt.py", 0o755),
+    ("skills/agy-worker/runtime/scripts/model_selection.py", 0o755),
+    ("skills/agy-worker/runtime/scripts/recommendation_record.py", 0o755),
+    ("skills/agy-worker/runtime/scripts/validate-envelope.py", 0o755),
     ("schemas/benchmark-plan.schema.json", 0o644),
     ("schemas/benchmark-result.schema.json", 0o644),
-    ("schemas/evidence-receipt.schema.json", 0o644),
-    ("schemas/worker-result.schema.json", 0o644),
-    ("schemas/worker-result.provider.schema.json", 0o644),
+    ("skills/agy-worker/runtime/schemas/evidence-receipt.schema.json", 0o644),
+    ("skills/agy-worker/runtime/schemas/worker-result.schema.json", 0o644),
+    ("skills/agy-worker/runtime/schemas/worker-result.provider.schema.json", 0o644),
 )
 BENCHMARK_TREE_FILES = {
     "manifest.json",
@@ -82,8 +80,8 @@ try:
 except (AttributeError, OSError):
     _WAITID = None
 
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
+if str(CORE_RUNTIME / "scripts") not in sys.path:
+    sys.path.insert(0, str(CORE_RUNTIME / "scripts"))
 
 from evidence_receipt import (  # noqa: E402
     ValidationFailure,
@@ -190,10 +188,6 @@ def verify_asset(relative: str, expected: str) -> bytes:
     data = read_file(path, "benchmark asset", 64 * 1024)
     if digest(data) != expected:
         fail("benchmark asset digest drifted")
-    if CHECKOUT_MODE:
-        root_copy = ROOT_BENCH / relative
-        if read_file(root_copy, "root benchmark asset", 64 * 1024) != data:
-            fail("root and portable benchmark assets differ")
     return data
 
 
@@ -254,10 +248,6 @@ def load_portable_source() -> tuple[dict[str, Any], bytes]:
             fail("portable source file binding drifted")
     if raw != canonical_bytes(value) + b"\n":
         fail("portable source manifest is not canonical")
-    if CHECKOUT_MODE:
-        _validate_benchmark_tree(ROOT_BENCH)
-        if read_file(ROOT_BENCH / "portable-source.json", "root portable source manifest") != raw:
-            fail("root and portable source manifests differ")
     return value, raw
 
 
@@ -292,8 +282,6 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
 
 def load_manifest() -> tuple[dict[str, Any], bytes]:
     raw = read_file(MANIFEST_PATH, "benchmark manifest")
-    if read_file(ROOT_BENCH / "manifest.json", "root benchmark manifest") != raw:
-        fail("root and portable manifests differ")
     return validate_manifest(strict_object(raw, "benchmark manifest")), raw
 
 
@@ -382,7 +370,7 @@ def canonical_external_root(path: Path) -> Path:
         raise BenchmarkError("result root is unavailable") from exc
     if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
         fail("result root must be an owner-only directory")
-    root_real = Path(os.path.realpath(REPO_ROOT if CHECKOUT_MODE else RUNTIME.parent))
+    root_real = Path(os.path.realpath(REPO_ROOT))
     if path == root_real or root_real in path.parents or path in root_real.parents:
         fail("result root must be external to the repository")
     return path

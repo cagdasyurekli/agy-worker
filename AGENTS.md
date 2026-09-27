@@ -141,8 +141,10 @@ Codex runs repository commands.
 
 ## Repository ownership and verification
 
-The canonical portable runtime is `skills/agy-worker/runtime/`; root scripts are
-compatibility wrappers. Keep runtime/package copies byte-synchronized. `qa-gate.sh`
+The canonical portable core runtime is `skills/agy-worker/runtime/`; its root
+entrypoints are compatibility wrappers. Repository-only research and maintenance
+tools live under `scripts/` with root entrypoints and assets outside the skill.
+Keep explicitly mirrored core helpers and metadata byte-synchronized. `qa-gate.sh`
 and `verify-job.sh` remain the evidence primitives: do not weaken their checks merely
 to obtain a green result. A gate rejection may feed the project repair loop, but only
 Codex's driver-owned checks determine `verified` versus `partially_verified` delivery.

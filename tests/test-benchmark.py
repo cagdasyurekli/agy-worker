@@ -18,7 +18,7 @@ from typing import Callable
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "skills/agy-worker/runtime/scripts/benchmark.py"
+MODULE_PATH = ROOT / "scripts/benchmark.py"
 SPEC = importlib.util.spec_from_file_location("benchmark_tested", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -71,9 +71,9 @@ variant_path = ROOT / "benchmarks/v1/variants/bulk.json"
 variant = MODULE.load_variant(variant_path)
 
 check("runner imports with bytecode disabled", lambda: sys.dont_write_bytecode)
-check("runtime is canonical under the public skill", lambda: MODULE.RUNTIME == ROOT / "skills/agy-worker/runtime")
-check("root and portable manifests are byte-identical", lambda: (ROOT / "benchmarks/v1/manifest.json").read_bytes() == manifest_raw)
-check("root and portable task assets are byte-identical", lambda: all((ROOT / "benchmarks/v1" / task[key]).read_bytes() == (ROOT / "skills/agy-worker/runtime/benchmarks/v1" / task[key]).read_bytes() for task in manifest["tasks"] for key in ("initial_source", "candidate_source", "envelope_source")))
+check("repository tool uses the canonical core runtime", lambda: MODULE.RUNTIME == ROOT and MODULE.CORE_RUNTIME == ROOT / "skills/agy-worker/runtime")
+check("repository manifest is the single benchmark authority", lambda: MODULE.MANIFEST_PATH == ROOT / "benchmarks/v1/manifest.json" and MODULE.MANIFEST_PATH.read_bytes() == manifest_raw)
+check("repository task assets retain their exact manifest digests", lambda: all(hashlib.sha256((ROOT / "benchmarks/v1" / task[key]).read_bytes()).hexdigest() == task[key.replace("_source", "_sha256")] for task in manifest["tasks"] for key in ("initial_source", "candidate_source", "envelope_source")))
 check("manifest fixes one bounded public synthetic task", lambda: len(manifest["tasks"]) == 1 and manifest["tasks"][0]["id"] == "exact-edit")
 check("manifest fixes exact one-file scope and two verifiers", lambda: manifest["tasks"][0]["only"] == ["proof.txt"] and manifest["tasks"][0]["verifiers"] == ["exact-content", "diff-check"])
 check("variant input binds a caller tier selection", lambda: variant["selection"]["selection_mode"] == "tier" and variant["selection"]["selected_tier"] == "bulk")
@@ -486,54 +486,73 @@ check("schema weakening mutation is exposed by the invalid corpus", schema_weake
 
 
 def portable_invoke(skill: Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run([str(skill / "runtime/benchmark.sh"), *arguments], cwd=skill, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=35, check=False)
+    return subprocess.run([str(skill / "benchmark.sh"), *arguments], cwd=skill, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=35, check=False)
 
 
 portable_skill = TMP / "portable-skill"
-shutil.copytree(ROOT / "skills/agy-worker", portable_skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+shutil.copytree(ROOT, portable_skill, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
 portable_results = TMP / "portable-results"; portable_results.mkdir(mode=0o700)
-portable_variant = portable_skill / "runtime/benchmarks/v1/variants/bulk.json"
+def copied_tooling_output_boundary() -> bool:
+    previous = MODULE.REPO_ROOT
+    inside = portable_skill / "private-results"
+    inside.mkdir(mode=0o700)
+    try:
+        MODULE.REPO_ROOT = portable_skill
+        assert MODULE.canonical_external_root(portable_results) == portable_results
+        assert rejects(lambda: MODULE.canonical_external_root(portable_skill))
+        assert rejects(lambda: MODULE.canonical_external_root(inside))
+        assert rejects(lambda: MODULE.canonical_external_root(TMP))
+        return True
+    finally:
+        MODULE.REPO_ROOT = previous
+
+
+check("copied tooling output is external to source root and its ancestors", copied_tooling_output_boundary)
+portable_variant = portable_skill / "benchmarks/v1/variants/bulk.json"
 portable_prepare = portable_invoke(portable_skill, "prepare", "--result-root", str(portable_results), "--variant", str(portable_variant))
 portable_plan = json.loads((portable_results / "plan.v1.json").read_bytes()) if (portable_results / "plan.v1.json").is_file() else {}
-check("folder-only bundle prepares without checkout or Git authority", lambda: portable_prepare.returncode == 0 and not portable_prepare.stderr and portable_plan.get("tool_authority", {}).get("source_kind") == "portable-runtime" and portable_plan["tool_authority"]["source_revision"] == "offline-benchmark-v1")
+check("copied repository tooling prepares without checkout or Git authority", lambda: portable_prepare.returncode == 0 and not portable_prepare.stderr and portable_plan.get("tool_authority", {}).get("source_kind") == "portable-runtime" and portable_plan["tool_authority"]["source_revision"] == "offline-benchmark-v1")
 portable_run = portable_invoke(portable_skill, "run", "--plan", str(portable_results / "plan.v1.json"))
 portable_report = portable_invoke(portable_skill, "report", "--plan", str(portable_results / "plan.v1.json"), "--result", str(portable_results / "result.v1.json"))
-check("folder-only bundle runs and reports one offline gate receipt", lambda: portable_run.returncode == 0 and portable_report.returncode == 0 and json.loads(portable_report.stdout)["facts"][0]["gate_exit"] == 0)
+check("copied repository tooling runs and reports one offline gate receipt", lambda: portable_run.returncode == 0 and portable_report.returncode == 0 and json.loads(portable_report.stdout)["facts"][0]["gate_exit"] == 0)
 
 
 def portable_reject(name: str, mutator: Callable[[Path], None]) -> bool:
     skill = TMP / ("portable-reject-" + name)
-    shutil.copytree(ROOT / "skills/agy-worker", skill, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(ROOT, skill, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
     mutator(skill)
     result_root = TMP / ("portable-reject-results-" + name); result_root.mkdir(mode=0o700)
-    completed = portable_invoke(skill, "prepare", "--result-root", str(result_root), "--variant", str(skill / "runtime/benchmarks/v1/variants/bulk.json"))
+    completed = portable_invoke(skill, "prepare", "--result-root", str(result_root), "--variant", str(skill / "benchmarks/v1/variants/bulk.json"))
     return completed.returncode == 2 and not completed.stdout and b"Traceback" not in completed.stderr and not (result_root / "plan.v1.json").exists()
 
 
-check("portable authority rejects a missing file", lambda: portable_reject("missing", lambda skill: (skill / "runtime/qa-gate.sh").unlink()))
-check("portable authority rejects file digest drift", lambda: portable_reject("drift", lambda skill: (skill / "runtime/qa-gate.sh").write_bytes((skill / "runtime/qa-gate.sh").read_bytes() + b"\n")))
-check("portable authority rejects writable file mode", lambda: portable_reject("writable", lambda skill: os.chmod(skill / "runtime/qa-gate.sh", 0o777)))
-check("portable authority rejects executable mode drift", lambda: portable_reject("mode", lambda skill: os.chmod(skill / "runtime/qa-gate.sh", 0o644)))
+check("portable authority rejects a missing file", lambda: portable_reject("missing", lambda skill: (skill / "skills/agy-worker/runtime/qa-gate.sh").unlink()))
+check("portable authority rejects file digest drift", lambda: portable_reject("drift", lambda skill: (skill / "skills/agy-worker/runtime/qa-gate.sh").write_bytes((skill / "skills/agy-worker/runtime/qa-gate.sh").read_bytes() + b"\n")))
+check("portable authority rejects writable file mode", lambda: portable_reject("writable", lambda skill: os.chmod(skill / "skills/agy-worker/runtime/qa-gate.sh", 0o777)))
+check("portable authority rejects executable mode drift", lambda: portable_reject("mode", lambda skill: os.chmod(skill / "skills/agy-worker/runtime/qa-gate.sh", 0o644)))
 
 
 def symlink_portable(skill: Path) -> None:
     target = skill / "qa-copy.sh"
-    shutil.copy2(skill / "runtime/qa-gate.sh", target)
-    (skill / "runtime/qa-gate.sh").unlink()
-    (skill / "runtime/qa-gate.sh").symlink_to(target)
+    shutil.copy2(skill / "skills/agy-worker/runtime/qa-gate.sh", target)
+    (skill / "skills/agy-worker/runtime/qa-gate.sh").unlink()
+    (skill / "skills/agy-worker/runtime/qa-gate.sh").symlink_to(target)
 
 
 check("portable authority rejects a symlinked file", lambda: portable_reject("symlink", symlink_portable))
-check("portable authority rejects an extra benchmark asset", lambda: portable_reject("extra", lambda skill: (skill / "runtime/benchmarks/v1/extra.txt").write_text("extra\n")))
+check("portable authority rejects an extra benchmark asset", lambda: portable_reject("extra", lambda skill: (skill / "benchmarks/v1/extra.txt").write_text("extra\n")))
 
 
 def mutate_portable_revision(skill: Path) -> None:
-    path = skill / "runtime/benchmarks/v1/portable-source.json"
+    path = skill / "benchmarks/v1/portable-source.json"
     value = json.loads(path.read_bytes()); value["source_revision"] = "offline-benchmark-v2"
     path.write_bytes(MODULE.canonical_bytes(value) + b"\n")
 
 
 check("portable authority rejects source-revision drift", lambda: portable_reject("revision", mutate_portable_revision))
+check("present invalid Git file cannot fall back to portable authority", lambda: portable_reject("git-file", lambda bundle: (bundle / ".git").write_text("invalid\n")))
+check("present invalid Git directory cannot fall back to portable authority", lambda: portable_reject("git-directory", lambda bundle: (bundle / ".git").mkdir()))
+check("dangling Git marker cannot fall back to portable authority", lambda: portable_reject("git-symlink", lambda bundle: (bundle / ".git").symlink_to("missing-git")))
 
 
 def tamper_then_report(target: Path, mutator: Callable[[dict], None]) -> bool:

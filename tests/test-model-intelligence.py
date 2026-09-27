@@ -18,15 +18,15 @@ from typing import Any, Callable
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "skills" / "agy-worker" / "runtime" / "scripts" / "model_intelligence.py"
+SCRIPT = ROOT / "scripts" / "model_intelligence.py"
 SPEC = importlib.util.spec_from_file_location("model_intelligence_tested", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-SHIPPED_DATASET_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "compat" / "model-intelligence" / "dataset.v1.json"
-EVIDENCE_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-intelligence-evidence.schema.json"
-ADVISORY_SCHEMA_PATH = ROOT / "skills" / "agy-worker" / "runtime" / "schemas" / "model-intelligence-advisory.schema.json"
+SHIPPED_DATASET_PATH = ROOT / "compat" / "model-intelligence" / "dataset.v1.json"
+EVIDENCE_SCHEMA_PATH = ROOT / "schemas" / "model-intelligence-evidence.schema.json"
+ADVISORY_SCHEMA_PATH = ROOT / "schemas" / "model-intelligence-advisory.schema.json"
 
 passed = 0
 failed = 0

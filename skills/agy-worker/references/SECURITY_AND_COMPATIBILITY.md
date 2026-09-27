@@ -214,10 +214,11 @@ user configuration are never modified.
 
 ## Supported distribution
 
-The canonical runtime lives in `skills/agy-worker/runtime/`. Repository-root scripts
-are compatibility wrappers. The host marketplace packages and GitHub installation path
-refer to that one bundle; they do not create a second runtime or authorize a provider
-dispatch.
+The canonical portable core runtime lives in `skills/agy-worker/runtime/`. Its
+repository-root entrypoints are compatibility wrappers. Research and maintenance
+tools are repository-only and are not required by the folder-only core runtime.
+The host marketplace packages and GitHub installation path refer to that one core
+bundle; they do not create a second runtime or authorize a provider dispatch.
 
 The package-owned [README](../README.md), [skill router](../SKILL.md), and references
 are part of the standalone bundle. They intentionally require no decorative image or
@@ -229,7 +230,8 @@ independently.
 
 The stable policy value `direct-codex` means direct driver implementation on either
 host; its spelling and JSON fields are compatibility identifiers. Codex usage reports
-(`codex-usage-report.sh` / `codex_usage_report.py`) and Codex sandbox configuration
+(`codex-usage-report.sh` / `scripts/codex_usage_report.py`) are available from a
+repository checkout, not a standalone skill copy. They and Codex sandbox configuration
 remain Codex-only. The normal workflow and offline doctor do not require a Codex
 binary when Claude Code is the driver. Checkout update/notifier tools retain their
 Codex maintenance scope and do not look up installed plugins by their old identity.

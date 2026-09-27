@@ -106,7 +106,9 @@ cd codex-agy-worker
 `install.sh` defaults to the Codex skill (`--host codex`); `--host claude` selects
 Claude Code. `CODEX_SKILLS_DIR` defaults to `~/.codex/skills`. It copies the canonical bundle and writes
 a local pointer so checkout-only maintenance commands remain available; it does not
-rewrite the public `SKILL.md` or install an additional runtime.
+rewrite the public `SKILL.md` or install an additional runtime. The installer copies
+current bundle files without pruning extra files already present at the destination;
+an updated installation may retain tools from an older bundle.
 
 For a released snapshot, check out the exact reviewed `vMAJOR.MINOR.PATCH` tag from
 the [GitHub Releases page](https://github.com/cagdasyurekli/codex-agy-worker/releases)
@@ -115,8 +117,11 @@ before running `./install.sh`; do not substitute an unverified tag.
 ### Folder-only or third-party copy
 
 `skills/agy-worker/` is the one canonical, self-contained Agent Skill. A folder-only
-copy contains its Bash/Python/git runtime and downloads no code when invoked. Resolve
-the installed runtime as documented in
+copy contains its Bash/Python/git core runtime and downloads no code when invoked.
+Benchmark, SWE-bench study, Model Intelligence, model-evidence campaign, Codex usage,
+and feedback-triage tools require the repository checkout and are not part of this
+copy. Run those tools through their repository-root entrypoints. Resolve the installed
+core runtime as documented in
 [`skills/agy-worker/SKILL.md`](../skills/agy-worker/SKILL.md), then run:
 
 ```bash
