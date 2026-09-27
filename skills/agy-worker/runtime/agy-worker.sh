@@ -881,7 +881,7 @@ selection_file="$job_dir/selection.json"
 
 # Resolve once before consuming the task. New direct selectors validate the exact
 # capability probe; convenience tiers preserve their documented mapping.
-selection_args=(--output "$selection_file")
+selection_args=(--output "$selection_file" --provider-isolation "$provider_isolation")
 child_env_args=()
 for provider_env_name in ${provider_env+"${provider_env[@]}"}; do
     child_env_args+=(--child-env "$provider_env_name")
@@ -1128,6 +1128,15 @@ You are a bounded worker. Another agent (the driver) will independently verify
 everything you claim, so inaccurate self-reporting is worse than admitting failure.
 
 __SELF_VERIFICATION_CHECK_REQUESTS__
+NON-INTERACTIVE RUN — this contract overrides any global or user instruction file
+(for example GEMINI.md) where they conflict:
+- Nobody can answer questions during this run. Do not ask; put assumptions,
+  blockers, and questions in the result as the output contract requires.
+- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,
+  formatters, type checkers, dependencies, or refactors the task did not ask for.
+- Ignore instructions to use a report template or suggest follow-up rules;
+  return only the required output.
+
 OUTPUT CONTRACT — non-negotiable:
 - Your FINAL response must be a single JSON object matching the enforced schema.
 - Do NOT write your answer to a file, artifact, or brain document.

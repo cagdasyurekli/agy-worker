@@ -90,10 +90,10 @@ SELECTION_SCHEMA = 4
 COMMON_RECORD_FIELDS = {"schema_version", "kind", "selection_mode", "resolved_agy_model"}
 PROBE_FIELDS = {"installed_agy_version", "probed_executable"}
 REQUIRED_AGY_CAPABILITIES = (
-    "--add-dir", "--conversation", "--disable-slash-commands", "--effort",
-    "--json-schema", "--mode", "--model", "--output-format", "--print",
-    "--print-timeout", "--sandbox",
+    "--add-dir", "--disable-slash-commands", "--json-schema", "--mode",
+    "--model", "--output-format", "--print", "--print-timeout",
 )
+KNOWN_AGY_CAPABILITIES = REQUIRED_AGY_CAPABILITIES + ("--sandbox", "--conversation", "--effort")
 REQUIRED_CAPABILITY_VALUES = {
     "--mode": {"accept-edits", "plan"}, "--output-format": {"stream-json"},
 }
@@ -111,7 +111,7 @@ class MissingCapabilities(EvidenceUnavailable):
     """A diagnostic made exclusively from the controller's fixed flag names."""
 
     def __init__(self, flags: tuple[str, ...], *, values: bool = False) -> None:
-        if not flags or len(set(flags)) != len(flags) or any(flag not in REQUIRED_AGY_CAPABILITIES for flag in flags):
+        if not flags or len(set(flags)) != len(flags) or any(flag not in KNOWN_AGY_CAPABILITIES for flag in flags):
             raise ValueError("invalid capability diagnostic")
         self.flags = tuple(sorted(flags))
         self.values = values
@@ -490,8 +490,28 @@ def probe_installed_version(executable: str | None = None) -> str:
         raise EvidenceUnavailable("agy version output is empty or malformed")
     return line
 
-def parse_critical_help(raw: bytes) -> None:
+def required_agy_capabilities(
+    *, provider_isolation: str = "session", conversation: bool = False, effort: bool = False,
+) -> tuple[str, ...]:
+    """Require optional flags only when the selected operation uses them."""
+    if provider_isolation not in {"session", "native"}:
+        raise CallerError("provider isolation must be session or native")
+    return REQUIRED_AGY_CAPABILITIES + tuple(
+        flag for flag, enabled in (
+            ("--sandbox", provider_isolation == "native"),
+            ("--conversation", conversation), ("--effort", effort),
+        ) if enabled
+    )
+
+
+def parse_critical_help(
+    raw: bytes, *, provider_isolation: str = "session", conversation: bool = False,
+    effort: bool = False,
+) -> None:
     """Check advertised flags and required transport values, never model policy."""
+    required_flags = required_agy_capabilities(
+        provider_isolation=provider_isolation, conversation=conversation, effort=effort,
+    )
     if not raw or b"\x00" in raw:
         raise EvidenceUnavailable("agy capability help is malformed")
     try:
@@ -501,13 +521,13 @@ def parse_critical_help(raw: bytes) -> None:
     found: dict[str, str] = {}
     for line in text.splitlines():
         match = re.fullmatch(r"  (--[a-z-]+) {2,}([^\r\n]+)", line)
-        if match is None or match[1] not in REQUIRED_AGY_CAPABILITIES:
+        if match is None or match[1] not in required_flags:
             continue
         option, detail = match.groups()
         if option in found or detail != detail.strip():
             raise EvidenceUnavailable("agy capability help is ambiguous or malformed")
         found[option] = detail
-    missing = sorted(set(REQUIRED_AGY_CAPABILITIES) - set(found))
+    missing = sorted(set(required_flags) - set(found))
     if missing:
         raise MissingCapabilities(tuple(missing))
     for option, required in REQUIRED_CAPABILITY_VALUES.items():
@@ -515,12 +535,17 @@ def parse_critical_help(raw: bytes) -> None:
         if not any(required <= domain for domain in domains):
             raise MissingCapabilities((option,), values=True)
 
-def probe_critical_interface(executable: str) -> None:
+def probe_critical_interface(
+    executable: str, *, provider_isolation: str = "session", conversation: bool = False,
+    effort: bool = False,
+) -> None:
     raw = probe_command(
         executable, "--help", timeout=HELP_TIMEOUT_SECONDS,
         output_limit=HELP_OUTPUT_LIMIT, label="critical interface", help_stderr=True,
     )
-    parse_critical_help(raw)
+    parse_critical_help(
+        raw, provider_isolation=provider_isolation, conversation=conversation, effort=effort,
+    )
 
 
 def transport_value(value: str, label: str) -> str:
@@ -531,22 +556,30 @@ def transport_value(value: str, label: str) -> str:
     return value
 
 
-def probe_capabilities() -> tuple[str, dict[str, Any], str]:
+def probe_capabilities(
+    *, provider_isolation: str = "session", conversation: bool = False, effort: bool = False,
+) -> tuple[str, dict[str, Any], str]:
     executable, binding = resolve_safe_executable()
     version = probe_installed_version(executable)
-    probe_critical_interface(executable)
+    probe_critical_interface(
+        executable, provider_isolation=provider_isolation, conversation=conversation, effort=effort,
+    )
     confirm_executable_binding(executable, binding)
     return executable, binding, version
 
 
-def bind_selection(record: dict[str, Any]) -> dict[str, Any]:
-    _executable, binding, version = probe_capabilities()
+def bind_selection(
+    record: dict[str, Any], *, provider_isolation: str = "session",
+) -> dict[str, Any]:
+    _executable, binding, version = probe_capabilities(
+        provider_isolation=provider_isolation, effort=record.get("user_effort") is not None,
+    )
     return {**record, "installed_agy_version": version, "probed_executable": binding}
 
 
 def resolve_selection(
     model: str, effort: str | None, model_source: str, effort_source: str | None,
-    *, probe_version: bool,
+    *, probe_version: bool, provider_isolation: str = "session",
 ) -> dict[str, Any]:
     transport_value(model, "--model")
     if model_source not in SOURCE_NAMES or (effort_source is not None and effort_source not in SOURCE_NAMES):
@@ -560,7 +593,7 @@ def resolve_selection(
     }
     if effort is not None:
         record.update(user_effort=transport_value(effort, "--effort"), user_effort_source=effort_source)
-    return bind_selection(record) if probe_version else record
+    return bind_selection(record, provider_isolation=provider_isolation) if probe_version else record
 
 
 def resolve_tier_selection(tier: str, source: str) -> dict[str, Any]:
@@ -696,12 +729,17 @@ def validate_selection_record(record: dict[str, Any]) -> None:
     validate_selection_record_shape(record)
 
 
-def reprobe_selection_record(record: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def reprobe_selection_record(
+    record: dict[str, Any], *, provider_isolation: str = "session", conversation: bool = False,
+) -> tuple[str, dict[str, Any]]:
     """Probe every launch and preserve the initial executable authority binding."""
     validate_selection_record_shape(record)
     if "probed_executable" not in record:
         raise CallerError("selection record has no executable binding")
-    executable, binding, _version = probe_capabilities()
+    executable, binding, _version = probe_capabilities(
+        provider_isolation=provider_isolation, conversation=conversation,
+        effort=record.get("user_effort") is not None,
+    )
     if not frozen_executable_binding_matches(record["probed_executable"], binding):
         raise EvidenceUnavailable("agy selection executable changed")
     return executable, binding
@@ -821,7 +859,7 @@ def publish_record(path: Path, record: dict[str, Any]) -> None:
 
 def build_parser() -> UsageParser:
     parser = UsageParser(prog="model-selection.sh")
-    for name in ("tier", "tier-source", "model", "effort", "model-source", "effort-source", "output", "validate-record", "verify-record-executable"):
+    for name in ("tier", "tier-source", "model", "effort", "model-source", "effort-source", "provider-isolation", "output", "validate-record", "verify-record-executable"):
         parser.add_argument("--" + name, action="append")
     observation = parser.add_mutually_exclusive_group()
     observation.add_argument("--observe-installed-version", action="store_true")
@@ -860,18 +898,24 @@ def main(argv: list[str] | None = None) -> int:
                 if action == "verify_record_executable":
                     reprobe_selection_record(record)
                 return 0
+        provider_isolation = get("provider_isolation") or "session"
+        required_agy_capabilities(provider_isolation=provider_isolation)
         tier, model, effort = get("tier"), get("model"), get("effort")
         if sum(value is not None for value in (tier, model)) != 1:
             parser.error("exactly one of --tier or --model is required")
         if tier is not None:
             if effort is not None or get("model_source") or get("effort_source"):
                 parser.error("--tier conflicts with model/effort inputs")
-            record = bind_selection(resolve_tier_selection(tier, get("tier_source") or "cli"))
+            record = bind_selection(
+                resolve_tier_selection(tier, get("tier_source") or "cli"),
+                provider_isolation=provider_isolation,
+            )
         else:
             if get("tier_source"):
                 parser.error("--tier-source requires --tier")
             record = resolve_selection(model or "", effort, get("model_source") or "cli",
-                (get("effort_source") or "cli") if effort is not None else get("effort_source"), probe_version=True)
+                (get("effort_source") or "cli") if effort is not None else get("effort_source"),
+                probe_version=True, provider_isolation=provider_isolation)
         if get("output"):
             publish_record(Path(get("output") or ""), record)
             print(record.get("resolved_agy_model") or "")

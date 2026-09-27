@@ -1637,6 +1637,107 @@ JSON
 chmod 0600 "$SELF_VERIFY_MANIFEST"
 SELF_VERIFY_MANIFEST="$(cd "$(dirname "$SELF_VERIFY_MANIFEST")" && pwd -P)/$(basename "$SELF_VERIFY_MANIFEST")"
 
+# The preamble must reach the actual prompt sent to agy in every workflow and
+# transmission mode. Explore whole-worktree dispatch points at a staged prompt,
+# so the assertion follows that pointer and inspects the staged bytes.
+noninteractive_preamble_failures=0
+for preamble_workflow in explore task project; do
+    for preamble_mode in whole scoped; do
+        preamble_job="noninteractive-$preamble_workflow-$preamble_mode"
+        preamble_agy_mode=accept-edits
+        [[ "$preamble_workflow" != explore ]] || preamble_agy_mode=plan
+        preamble_mode_args=()
+        if [[ "$preamble_mode" == scoped ]]; then
+            preamble_mode_args=(
+                --provider-scope "$CORE_SCOPE"
+                --approve-transmission-sha "$CORE_TRANSMISSION_SHA"
+            )
+        fi
+        preamble_self_verify_args=()
+        preamble_self_verify=0
+        if [[ "$preamble_workflow" == task && "$preamble_mode" == scoped ]]; then
+            preamble_self_verify=1
+            preamble_self_verify_args=(--self-verification-manifest "$SELF_VERIFY_MANIFEST")
+        fi
+        printf 'non-interactive preamble regression\n' | run_worker "$preamble_job" \
+            --workflow "$preamble_workflow" --mode "$preamble_agy_mode" --max-cycles 1 \
+            ${preamble_mode_args+"${preamble_mode_args[@]}"} \
+            ${preamble_self_verify_args+"${preamble_self_verify_args[@]}"} \
+            > "$TMP/$preamble_job.out" 2> "$TMP/$preamble_job.err"
+        preamble_rc=$?
+        if [[ "$preamble_rc" == 0 ]] && python3 -I -S -B - \
+                "$TMP" "$preamble_job" "$preamble_workflow" "$preamble_mode" \
+                "$preamble_self_verify" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+job, workflow, mode, self_verify = sys.argv[2:]
+job_dir = root / "logs" / job
+provider_prompt_path = root / f"{job}.prompt"
+argv_path = root / f"{job}.argv"
+state = json.loads((job_dir / "dispatch-state.json").read_text(encoding="utf-8"))
+command = json.loads((job_dir / "dispatch-command.json").read_text(encoding="utf-8"))
+assert state["status"] == "succeeded"
+assert state["workflow"] == workflow
+assert command["workflow"] == workflow
+assert bool(command["provider_scope_path"]) == (mode == "scoped")
+
+provider_prompt = provider_prompt_path.read_bytes()
+argv = [part for part in argv_path.read_bytes().split(b"\0") if part]
+assert len(argv) >= 2 and argv[-2] == b"--print"
+assert argv[-1] == provider_prompt
+assert argv[argv.index(b"--mode") + 1] == (b"plan" if workflow == "explore" else b"accept-edits")
+effective_prompt = provider_prompt
+pointer = re.search(rb"Read '([^']+)' as the complete prompt", provider_prompt)
+recorded_prompt = (job_dir / "full-prompt.txt").read_bytes()
+if pointer is not None:
+    staged_path = Path(pointer.group(1).decode("utf-8"))
+    assert staged_path == (job_dir / "staged" / "full-prompt.txt").resolve(strict=True)
+    effective_prompt = staged_path.read_bytes()
+    assert effective_prompt == recorded_prompt
+else:
+    assert recorded_prompt in provider_prompt
+
+expected_block = (
+    "NON-INTERACTIVE RUN — this contract overrides any global or user instruction file\n"
+    "(for example GEMINI.md) where they conflict:\n"
+    "- Nobody can answer questions during this run. Do not ask; put assumptions,\n"
+    "  blockers, and questions in the result as the output contract requires.\n"
+    "- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,\n"
+    "  formatters, type checkers, dependencies, or refactors the task did not ask for.\n"
+    "- Ignore instructions to use a report template or suggest follow-up rules;\n"
+    "  return only the required output.\n"
+).encode("utf-8")
+assert effective_prompt.count(expected_block) == 1
+output_contract = effective_prompt.index("OUTPUT CONTRACT — non-negotiable:".encode("utf-8"))
+block_start = effective_prompt.index(expected_block)
+shell_rule = effective_prompt.index(b"Do NOT run shell or terminal tools or tests.")
+task_follows = effective_prompt.index(b"TASK FOLLOWS:")
+assert block_start < output_contract < shell_rule < task_follows
+if self_verify == "1":
+    self_verify_request = b"Required check IDs, run automatically: required_check"
+    assert self_verify_request in effective_prompt
+    assert effective_prompt.index(self_verify_request) < block_start
+else:
+    assert b"Required check IDs, run automatically:" not in effective_prompt
+PY
+        then
+            ok "$preamble_workflow/$preamble_mode provider-bound preamble and existing contract order"
+        else
+            noninteractive_preamble_failures=$((noninteractive_preamble_failures + 1))
+            bad "$preamble_workflow/$preamble_mode provider-bound preamble and existing contract order"
+        fi
+    done
+done
+if (( noninteractive_preamble_failures == 0 )); then
+    ok "non-interactive preamble reaches all six workflow/transmission combinations"
+else
+    bad "non-interactive preamble reaches all six workflow/transmission combinations"
+fi
+
 printf 'self-verification manifest CLI binding\n' | run_worker self-verification-valid \
     --workflow task --max-cycles 2 \
     --self-verification-manifest "$SELF_VERIFY_MANIFEST" \
@@ -2468,8 +2569,8 @@ expect_compat_reject() {
 
 VERSION_FIXTURE="$TMP/selector-version-probes"
 make_selector_fixture "$VERSION_FIXTURE" clean
-# Every required option must be advertised even on default and tier routes.
-for missing in add-dir conversation disable-slash-commands effort json-schema mode model output-format print print-timeout sandbox; do
+# Every base option must be advertised even on default and tier routes.
+for missing in add-dir disable-slash-commands json-schema mode model output-format print print-timeout; do
     for route in default tier direct; do
         selector_args=()
         case "$route" in
@@ -2486,6 +2587,65 @@ for missing in add-dir conversation disable-slash-commands effort json-schema mo
         else bad "$route missing --$missing capability boundary (exit $rc)"; fi
     done
 done
+# Conditional capabilities: initial session exploration needs neither native nor recovery flags.
+for missing in sandbox conversation effort; do
+    for route in default tier model; do
+        selector_args=()
+        case "$route" in
+            tier) selector_args=(--tier cheap) ;;
+            model) selector_args=(--model vendor/Future-Model) ;;
+        esac
+        job="optional-$route-$missing"
+        printf 'initial session exploration\n' | AGY_WORKER_MODE=plan FAKE_HELP_MODE="missing---$missing" \
+            run_worker "$job" --workflow explore ${selector_args+"${selector_args[@]}"} \
+            > "$TMP/$job.out" 2> "$TMP/$job.err"
+        rc=$?
+        if [[ "$rc" == 0 ]] && python3 -B - "$TMP/$job.calls" "$TMP/$job.argv" <<'PY'
+from pathlib import Path
+import sys
+assert Path(sys.argv[1]).read_text().splitlines() == ['version', 'help'] * 2 + ['worker']
+argv = Path(sys.argv[2]).read_bytes().split(b'\0')
+assert b'--sandbox' not in argv and b'--conversation' not in argv and b'--effort' not in argv
+PY
+        then ok "$route session explore ignores unused --$missing with fresh launch probes"
+        else bad "$route session explore unused --$missing (exit $rc)"; fi
+    done
+done
+for effort_source in cli environment; do
+    job="required-effort-$effort_source"
+    if [[ "$effort_source" == cli ]]; then
+        printf 'must remain unread\n' | FAKE_HELP_MODE=missing---effort \
+            run_worker "$job" --model vendor/Future --effort Caller-Level > "$TMP/$job.out" 2> "$TMP/$job.err"
+    else
+        printf 'must remain unread\n' | AGY_WORKER_EFFORT=Caller-Level FAKE_HELP_MODE=missing---effort \
+            run_worker "$job" --model vendor/Future > "$TMP/$job.out" 2> "$TMP/$job.err"
+    fi
+    rc=$?
+    if [[ "$rc" == 8 && ! -e "$TMP/logs/$job" && ! -s "$TMP/$job.worker-calls" ]] \
+            && grep -Fq -- '--effort' "$TMP/$job.err"; then
+        ok "$effort_source effort requires its capability before task consumption"
+    else bad "$effort_source effort capability boundary (exit $rc)"; fi
+done
+native_capability_root="$(cd "$TMP" && pwd -P)"
+native_capability_target="$CORE_WORKDIR/native-capability-target.txt"
+native_capability_scope="$native_capability_root/native-capability.scope.json"
+printf 'native capability fixture\n' > "$native_capability_target"
+printf '%s\n' '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"native-capability-target.txt","kind":"file"}],"write":[{"path":"native-capability-target.txt","kind":"file"}]}' > "$native_capability_scope"
+chmod 0600 "$native_capability_scope"
+native_capability_sha="$("$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+    --provider-scope "$native_capability_scope" --provider-isolation native --format json \
+    | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
+printf 'must remain unread\n' | AGY_TEST_WORKDIR="$CORE_WORKDIR" FAKE_HELP_MODE=missing---sandbox \
+    run_worker required-native --workflow task --provider-isolation native \
+    --provider-scope "$native_capability_scope" --approve-transmission-sha "$native_capability_sha" \
+    > "$TMP/required-native.out" 2> "$TMP/required-native.err"
+rc=$?
+if [[ "$rc" == 8 && ! -e "$TMP/logs/required-native" && ! -s "$TMP/required-native.worker-calls" ]] \
+        && grep -Fq -- '--sandbox' "$TMP/required-native.err"; then
+    ok "native requires sandbox capability before task consumption or containment"
+else bad "native capability boundary (exit $rc)"; fi
+rm -f "$native_capability_target" "$native_capability_scope"
+
 for route in default tier direct; do
     selector_args=()
     case "$route" in
@@ -2514,6 +2674,25 @@ else:
 PYTHON
     then ok "non-semver diagnostic permits $route launch with literal caller choices"
     else bad "non-semver diagnostic $route launch boundary"; fi
+done
+
+# Standalone observation is base-only; record verification retains recorded effort.
+selection_helper="$ROOT/skills/agy-worker/runtime/scripts/model_selection.py"
+for action in base record; do
+    action_args=(--probe-interface)
+    [[ "$action" != record ]] || action_args=(--verify-record-executable "$TMP/logs/arbitrary-version-direct/selection.json")
+    FAKE_HELP_MODE=missing---effort FAKE_CALLS_FILE="$TMP/standalone-$action.calls" \
+        PATH="$TMP/bin:$PATH" python3 -B "$selection_helper" "${action_args[@]}" \
+        --child-env FAKE_HELP_MODE --child-env FAKE_CALLS_FILE \
+        > "$TMP/standalone-$action.out" 2> "$TMP/standalone-$action.err"
+    rc=$?
+    if { [[ "$action" == base && "$rc" == 0 ]] \
+            || { [[ "$action" == record && "$rc" == 8 ]] && grep -Fq -- '--effort' "$TMP/standalone-$action.err"; }; }; then
+        ok "standalone $action probe uses its own effort context"
+    else bad "standalone $action effort context (exit $rc)"; fi
+    PATH="$TMP/bin:$PATH" python3 -B "$selection_helper" "${action_args[@]}" \
+        --provider-isolation native > "$TMP/standalone-$action-exclusive.out" 2> "$TMP/standalone-$action-exclusive.err"
+    expect_exit "standalone $action rejects selection-only isolation context" 64 "$?"
 done
 
 for version_mode in fail empty oversize hang; do
@@ -4623,6 +4802,97 @@ else bad "provider check-id schema boundary"; fi
 if [[ "$resume_unavailable_ok" == 1 ]]; then
     ok "unavailable resume preserves failure state and starts no probes or provider"
 else bad "unavailable resume action parity"; fi
+
+# Operation-specific recovery requirements retain the prior candidate and frozen effort.
+capability_root="$(cd "$TMP" && pwd -P)"
+git -C "$TMP/source-repo" worktree add -q -b capability-recovery "$capability_root/capability-worktree" HEAD
+capability_workdir="$(cd "$capability_root/capability-worktree" && pwd -P)"
+printf 'unchanged candidate\n' > "$capability_workdir/target.txt"
+capability_scope="$capability_root/capability-recovery.scope.json"
+printf '%s\n' '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"target.txt","kind":"file"}],"write":[{"path":"target.txt","kind":"file"}]}' > "$capability_scope"
+chmod 0600 "$capability_scope"
+for capability_case in resume continue scoped-repair effort no-effort restart; do
+    job="capability-$capability_case"
+    capability_args=(--workflow project --max-cycles 2 --idle-timeout 1s --hard-timeout 2s --max-runtime 30s)
+    initial_mode=heartbeat-success
+    initial_help=missing---conversation
+    recovery_action=continue
+    missing=conversation
+    scoped_edit=''
+    case "$capability_case" in
+        resume|restart) initial_mode=conversation-fail; recovery_action="$capability_case" ;;
+        scoped-repair)
+            scoped_edit=target.txt
+            capability_sha="$("$WORKER" transmission-preview --workdir "$capability_workdir" \
+                --provider-scope "$capability_scope" --format json \
+                | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
+            capability_args+=(--provider-scope "$capability_scope" --approve-transmission-sha "$capability_sha" --allow-scoped-repair)
+            ;;
+        effort) initial_help=ready; missing=effort; capability_args+=(--model vendor/Future --effort Caller-Level) ;;
+        no-effort) initial_help=missing---effort; missing=effort; capability_args+=(--model vendor/Future) ;;
+    esac
+    printf 'capability recovery fixture\n' | AGY_TEST_WORKDIR="$capability_workdir" \
+        FAKE_DISPATCH_MODE="$initial_mode" FAKE_HEARTBEAT_COUNT=1 FAKE_HELP_MODE="$initial_help" \
+        FAKE_EDIT_FROM_BOUND_ROOT="$scoped_edit" FAKE_EDIT_CONTENT='scoped candidate changed' \
+        run_worker "$job" "${capability_args[@]}" > "$TMP/$job.out" 2> "$TMP/$job.err"
+    initial_rc=$?
+    control_worker status "$job" > "$TMP/$job.before"
+    capability_state_sha="$(status_sha "$TMP/$job.before")"
+    cp "$TMP/logs/$job/dispatch-state.json" "$TMP/$job.before-raw"
+    cp "$capability_workdir/target.txt" "$TMP/$job.target-before"
+    if [[ "$recovery_action" == continue ]]; then
+        project_feedback "$job" | FAKE_HELP_MODE="missing---$missing" AGY_WORKER_EFFORT=Ambient-Later \
+            FAKE_DISPATCH_MODE=heartbeat-success FAKE_HEARTBEAT_COUNT=1 \
+            control_worker continue "$job" --approve-state-sha "$capability_state_sha" \
+            > "$TMP/$job.recovery" 2> "$TMP/$job.recovery.err"
+    else
+        FAKE_HELP_MODE="missing---$missing" FAKE_DISPATCH_MODE=heartbeat-success FAKE_HEARTBEAT_COUNT=1 \
+            control_worker "$recovery_action" "$job" --approve-state-sha "$capability_state_sha" \
+            > "$TMP/$job.recovery" 2> "$TMP/$job.recovery.err"
+    fi
+    recovery_rc=$?
+    wait_terminal "$job" "$TMP/$job.recovery"
+    recovery_wait_rc=$?
+    if [[ "$recovery_rc" == 0 && "$recovery_wait_rc" == 0 ]] \
+            && python3 -B - "$capability_root" "$job" "$capability_case" "$initial_rc" "$missing" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+temp, job, case, initial_rc, missing = sys.argv[1:]
+temp = Path(temp)
+before = json.loads((temp / f'{job}.before-raw').read_bytes())
+after = json.loads((temp / 'logs' / job / 'dispatch-state.json').read_bytes())
+assert int(initial_rc) == (4 if case in {'resume', 'restart'} else 0), initial_rc
+passed = case in {'no-effort', 'restart'}
+assert after['status'] == ('succeeded' if passed else 'failed'), after
+calls = (temp / f'{job}.calls').read_text().splitlines()
+assert calls == ['version', 'help'] * 2 + ['worker', 'version', 'help'] + (['worker'] if passed else []), calls
+assert len((temp / f'{job}.worker-calls').read_text().splitlines()) == (2 if passed else 1)
+assert after['attempt'] == 2
+assert (temp / 'capability-worktree' / 'target.txt').read_bytes() == (temp / f'{job}.target-before').read_bytes()
+if passed:
+    argv = (temp / f'{job}.argv').read_bytes().split(b'\0')
+    assert b'--effort' not in argv
+    assert (b'--conversation' in argv) == (case != 'restart')
+else:
+    assert after['reason'] == 'selection_preflight_failed', after
+    assert f'agy missing required capabilities: --{missing}\n' in (temp / 'logs' / job / 'attempt-002.stderr.txt').read_text()
+    if before['result_path'] is not None:
+        candidate = Path(before['result_path']).read_bytes()
+        assert hashlib.sha256(candidate).hexdigest() == before['result_sha256']
+        assert after['last_success_path'] == before['result_path']
+        assert after['last_success_sha256'] == before['result_sha256']
+    if case == 'scoped-repair':
+        assert (temp / 'capability-worktree' / 'target.txt').read_text() == 'scoped candidate changed\n'
+        assert after['reconciliation_manifest_sha256'] == before['reconciliation_manifest_sha256']
+        assert after['repair_lineage_sha256'] == before['repair_lineage_sha256']
+selection = json.loads((temp / 'logs' / job / 'selection.json').read_bytes())
+assert selection.get('user_effort') == ('Caller-Level' if case == 'effort' else None)
+PY
+    then ok "$capability_case checks only active flags with fresh probes and preserves prior evidence"
+    else bad "$capability_case conditional recovery (initial $initial_rc, recovery $recovery_rc/$recovery_wait_rc)"; fi
+done
 
 . "$ROOT/tests/agy_worker_project_lifecycle_cases.sh"
 

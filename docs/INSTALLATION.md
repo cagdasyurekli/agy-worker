@@ -217,11 +217,13 @@ gates launch. The controller rechecks the probed executable's identity and conte
 immediately before starting that same executable. Missing, malformed, oversized, or
 timed-out interface output fails closed before provider execution.
 
-Required flags are `--add-dir`, `--conversation`, `--disable-slash-commands`, `--effort`,
-`--json-schema`, `--mode`, `--model`, `--output-format`, `--print`, `--print-timeout`, and
-`--sandbox`. Help must expose `plan` and `accept-edits` modes and `stream-json` output.
-The whole supported surface is checked even when one job does not use every flag.
-This can reject an older CLI lacking `--effort` for a model-only job.
+The base flags are `--add-dir`, `--disable-slash-commands`, `--json-schema`, `--mode`,
+`--model`, `--output-format`, `--print`, and `--print-timeout`. Help must expose `plan`
+and `accept-edits` modes and `stream-json` output. Additional requirements depend on
+the operation: `--sandbox` for native isolation, `--conversation` for resume or
+continuation (including repair), and `--effort` only for explicit caller effort.
+Initial session runs need no conversation flag. Doctor and ground truth check the
+base interface; each launch checks its selected operation and recorded effort.
 
 Model and effort are forwarded as caller-selected values. AGY may reject them; help
 capability checks do not certify a model catalog, authentication, backend identity,

@@ -46,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 118
+EXPECTED_CHECKS = 119
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -56,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 69, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 70, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -4046,7 +4046,9 @@ with tempfile.TemporaryDirectory() as temporary:
                 f"  {key}  {value}" for key, value in options.items() if key != missing
             ).encode() + b"\n"
             try:
-                MODULE.MODEL_SELECTION.parse_critical_help(candidate)
+                MODULE.MODEL_SELECTION.parse_critical_help(
+                    candidate, provider_isolation="native", conversation=True, effort=True,
+                )
             except MODULE.MODEL_SELECTION.EvidenceUnavailable:
                 pass
             else:
@@ -4158,6 +4160,7 @@ with tempfile.TemporaryDirectory() as temporary:
             try:
                 MODULE.MODEL_SELECTION.parse_critical_help(
                     help_bytes({key: value for key, value in options.items() if key != missing}),
+                    provider_isolation="native", conversation=True, effort=True,
                 )
             except MODULE.MODEL_SELECTION.EvidenceUnavailable:
                 pass
@@ -4174,9 +4177,9 @@ with tempfile.TemporaryDirectory() as temporary:
         binding = {"current": True}
         observed: list[str] = []
 
-        def probe(executable: str) -> None:
+        def probe(executable: str, **context) -> None:
             observed.append(executable)
-            MODULE.MODEL_SELECTION.parse_critical_help(good)
+            MODULE.MODEL_SELECTION.parse_critical_help(good, **context)
 
         with contextlib.ExitStack() as stack:
             selection = MODULE.MODEL_SELECTION
@@ -4193,7 +4196,7 @@ with tempfile.TemporaryDirectory() as temporary:
         descriptor = os.open(diagnostic_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             streams = MODULE._ControllerStreams(root / "unused-stream", diagnostic_path, root / "unused-envelope", stderr_fd=descriptor)
-            for flag in MODULE.MODEL_SELECTION.REQUIRED_AGY_CAPABILITIES:
+            for flag in MODULE.MODEL_SELECTION.KNOWN_AGY_CAPABILITIES:
                 failure = MODULE.SelectionPreflightError("private cause must not be exposed")
                 failure.__cause__ = MODULE.MODEL_SELECTION.MissingCapabilities((flag,))
                 outcome = MODULE._ControllerOutcome()
@@ -4204,10 +4207,107 @@ with tempfile.TemporaryDirectory() as temporary:
             os.close(descriptor)
         diagnostic = diagnostic_path.read_text()
         assert "private cause" not in diagnostic
-        for flag in MODULE.MODEL_SELECTION.REQUIRED_AGY_CAPABILITIES:
+        for flag in MODULE.MODEL_SELECTION.KNOWN_AGY_CAPABILITIES:
             assert "agy missing required capabilities: " + flag + "\n" in diagnostic
 
     check("exact 1.2.11 help and launch reprobe retain required options", exact_1_2_11_help_and_launch_reprobe_agree)
+
+    def conditional_capabilities_follow_operation() -> None:
+        selection = MODULE.MODEL_SELECTION
+        contexts = {
+            "--sandbox": {"provider_isolation": "native"},
+            "--conversation": {"conversation": True},
+            "--effort": {"effort": True},
+        }
+        for flag, active in contexts.items():
+            rows = FAKE_CAPABILITY_HELP.splitlines()
+            original = next(row for row in rows if row.startswith("  " + flag + " "))
+            absent = "\n".join(row for row in rows if row != original) + "\n"
+            malformed = absent + " " + flag + "  malformed indentation\n"
+            duplicate = FAKE_CAPABILITY_HELP + original + "\n"
+            for raw in (absent, malformed, duplicate):
+                selection.parse_critical_help(raw.encode())
+                # Other optional operations also leave this unused row alone.
+                for other, context in contexts.items():
+                    if other != flag:
+                        selection.parse_critical_help(raw.encode(), **context)
+                try:
+                    selection.parse_critical_help(raw.encode(), **active)
+                except selection.EvidenceUnavailable:
+                    pass
+                else:
+                    raise AssertionError(f"active {flag} accepted invalid row")
+
+        observed = []
+        binding = {"current": True}
+        for effort in (None, "Caller-Level"):
+            record = selection.resolve_selection(
+                "vendor/Future", effort, "cli", "environment" if effort else None,
+                probe_version=False,
+            )
+            record.update(probed_executable=binding, installed_agy_version="fixture-build")
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(selection, "validate_selection_record_shape"))
+                stack.enter_context(mock.patch.object(selection, "probe_capabilities", return_value=("/safe/agy", binding, "fixture-build")))
+                probe = selection.probe_capabilities
+                stack.enter_context(mock.patch.object(selection, "frozen_executable_binding_matches", return_value=True))
+                stack.enter_context(mock.patch.dict(os.environ, {"AGY_WORKER_EFFORT": "Ambient-Later"}))
+                assert selection.reprobe_selection_record(record) == ("/safe/agy", binding)
+                assert probe.call_args.kwargs == {
+                    "provider_isolation": "session", "conversation": False, "effort": effort is not None,
+                }
+                stack.enter_context(mock.patch.object(MODULE, "_load_bound_selection", return_value=record))
+                stack.enter_context(mock.patch.object(MODULE, "_selection_launch_is_authorized", return_value=True))
+                for isolation in ("session", "native"):
+                    for origin in ("initial", "fresh-restart", "conversation-resume", "conversation-continue"):
+                        command = {
+                            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA,
+                            "provider_isolation": isolation,
+                            "argv": ["agy", "--model", "vendor/Future", "--print", "task"],
+                            "resume_prompt": "resume", "continue_prompt": "repair",
+                        }
+                        if effort:
+                            command["argv"][1:1] = ["--effort", effort]
+                        state = {"attempt_origin": origin, "conversation_id": "fixture-conversation", "provider_scope_path": None}
+                        launch = MODULE._ScopedLaunch()
+                        controller = MODULE._ControllerBinding(command=command, state=state, feedback=root / "feedback.json")
+                        MODULE._build_controller_argv(controller, launch)
+                        MODULE._reprobe_direct_selection(command, state, launch.argv)
+                        assert probe.call_args.kwargs == {
+                            "provider_isolation": isolation,
+                            "conversation": origin in {"conversation-resume", "conversation-continue"},
+                            "effort": effort is not None,
+                        }
+                        observed.append((isolation, origin, effort))
+                # Frozen caller effort must match argv before even probing.
+                drifted = ["agy", "--model", "vendor/Future", "--print", "task"]
+                if effort is None:
+                    drifted[1:1] = ["--effort", "Ambient-Later"]
+                before = probe.call_count
+                try:
+                    MODULE._reprobe_direct_selection({"provider_isolation": "session"}, {}, drifted)
+                except MODULE.DispatchError as exc:
+                    assert "--effort" in str(exc)
+                else:
+                    raise AssertionError("caller effort drift accepted")
+                assert probe.call_count == before
+        assert len(observed) == 16
+        # Legacy record-free dispatch still checks the flags in its actual argv.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(MODULE, "_load_bound_selection", return_value=None))
+            probe = stack.enter_context(mock.patch.object(
+                selection, "probe_capabilities", return_value=("/safe/agy", binding, "fixture-build"),
+            ))
+            MODULE._reprobe_direct_selection(
+                {"schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "native"},
+                {"attempt_origin": "conversation-continue"},
+                ["agy", "--sandbox", "--conversation", "fixture-conversation", "--effort", "Caller-Level", "--print", "task"],
+            )
+            assert probe.call_args.kwargs == {
+                "provider_isolation": "native", "conversation": True, "effort": True,
+            }
+
+    check("conditional capabilities follow operation and frozen caller effort", conditional_capabilities_follow_operation)
 
     def current_selection_schema_matches_the_runtime_binding() -> None:
         schema = ROOT / "skills/agy-worker/runtime/schemas/model-selection.schema.json"

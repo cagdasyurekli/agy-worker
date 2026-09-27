@@ -602,7 +602,17 @@ for mode in bare no-newline prefix-junk usage drift; do
     fi
 done
 
-for option in add-dir conversation disable-slash-commands effort json-schema model mode output-format print print-timeout sandbox; do
+for option in sandbox conversation effort; do
+    FAKE_AGY_MODE="missing-$option" run_doctor "$BASE_FIXTURE" "optional-$option" --format json
+    rc=$?
+    if [[ "$rc" == 0 ]] && grep -Fq '"id": "agy_capabilities", "status": "ready"' "$TMP/optional-$option.out"; then
+        ok "doctor base readiness ignores unused capability --$option"
+    else
+        bad "doctor base readiness for unused capability --$option"
+    fi
+done
+
+for option in add-dir disable-slash-commands json-schema model mode output-format print print-timeout; do
     FAKE_AGY_MODE="missing-$option" run_doctor "$BASE_FIXTURE" "missing-$option" --format json
     rc=$?
     if [[ "$rc" == 3 ]] && grep -Fq '"id": "agy_capabilities", "status": "not-ready"' "$TMP/missing-$option.out"; then

@@ -3617,9 +3617,16 @@ def _reprobe_direct_selection(
             elif argv.count(flag) != 1 or argv.index(flag) + 1 >= len(argv) or argv[argv.index(flag) + 1] != expected:
                 raise DispatchError("dispatch selection argument drifted: " + flag)
     try:
+        provider_isolation = _provider_isolation_for_command(command)
+        conversation = "--conversation" in argv
         if record is not None:
-            return MODEL_SELECTION.reprobe_selection_record(record)
-        executable, binding, _version = MODEL_SELECTION.probe_capabilities()
+            return MODEL_SELECTION.reprobe_selection_record(
+                record, provider_isolation=provider_isolation, conversation=conversation,
+            )
+        executable, binding, _version = MODEL_SELECTION.probe_capabilities(
+            provider_isolation=provider_isolation, conversation=conversation,
+            effort="--effort" in argv,
+        )
         return executable, binding
     except (MODEL_SELECTION.CallerError, MODEL_SELECTION.EvidenceUnavailable) as exc:
         raise SelectionPreflightError("dispatch capability preflight failed") from exc
@@ -5486,7 +5493,10 @@ def _controller_terminal_updates(
         **repair_lineage_updates,
     }
     if current.get("provider_scope_path") is not None:
-        updates["reconciliation_manifest_sha256"] = candidate_data.reconciliation_manifest_sha
+        updates["reconciliation_manifest_sha256"] = (
+            current["reconciliation_manifest_sha256"] if disposition.preserve_candidate_forensics
+            else candidate_data.reconciliation_manifest_sha
+        )
     if outcome.result_binding is not None:
         # Continuation feedback remains bound audit evidence for
         # the prior candidate. A newly returned candidate starts
