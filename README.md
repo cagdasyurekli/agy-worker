@@ -136,10 +136,10 @@ without an implicit shell. Explicit `--verify-shell SCRIPT` is an advanced surfa
 that requires both verifier network and credential-access acknowledgements. Historical
 `--verify SCRIPT` additionally requires `--legacy-shell-verification`.
 For a bound dispatch, `verify-finalize` requires the exact dispatch-state SHA reported
-by facade `status`; it never substitutes a current state approval. The deprecated
-`--approve-state-sha` spelling remains a strict mutually exclusive alias during the
-compatibility window. Rejected or routed gate receipts are preserved without invoking
-the lifecycle finalizer.
+by facade `status`, passed as `--approve-dispatch-sha`; it never substitutes a
+current state approval. Rejected or routed gate receipts are preserved without
+invoking the lifecycle finalizer. See [retired job formats and flags](docs/PROJECT_WORKFLOW.md#retired-job-formats-and-flags)
+when updating an existing installation.
 
 The worker envelope is input, not acceptance evidence:
 

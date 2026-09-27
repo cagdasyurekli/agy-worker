@@ -220,8 +220,20 @@ class Fixture:
         lock = job / DISPATCH.LOCK_NAME
         lock.write_bytes(b""); lock.chmod(0o600)
         now = time.time()
-        value = {
-            "schema_version": 1, "kind": "agy-worker-dispatch-state",
+        # This state-only fixture authorizes lifecycle failure recording, not
+        # a provider launch. Seed the current complete state before its failure.
+        value = DISPATCH.initial_state(
+            {"schema_version": DISPATCH.CURRENT_COMMAND_SCHEMA,
+             "provider_isolation": "session", "job_id": self.job_id,
+             "workdir": str(self.worktree), "idle_seconds": 600.0,
+             "hard_seconds": 7200.0, "max_seconds": 43200.0,
+             "workflow": "legacy", "max_cycles": 1},
+            "initial", 1, command_sha="2" * 64,
+            command_identity=(1, 2, os.getuid(), os.getgid(), 0o600),
+            stage_sha=None, stage_identity=None,
+        )
+        value.update({
+            "phase": "attempt-failed",
             "sequence": 2, "previous_state_sha256": "1" * 64,
             "job_id": self.job_id, "status": status, "attempt": 1,
             "attempt_origin": "initial", "reason": reason, "exit_code": exit_code,
@@ -241,7 +253,7 @@ class Fixture:
             "command_identity": [1, 2, os.getuid(), os.getgid(), 0o600],
             "stage_sha256": None, "stage_identity": None,
             "result_sha256": None, "result_identity": None,
-        }
+        })
         DISPATCH.validate_state(value)
         state = job / DISPATCH.STATE_NAME
         state.write_bytes(DISPATCH.canonical(value)); state.chmod(0o600)

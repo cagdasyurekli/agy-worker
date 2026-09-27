@@ -69,9 +69,10 @@ Keep these hard boundaries regardless of workflow:
   mode in the initial approval; do not add a separate approval step. Explicit
   `--provider-isolation native` adds supported macOS scoped containment with private
   HOME/TMP and documented network/Keychain exposure, without fallback to session.
-  Preserve the recorded mode and native grant profile across repairs. Keep legacy
-  jobs' original behavior and exclude secrets, denied paths, and unrelated private
-  content from every entry approved for either transmission mode.
+  Preserve the recorded mode and native grant profile across repairs. Accept only
+  current dispatch and workflow job formats; finish or discard retired-format jobs
+  with the release that created them. Exclude secrets, denied paths, and unrelated
+  private content from every entry approved for either transmission mode.
 - Provider, probe, and verifier children start with an operational allowlist. Do not
   pass `--provider-env` or `--verify-env` without approval for each variable name and
   its resulting provider/verifier exposure; values are not persisted, and filtering

@@ -80,8 +80,10 @@ New whole-worktree launches require its content-bound `launch_approval_sha256` a
 recheck content immediately before provider start. Bounds or drift fail explicitly;
 there is no fallback to path-only approval. Content scans are bounded to 100,000
 entries, 512 MiB of file and symlink-target bytes, depth 128, and 30 seconds for
-the complete double scan. Use scoped mode if the complete worktree exceeds these limits. Legacy jobs keep their versioned approval and recovery
-semantics. The structured authority summary distinguishes session host access from
+the complete double scan. Use scoped mode if the complete worktree exceeds these
+limits. Retired dispatch and workflow job formats are rejected; finish or discard
+those jobs with the release that created them, as described in
+[controller state and actions](PROJECT_LIFECYCLE_AND_VERIFICATION.md#controller-state-and-actions). The structured authority summary distinguishes session host access from
 native containment and reports the remaining network and Keychain grants.
 When dispatched with
 `--provider-scope FILE --approve-transmission-sha SHA256`, a fresh owner-private

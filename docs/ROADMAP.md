@@ -12,6 +12,22 @@ scope; reuse existing authority when it covers the work. This roadmap does not i
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
 
+## Unreleased — retired job formats and approval aliases
+
+This development candidate makes a breaking change for in-flight jobs written in
+retired dispatch or workflow formats: readers reject them without projection or
+migration. Finish or discard those jobs with the release that created them;
+v0.22.0 is the last documented release with legacy-schema support. Current formats
+are defined by the runtime constants linked from the
+[recovery guide](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
+
+The candidate removes the facade approval aliases `--approve-preview-sha`,
+`--legacy-preview-approval`, and `--approve-state-sha`, plus dispatcher
+`--approve-migration-sha`, with actionable errors. Canonical advanced state approvals,
+named tiers, raw dispatch, and independent evidence formats remain supported.
+These changes are unreleased; this entry does not change the package version or
+claim a publication.
+
 ## Unreleased — development quality gate
 
 The local candidate adds pinned development-only Ruff and Mypy checks targeting

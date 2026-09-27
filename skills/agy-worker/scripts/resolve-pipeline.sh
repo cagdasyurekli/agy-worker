@@ -79,7 +79,6 @@ pipeline_runtime_complete() {
         scripts/compatibility.py \
         scripts/candidate_state.py \
         scripts/agy_dispatch.py \
-        scripts/legacy_dispatch_state.py \
         scripts/job_lifecycle.py \
         scripts/doctor-metadata.py \
         scripts/feedback-triage.py \

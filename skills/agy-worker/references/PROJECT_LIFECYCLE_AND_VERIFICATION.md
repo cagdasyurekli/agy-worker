@@ -125,17 +125,17 @@ to both facade calls and approve the scoped preview with
 `--approve-transmission-sha SHA256`. It stages only selected entries, but remains subject to
 the boundaries in [Security and compatibility](SECURITY_AND_COMPATIBILITY.md).
 
-Omitting both modes fails before provider launch. The old `--approve-preview-sha`
-spelling remains available through at least v0.16.x only when paired with
-`--legacy-preview-approval`; it emits a deprecation warning and never restores an
-implicit whole-worktree default.
+Omitting both modes fails before provider launch. The facade flags
+`--approve-preview-sha` and `--legacy-preview-approval` were removed in this
+unreleased development version; use the explicit transmission modes above.
 
 The facade does not choose a model, assurance label, repair, retry, Git action, or
 external write. `status --state "$STATE_DIR/workflow.json"` is read-only. For a bound
 controller dispatch, copy `dispatch.state_sha256` from facade status and pass it as
-`--approve-dispatch-sha` to `verify-finalize`; the deprecated facade spelling
-`--approve-state-sha` is an exact mutually exclusive alias. Rejected or routed gate
-receipts are preserved without calling the lifecycle finalizer.
+`--approve-dispatch-sha` to `verify-finalize`; its former facade alias
+`--approve-state-sha` is rejected. Advanced dispatcher and job lifecycle commands
+retain their own `--approve-state-sha` flag. Rejected or routed gate receipts are
+preserved without calling the lifecycle finalizer.
 
 Pass each driver-owned verifier as a canonical JSON argv array:
 
@@ -166,11 +166,18 @@ Use `status` first. Treat `available_actions` as the canonical mechanical action
 deprecated `next_action`, `next_action_command`, `phase`, and `has_prior_candidate`
 are compatibility aliases, not recommendations or acceptance facts.
 
-New bound jobs expose `provider_isolation` (`session` or `native`) and
-`provider_execution` facts (`scope`, `agy_sandbox`, `native_containment`, `legacy`).
-Legacy isolation labels remain null: use the bound execution facts, which preserve
-scoped command V1–V8 behavior without native containment and V9 behavior with it.
-Unbound jobs may have no execution facts yet.
+Current bound jobs expose `provider_isolation` (`session` or `native`) and
+`provider_execution` facts (`scope`, `agy_sandbox`, `native_containment`, `legacy`,
+with `legacy` false). Unbound jobs may have no execution facts yet.
+
+This unreleased development version rejects retired dispatch state, command, and
+workflow job formats before partial reads or mutation. The current formats are
+identified by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
+`runtime/scripts/agy_dispatch.py`, and `BOUND_SCHEMA_VERSION` and
+`BOUND_FACADE_SCHEMA_VERSION` in `runtime/scripts/workflow.py`; workflow status output
+has its own version. Finish or discard an older job using the release that created
+it. The last documented release with legacy-schema support is v0.22.0.
+`--approve-migration-sha` is removed: no in-place migration or new approval is implied.
 
 The current state (defined by `CURRENT_STATE_SCHEMA` in
 `runtime/scripts/agy_dispatch.py`) uses `dispatching` for an active initial, resume, or restart attempt;

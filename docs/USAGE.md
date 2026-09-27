@@ -157,14 +157,15 @@ model may proceed through that observed drift by pairing `--model MODEL_SLUG` wi
 model-specific drift decision and does not qualify that model or establish live AGY
 compatibility.
 
-The former `--approve-preview-sha` spelling is deprecated and cannot preserve an
-implicit broad default: through at least v0.16.x it works only when paired with
-`--legacy-preview-approval`, and it emits a migration warning. New callers must use
-one of the two canonical modes above.
+The facade flags `--approve-preview-sha` and `--legacy-preview-approval` were removed
+in this unreleased development version. Use one of the two canonical transmission
+modes above; there is no implicit whole-worktree default.
 
-The deprecated `--approve-state-sha` facade spelling remains a strict alias for
-`--approve-dispatch-sha` during the compatibility window; neither may be omitted for
-a bound dispatch and the facade never synthesizes an approval. Gate exits 10–15 keep
+Facade `verify-finalize` requires `--approve-dispatch-sha` for a bound dispatch;
+its former `--approve-state-sha` alias was removed in this unreleased development
+version. The facade never synthesizes an approval. Advanced dispatcher and job
+lifecycle commands retain their own `--approve-state-sha` flag. See
+[retired job formats and flags](PROJECT_WORKFLOW.md#retired-job-formats-and-flags). Gate exits 10–15 keep
 their receipt but do not call the lifecycle finalizer. A local pre-dispatch rejection
 removes only the exact unchanged facade state created by that invocation when the
 dispatch artifact path never appeared, so a corrected invocation can retry safely.

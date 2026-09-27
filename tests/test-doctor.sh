@@ -788,7 +788,6 @@ for dependency in \
     'scripts/agy_dispatch_worktree.py:worktree-snapshot-helper' \
     'scripts/agy_dispatch_containment.py:containment-helper' \
     'scripts/agy_dispatch_verification.py:verification-helper' \
-    'scripts/legacy_dispatch_state.py:legacy-state-helper' \
     'scripts/job_lifecycle.py:lifecycle-helper' \
     'scripts/model_selection.py:model-resolver' \
     'schemas/worker-result.schema.json:schema' \

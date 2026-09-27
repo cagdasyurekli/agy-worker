@@ -182,15 +182,19 @@ infer it. A final reprobe failure is a sanitized local selection-preflight failu
 with no provider launch, fallback, automatic retry, same-job resume, or same-job
 restart. Preserve the frozen selection only as local evidence; Codex reviews current
 sanitized `agy --help` evidence and creates a new job with the same caller-selected
-model and effort. V1 remains historical and read-only. A V3/V4 current result can
+model and effort.
+
+The following historical migration contract was retired by the unreleased
+[current-only job format change](PROJECT_WORKFLOW.md#retired-job-formats-and-flags):
+V1 remained historical and read-only. A V3/V4 current result could
 make its first lifecycle transition only with the current state SHA plus the exact
-`migration_binding_sha256` exposed by `status`; both are rebound under the transition
-lock. V3/V4 `last_success_*`-only evidence remains read-only. Persisted V5/V6 state
-retains its exact legacy digest; V7 retains its exact semantic-v1 digest; and V8
-retains its explicit semantic-v1 algorithm. An approved V5/V6 transition first
-proves that legacy digest, then atomically records a fresh semantic-v1 V9 baseline
-and candidate; V7/V8 reuse their exact proved semantic observation. New V9 state
-also persists a stable no-follow root/Git-administration boundary identity, separate
+`migration_binding_sha256` exposed by `status`; both were rebound under the transition
+lock. V3/V4 `last_success_*`-only evidence remained read-only. Persisted V5/V6 state
+retained its exact legacy digest; V7 retained its exact semantic-v1 digest; and V8
+retained its explicit semantic-v1 algorithm. An approved V5/V6 transition first
+proved that legacy digest, then atomically recorded a fresh semantic-v1 V9 baseline
+and candidate; V7/V8 reused their exact proved semantic observation. New V9 state
+also persisted a stable no-follow root/Git-administration boundary identity, separate
 from mutable candidate content.
 
 Security controls protect irreversible boundaries; they are not the product goal.
@@ -1054,9 +1058,11 @@ surface without replacing any required driver judgment. After the announced wind
 no reproducible external use established value for either surface.
 Change: Remove the commands, registries, schemas, package entries, CI stages, and
 documentation together. Keep the shipped `--persona` prompt templates and their
-explicit mode restrictions. Read and approved recovery for V1–V10 dispatch state now
-lives behind a compatibility adapter, so the active controller remains V11-focused
-while old records stay readable and migrate only through their existing approvals.
+explicit mode restrictions. At that time, read and approved recovery for V1–V10
+dispatch state moved behind a compatibility adapter, keeping the active controller
+V11-focused while old records remained readable under their existing approvals.
+That adapter is removed by the unreleased
+[current-only job format change](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
 ### Raw dispatch must preserve the facade's transmission choice (2026-09-01)
 
@@ -1068,8 +1074,10 @@ rechecked immediately before the initial provider process. Later same-job action
 the frozen mode but bind exact controller state and candidate evidence rather than the
 original manifest, because legitimate provider output changes the worktree during project
 repair cycles. This closes the approval gap without removing whole-worktree capability or
-deadlocking continuation. Legacy records and already-queued states remain readable, but an
-unapproved broad record cannot launch through dispatcher `run`/`start`.
+deadlocking continuation. At that release, legacy records and already-queued states
+remained readable, but an unapproved broad record could not launch through dispatcher
+`run`/`start`. Retired job formats are now subject to the
+[current-only format policy](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
 ### Bind self-updating capture binaries and Boost authority explicitly (2026-09-03)
 

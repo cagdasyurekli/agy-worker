@@ -1453,6 +1453,8 @@ assert '"--approve-whole-worktree", approved_whole_worktree' in workflow_source
 assert '"--provider-scope"' in workflow_source
 assert '"--approve-transmission-sha"' in workflow_source
 assert '"--legacy-preview-approval"' in workflow_source
+assert 'was removed in this unreleased development version' in workflow_source
+assert 'run_parser.add_argument("--legacy-preview-approval"' not in workflow_source
 runtime_wrapper = (
     root / "skills/agy-worker/runtime/agy-worker.sh"
 ).read_text(encoding="utf-8")
@@ -1812,7 +1814,6 @@ fi
 if [[ -x "$ROOT/agy-worker.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/agy-worker.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/legacy_dispatch_state.py" ]] \
         && [[ -f "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch_worktree.py" ]] \
         && [[ ! -x "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch_worktree.py" ]] \
         && [[ -f "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch_containment.py" ]] \
@@ -2040,7 +2041,6 @@ required_runtime_dependencies=(
     scripts/compatibility.py
     scripts/candidate_state.py
     scripts/agy_dispatch.py
-    scripts/legacy_dispatch_state.py
     scripts/agy_dispatch_worktree.py
     scripts/agy_dispatch_containment.py
     scripts/agy_dispatch_verification.py
@@ -2197,7 +2197,6 @@ for specification in \
     'scripts/recommendation_record.py:executable' \
     'scripts/candidate_state.py:executable' \
     'scripts/agy_dispatch.py:executable' \
-    'scripts/legacy_dispatch_state.py:executable' \
     'scripts/agy_dispatch_worktree.py:data' \
     'scripts/agy_dispatch_containment.py:data' \
     'scripts/agy_dispatch_verification.py:data' \
@@ -3366,8 +3365,8 @@ fi
 
 provider_read_scope_clauses=(
     'Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds exact reviewed read entries, their selected-content digest, and a write subset, then stages only selected entries in a fresh owner-private mode-`0700` Gitless provider cwd.'
-    'Whole-worktree dispatch remains an explicit exception. New approvals bind content, kinds, permissions, symlink targets, and execution mode; the controller rechecks this binding before provider start. Legacy records keep their original contracts. Treat the entire disposable worktree passed as `--workdir` as worker-readable and potentially transmissible to Google/Gemini, regardless of requested edit paths; `--add-dir`, prompt denylist instructions, `qa-gate --only`, and `--allow` do not narrow that read boundary.'
-    'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode: launch requires either `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` or the scoped pair above. The deprecated facade-only `--approve-preview-sha` spelling cannot launch by itself and remains temporarily available only with `--legacy-preview-approval`.'
+    'Whole-worktree dispatch remains an explicit exception. New approvals bind content, kinds, permissions, symlink targets, and execution mode; the controller rechecks this binding before provider start. Retired dispatch and workflow job formats are rejected; finish or discard those jobs with the release that created them. Treat the entire disposable worktree passed as `--workdir` as worker-readable and potentially transmissible to Google/Gemini, regardless of requested edit paths; `--add-dir`, prompt denylist instructions, `qa-gate --only`, and `--allow` do not narrow that read boundary.'
+    'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode: launch requires either `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` or the scoped pair above. The removed facade-only `--approve-preview-sha` and `--legacy-preview-approval` flags cannot authorize launch; use the current approval flags above.'
     'New jobs default to `--provider-isolation session`, which uses the existing AGY session without AGY sandbox or native host containment. AGY has normal user filesystem/network authority; selected-file staging and reconciliation are not host isolation. Include this execution mode in the initial approval alongside task/content, then reuse that approval while its scope remains unchanged. Explicit `--provider-isolation native` retains supported macOS scoped containment with private HOME/TMP and reviewed network/Keychain access; it never falls back to session mode. The native `/usr/bin/security` exception allows broader same-user Keychain operations, and its listener rule permits wildcard binds. Read [Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md) for those limits. Preserve the job'"'"'s selected mode across continuation and repair.'
     'Provider-scope approval grants neither provider execution, Git action, driver acceptance, nor publication.'
     'Before each launch, ensure secrets, credentials, private keys, user-denied paths, and unrelated private files are absent from every entry approved for provider transmission; telling the worker not to read an approved entry is not a control.'
@@ -3423,7 +3422,7 @@ provider_read_scope_weakening_mutants_rejected=1
 provider_read_scope_weakening_mutant_index=0
 provider_read_scope_weakening_replacements=(
     'the controller rechecks this binding before provider start::the controller may skip rechecking this binding before provider start'
-    'Legacy records keep their original contracts::Legacy records acquire the new authority automatically'
+    'Retired dispatch and workflow job formats are rejected::Retired dispatch and workflow job formats acquire current authority automatically'
     'do not narrow that read boundary::narrow that read boundary'
     'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch::Both `workflow.sh run` and the advanced `agy-worker.sh` initial dispatch'
     'a write subset::an unrelated write set'
@@ -3654,9 +3653,9 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
         && grep -Fq 'controller help prose is data, never availability inference' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'model availability is' "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq '`not_assessed`' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'A V3/V4 current result requires' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'migration_binding_sha256' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'V5/V6 retains its exact legacy digest' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'Only current state and command formats load' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'retired dispatch formats are rejected before projection or mutation' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'preserve semantic-v1 candidate snapshots' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses the caller-resolved' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
         && grep -Fq 'Current controller-private state also persists a sanitized' \
@@ -3680,23 +3679,22 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
             "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (303 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
-        && grep -Fq 'EXPECTED_CHECKS = 120' "$ROOT/tests/test-agy-worker-remediation.py" \
-        && grep -Fq '`tests/test-agy-worker-remediation.py` (120 focused cases)' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-doctor.sh` (219 cases)' "$ROOT/docs/REPO_MAP.md" \
+        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (301 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
+        && grep -Fq 'EXPECTED_CHECKS = 115' "$ROOT/tests/test-agy-worker-remediation.py" \
+        && grep -Fq '`tests/test-agy-worker-remediation.py` (115 focused cases)' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-doctor.sh` (218 cases)' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Do not pin exact suite counts in this instruction file' "$ROOT/AGENTS.md" \
         && grep -Fq '`docs/REPO_MAP.md` owns focused-suite inventory' "$ROOT/AGENTS.md" \
         && grep -Fq '`scripts/ci_stages.py` owns the' "$ROOT/AGENTS.md" \
         && ! grep -Eq '[0-9]+ offline' "$ROOT/AGENTS.md" \
-        && grep -Fq 'PYTHONDONTWRITEBYTECODE=1 python3 -B - "$TMP/legacy-v1.status"' \
-            "$ROOT/tests/test-agy-worker.sh" \
-        && ! grep -Fq '&& python3 - "$TMP/legacy-v1.status"' "$ROOT/tests/test-agy-worker.sh" \
+        && grep -Fq 'export PYTHONDONTWRITEBYTECODE=1' "$ROOT/tests/test-agy-worker.sh" \
+        && [[ ! -e "$ROOT/skills/agy-worker/runtime/scripts/legacy_dispatch_state.py" ]] \
         && ! grep -Eq '`tests/test-agy-worker.sh` \((338|348) cases\)' "$ROOT/docs/REPO_MAP.md" \
         && ! grep -Fq 'resolution remains blocked until installed agy exactly matches' \
             "$ROOT/docs/INSTALLATION.md"; then
-    ok "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode legacy import, and registered focused coverage"
+    ok "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode imports, and registered focused coverage"
 else
-    bad "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode legacy import, and registered focused coverage"
+    bad "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode imports, and registered focused coverage"
 fi
 
 bootstrap_preflight_line="$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, '$ROOT/scripts'); import ci_stages; print([i for i, s in enumerate(ci_stages.STAGES) if s.id == 'version-bootstrap-preflight'][0])")"

@@ -76,9 +76,9 @@ as a manifest-bound exception.
 
 For selected-content mode, include `--provider-scope "$SCOPE"` on both calls and
 use the preview's `transmission_sha256` as `--approve-transmission-sha` on the second.
-Omitting both modes fails before provider launch. The old `--approve-preview-sha`
-spelling cannot launch alone; through at least v0.16.x it requires the explicit
-`--legacy-preview-approval` migration acknowledgement and emits a deprecation warning.
+Omitting both modes fails before provider launch. The removed facade flags
+`--approve-preview-sha` and `--legacy-preview-approval` cannot authorize a launch;
+use one of the explicit modes above.
 
 The explicit `--state`, `--worktree`, `--branch`, and full `--base` tuple remains an
 advanced compatibility mode. Partial mixing is rejected. A local pre-dispatch failure
@@ -94,12 +94,42 @@ controller phase, mechanically available actions, and advanced-recovery guidance
 It never migrates legacy bytes or moves low-level mutations into the façade.
 For a bound dispatch, copy `dispatch.state_sha256` from facade `status` and pass it as
 `--approve-dispatch-sha`; missing, stale, or changed state fails before finalization.
-The deprecated `--approve-state-sha` spelling remains an exact mutually exclusive
-alias. Gate rejection/routing preserves its receipt without finalizing assurance.
+The former facade `--approve-state-sha` alias is rejected. Gate rejection/routing
+preserves its receipt without finalizing assurance.
 
 The lower-level dispatcher, gate, receipt, and lifecycle commands documented below
 remain the advanced recovery and compatibility surfaces. They are authorities that
 the facade composes, not parallel implementations to keep in sync.
+
+## Retired job formats and flags
+
+This unreleased development version accepts only the current dispatcher state and
+command formats, defined by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
+[`agy_dispatch.py`](../skills/agy-worker/runtime/scripts/agy_dispatch.py). Persisted
+workflow records must use the current explicit or facade format, defined by
+`BOUND_SCHEMA_VERSION` and `BOUND_FACADE_SCHEMA_VERSION` in
+[`workflow.py`](../skills/agy-worker/runtime/scripts/workflow.py). The separately
+versioned workflow status output is not a persisted workflow record.
+
+Older records fail closed before partial projection, migration, or job mutation.
+Finish or discard an older job with the release that created it; v0.22.0 is the last
+documented release with legacy-schema support. Preserve its job artifacts and use
+that release's existing approvals. The new runtime does not migrate the job or grant
+new provider, cleanup, or publication authority.
+
+The following removals belong to this unreleased development version:
+
+| Removed surface | Replacement |
+|---|---|
+| `workflow.sh run --approve-preview-sha` and `--legacy-preview-approval` | `--approve-whole-worktree`, or `--provider-scope` with `--approve-transmission-sha`, bound to a fresh reviewed preview |
+| `workflow.sh verify-finalize --approve-state-sha` | `--approve-dispatch-sha` copied from facade status |
+| Advanced dispatcher `--approve-migration-sha` | Finish or discard the old-format job with the release that created it; there is no in-place migration |
+
+Advanced dispatcher and job lifecycle commands still use `--approve-state-sha`.
+Model-evidence export still uses its independent `--approve-preview-sha` approval.
+Named tiers and raw dispatch remain supported; their legacy naming is unrelated to
+retired on-disk job formats. Historical release notes describe their released trees,
+not support in this development candidate.
 
 ## Quality and command boundary
 
@@ -220,11 +250,10 @@ Read public lifecycle JSON in this order: first `status` for `state_sha256`,
 `available_actions`. `worktree_changes_present` describes current ambient dirtiness;
 `worktree_changed_since_dispatch` is the attribution-relevant signal.
 
-For new bound jobs, `provider_isolation` names `session` or `native`, and
+For current bound jobs, `provider_isolation` names `session` or `native`, and
 `provider_execution` describes `scope`, `agy_sandbox`, `native_containment`, and
-`legacy`. Legacy jobs expose a null isolation label and facts derived from their
-bound command: scoped command V1–V8 jobs do not acquire native containment, while
-scoped V9 jobs retain it. Unbound jobs may have no execution facts yet.
+`legacy` (false). Unbound jobs may have no execution facts yet. Retired-format jobs
+are rejected rather than projected into these current facts.
 
 Current controller-private state also persists a sanitized
 `provider_terminal_status`: `unknown`, `success`, `error`, or `cancelled`, derived
@@ -235,9 +264,9 @@ acceptance, or billing evidence. A terminal without a recognized structured repo
 can retain that private enum while public `candidate_recognized` is false and
 `failure_stage` is `missing_structured_output`.
 
-V11 introduced this private diagnostic field. Current state preserves prior bound
-transitions while adding explicitly opted-in scoped repair and local verification;
-migration never grants those opt-ins or creates new acceptance authority. See the
+Scoped repair and local verification require explicit opt-ins in the current
+command and state; reading a job never grants those opt-ins or creates new
+acceptance authority. See the
 [optional checks and scoped repair guide](../skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#optional-checks-and-scoped-repair).
 Then use `candidate_sha256` only
 when `result_available` is

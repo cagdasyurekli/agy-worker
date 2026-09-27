@@ -129,8 +129,18 @@ authority only when its scope, transmission, destination, or budget materially c
 
 For facade finalization of a bound dispatch, use `dispatch.state_sha256` as
 `--approve-dispatch-sha`. It is distinct from a convenient current facade state hash.
-The deprecated facade `--approve-state-sha` spelling is only an exact alias for the
-same dispatch-state approval.
+The former facade `--approve-state-sha` alias is rejected; advanced dispatcher and
+job lifecycle commands still use their own `--approve-state-sha` flag.
+
+## Unsupported job schema or removed approval flag
+
+This unreleased development version accepts only current dispatch and workflow job
+formats. Finish or discard an older job using the release that created it; the last
+documented release with legacy-schema support is v0.22.0. Preserve its artifacts;
+do not rewrite a schema number to bypass rejection. There is no in-place migration.
+Use current explicit transmission approvals instead of facade `--approve-preview-sha`
+and `--legacy-preview-approval`; use `--approve-dispatch-sha` for facade finalization.
+See [controller state and actions](PROJECT_LIFECYCLE_AND_VERIFICATION.md#controller-state-and-actions).
 
 ## Candidate drift or verification-copy failure
 

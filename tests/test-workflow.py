@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import importlib.util
+import io
 import hashlib
 import json
 import os
@@ -34,7 +37,6 @@ SUBJECT_MODES_BEFORE_IMPORT = {
 
 sys.path.insert(0, str(RUNTIME / "scripts"))
 import candidate_state as CANDIDATE  # noqa: E402 -- sibling imports follow startup isolation/path setup
-import agy_dispatch_worktree as DISPATCH_WT  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import workflow as WORKFLOW_MODULE  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 passed = 0
@@ -398,19 +400,6 @@ def test_run_preview_and_approval_enforcement() -> bool:
         assert res.returncode != 0
         assert b"stale or mismatched" in res.stderr
 
-        old_v1_approval = DISPATCH_WT._compute_provider_launch_approval_sha256(
-            "session", manifest_sha,
-        )
-        assert old_v1_approval != launch_approval_sha
-        old = run_workflow(
-            "run", "--state", str(f.state_file), "--repo", str(f.repo),
-            "--worktree", str(f.worktree), "--branch", f.branch,
-            "--base", f.base, "--job-id", f.job_id,
-            "--approve-whole-worktree", old_v1_approval,
-        )
-        assert old.returncode != 0
-        assert b"stale or mismatched" in old.stderr
-
         # 4. Exact whole-worktree approval creates a content-bound workflow state
         # Use fake mock for agy to avoid real provider dispatch
         fake_bin = f.tmp / "bin"
@@ -598,7 +587,7 @@ def test_run_pre_dispatch_failure_rolls_back_exact_state() -> bool:
         assert not dispatch_dir.exists()
 
         protected_state = {
-            "schema_version": WORKFLOW_MODULE.SCHEMA_VERSION,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -611,6 +600,9 @@ def test_run_pre_dispatch_failure_rolls_back_exact_state() -> bool:
             "provider_isolation": "session",
             "provider_execution": None,
             "preview_manifest_sha256": manifest_sha,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": launch_approval_sha,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir),
             "job_state_path": None,
             "receipt_path": None,
@@ -920,47 +912,8 @@ def test_native_ready_profile_remains_bound_on_repreview() -> bool:
 check("ready native workflow rejects a changed persisted grant profile", test_native_ready_profile_remains_bound_on_repreview)
 
 
-def test_legacy_preview_approval_requires_explicit_migration_opt_in() -> bool:
-    f = RepoFixture("legacy-preview")
-    try:
-        preview = run_workflow(
-            "run", "--state", str(f.state_file), "--repo", str(f.repo),
-            "--worktree", str(f.worktree), "--branch", f.branch,
-            "--base", f.base, "--job-id", f.job_id, "--preview",
-        )
-        assert preview.returncode == 0
-        launch_approval_sha = json.loads(preview.stdout)["launch_approval_sha256"]
-
-        implicit_legacy = run_workflow(
-            "run", "--state", str(f.state_file), "--repo", str(f.repo),
-            "--worktree", str(f.worktree), "--branch", f.branch,
-            "--base", f.base, "--job-id", f.job_id,
-            "--approve-preview-sha", launch_approval_sha, "--task", "bounded task",
-        )
-        assert implicit_legacy.returncode == 20
-        assert b"--approve-preview-sha is deprecated" in implicit_legacy.stderr
-        assert not f.state_file.exists()
-
-        explicit_legacy = run_workflow(
-            "run", "--state", str(f.state_file), "--repo", str(f.repo),
-            "--worktree", str(f.worktree), "--branch", f.branch,
-            "--base", f.base, "--job-id", f.job_id,
-            "--approve-preview-sha", launch_approval_sha,
-            "--legacy-preview-approval", "--provider-env", "BASH_ENV",
-            "--task", "bounded task",
-        )
-        assert explicit_legacy.returncode == 64
-        assert b"warning: --approve-preview-sha is deprecated" in explicit_legacy.stderr
-        assert b"unsafe --provider-env name" in explicit_legacy.stderr
-        return True
-    finally:
-        f.clean()
 
 
-check(
-    "deprecated preview approval cannot preserve an implicit broad default",
-    test_legacy_preview_approval_requires_explicit_migration_opt_in,
-)
 
 
 def test_ordinary_run_home_fallback_and_partial_advanced_rejection() -> bool:
@@ -1100,7 +1053,7 @@ def test_status_read_only_and_sanitized() -> bool:
     try:
         # Create initial state
         initial_state = {
-            "schema_version": 1,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -1110,7 +1063,12 @@ def test_status_read_only_and_sanitized() -> bool:
             "branch": f.branch,
             "branch_ref": f"refs/heads/{f.branch}",
             "base": f.base,
+            "provider_isolation": "session",
+            "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": "2" * 64,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
             "receipt_path": None,
@@ -1126,6 +1084,7 @@ def test_status_read_only_and_sanitized() -> bool:
         assert res.returncode == 0
         status_data = json.loads(res.stdout.decode("utf-8"))
         assert status_data["kind"] == "agy-worker-workflow-status"
+        assert status_data["schema_version"] == WORKFLOW_MODULE.STATUS_SCHEMA_VERSION == 3
         assert status_data["job_id"] == f.job_id
         assert status_data["dispatch"] is None
 
@@ -1205,7 +1164,9 @@ def test_status_projects_dispatcher_state_and_job_id_read_only() -> bool:
         copied_runtime = f.tmp / "runtime-status"
         shutil.copytree(RUNTIME, copied_runtime)
         fake_dispatch = copied_runtime / "scripts" / "agy_dispatch.py"
+        shutil.copyfile(fake_dispatch, fake_dispatch.with_name("_real_agy_dispatch.py"))
         fake_dispatch.write_text(
+            "from _real_agy_dispatch import UnsupportedSchemaError, _require_supported_schema\n"
             "import hashlib,json,os,pathlib\n"
             "STATE_NAME='dispatch-state.json'\n"
             "class DispatchError(ValueError): pass\n"
@@ -1269,93 +1230,8 @@ check(
 )
 
 
-def test_legacy_ready_states_repreview_before_mode_bound_launch() -> bool:
-    """Old preview bytes are display evidence, not session-mode launch authority."""
-    for schema_version in (1, 2):
-        f = RepoFixture(f"legacy-ready-v{schema_version}")
-        try:
-            state_home = f.tmp / "xdg-state"
-            state_home.mkdir(mode=0o700)
-            job_id = f"legacy-ready-v{schema_version}"
-            env = {"XDG_STATE_HOME": str(state_home)}
-            initial = run_workflow(
-                "run", "--repo", str(f.repo), "--job-id", job_id,
-                "--preview", env=env,
-            )
-            assert initial.returncode == 0, initial.stderr
-            workflow_state, lifecycle_state, _worktree = _derived_files(state_home, job_id)
-            ready_lifecycle = json.loads(lifecycle_state.read_bytes())
-            assert ready_lifecycle["phase"] == "ready"
-            assert ready_lifecycle["dispatch"] is None
-            assert not Path(ready_lifecycle["dispatch_job_dir"]).exists()
-
-            current = json.loads(workflow_state.read_bytes())
-            legacy_keys = {
-                "schema_version", "kind", "job_id", "repo_path", "repo_identity",
-                "worktree_path", "worktree_identity", "branch", "branch_ref", "base",
-                "preview_manifest_sha256", "dispatch_job_dir", "job_state_path",
-                "receipt_path",
-            }
-            if schema_version == 2:
-                legacy_keys |= {"origin", "job_state_sha256"}
-            assert legacy_keys <= current.keys()
-            raw = {key: current[key] for key in legacy_keys}
-            raw["schema_version"] = schema_version
-            assert "provider_isolation" not in raw
-            assert "provider_execution" not in raw
-            raw_bytes = WORKFLOW_MODULE.canonical_json(raw) + b"\n"
-            workflow_state.write_bytes(raw_bytes)
-            workflow_state.chmod(0o600)
-            old_preview_sha = raw["preview_manifest_sha256"]
-
-            refreshed = run_workflow(
-                "run", "--repo", str(f.repo), "--job-id", job_id,
-                "--preview", env=env,
-            )
-            assert refreshed.returncode == 0, refreshed.stderr
-            refreshed_preview = json.loads(refreshed.stdout)
-            migrated = json.loads(workflow_state.read_bytes())
-            assert migrated["schema_version"] in {3, 4}
-            assert migrated["provider_isolation"] == "session"
-            assert migrated["provider_execution"] is None
-            assert refreshed_preview["provider_isolation"] == "session"
-            assert isinstance(refreshed_preview["provider_authority"], str)
-            assert refreshed_preview["provider_authority"]
-            assert isinstance(refreshed_preview["launch_approval_sha256"], str)
-            assert len(refreshed_preview["launch_approval_sha256"]) == 64
-            assert workflow_state.read_bytes() != raw_bytes
-
-            fake_bin = f.tmp / "no-provider-bin"
-            fake_bin.mkdir(mode=0o700)
-            called = f.tmp / "unexpected-provider-call"
-            fake = fake_bin / "agy"
-            fake.write_text(
-                "#!/bin/sh\n"
-                f"printf provider > {called!s}\n"
-                "exit 97\n",
-                encoding="utf-8",
-            )
-            fake.chmod(0o755)
-            rejected = run_workflow(
-                "run", "--repo", str(f.repo), "--job-id", job_id,
-                "--approve-whole-worktree", old_preview_sha,
-                "--task", "legacy approval must not dispatch", env={
-                    "XDG_STATE_HOME": str(state_home),
-                    "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
-                },
-            )
-            assert rejected.returncode != 0
-            assert not called.exists()
-            assert json.loads(workflow_state.read_bytes())["provider_isolation"] == "session"
-        finally:
-            f.clean()
-    return True
 
 
-check(
-    "legacy V1/V2 ready previews migrate to explicit session authority before launch",
-    test_legacy_ready_states_repreview_before_mode_bound_launch,
-)
 
 
 # ============================================================================
@@ -1367,7 +1243,7 @@ def test_verify_finalize_structured_argv() -> bool:
     try:
         # Create initial state
         initial_state = {
-            "schema_version": 1,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -1377,7 +1253,12 @@ def test_verify_finalize_structured_argv() -> bool:
             "branch": f.branch,
             "branch_ref": f"refs/heads/{f.branch}",
             "base": f.base,
+            "provider_isolation": "session",
+            "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": "2" * 64,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
             "receipt_path": None,
@@ -1429,7 +1310,7 @@ def test_verify_finalize_shell_acknowledgements() -> bool:
     f = RepoFixture("verify-shell")
     try:
         initial_state = {
-            "schema_version": 1,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -1439,7 +1320,12 @@ def test_verify_finalize_shell_acknowledgements() -> bool:
             "branch": f.branch,
             "branch_ref": f"refs/heads/{f.branch}",
             "base": f.base,
+            "provider_isolation": "session",
+            "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": "2" * 64,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
             "receipt_path": None,
@@ -1485,7 +1371,7 @@ def test_verify_finalize_candidate_binding() -> bool:
     f = RepoFixture("cand-binding")
     try:
         initial_state = {
-            "schema_version": 1,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -1495,7 +1381,12 @@ def test_verify_finalize_candidate_binding() -> bool:
             "branch": f.branch,
             "branch_ref": f"refs/heads/{f.branch}",
             "base": f.base,
+            "provider_isolation": "session",
+            "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": "2" * 64,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
             "receipt_path": None,
@@ -1575,7 +1466,7 @@ def test_verify_finalize_propagates_finalize_failure() -> bool:
         dispatch_sha = hashlib.sha256(dispatch_state.read_bytes()).hexdigest()
 
         initial_state = {
-            "schema_version": WORKFLOW_MODULE.SCHEMA_VERSION,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -1588,6 +1479,9 @@ def test_verify_finalize_propagates_finalize_failure() -> bool:
             "provider_isolation": "session",
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": "2" * 64,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir),
             "job_state_path": None,
             "receipt_path": None,
@@ -1599,7 +1493,9 @@ def test_verify_finalize_propagates_finalize_failure() -> bool:
         copied_runtime = f.tmp / "runtime-copy"
         shutil.copytree(RUNTIME, copied_runtime)
         fake_dispatch_module = copied_runtime / "scripts" / "agy_dispatch.py"
+        shutil.copyfile(fake_dispatch_module, fake_dispatch_module.with_name("_real_agy_dispatch.py"))
         fake_dispatch_module.write_text(
+            "from _real_agy_dispatch import UnsupportedSchemaError, _require_supported_schema\n"
             "import hashlib, json, os, pathlib\n"
             "STATE_NAME='dispatch-state.json'\n"
             "class DispatchError(ValueError): pass\n"
@@ -1721,7 +1617,7 @@ def test_verify_finalize_gate_and_dispatch_approval_boundaries() -> bool:
         dispatch_sha = hashlib.sha256(dispatch_raw).hexdigest()
 
         initial_state = {
-            "schema_version": WORKFLOW_MODULE.SCHEMA_VERSION,
+            "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION,
             "kind": "agy-worker-workflow-state",
             "job_id": f.job_id,
             "repo_path": str(f.repo),
@@ -1734,6 +1630,9 @@ def test_verify_finalize_gate_and_dispatch_approval_boundaries() -> bool:
             "provider_isolation": "session",
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "1" * 64,
+            "preview_launch_approval_sha256": "2" * 64,
+            "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir),
             "job_state_path": None,
             "receipt_path": None,
@@ -1768,7 +1667,9 @@ def test_verify_finalize_gate_and_dispatch_approval_boundaries() -> bool:
         copied_runtime = f.tmp / "runtime-boundaries"
         shutil.copytree(RUNTIME, copied_runtime)
         fake_dispatch_module = copied_runtime / "scripts" / "agy_dispatch.py"
+        shutil.copyfile(fake_dispatch_module, fake_dispatch_module.with_name("_real_agy_dispatch.py"))
         fake_dispatch_module.write_text(
+            "from _real_agy_dispatch import UnsupportedSchemaError, _require_supported_schema\n"
             "import hashlib, json, os, pathlib\n"
             "STATE_NAME='dispatch-state.json'\n"
             "class DispatchError(ValueError): pass\n"
@@ -1896,6 +1797,189 @@ check(
     "verify-finalize requires exact dispatch approval and never finalizes failed gates",
     test_verify_finalize_gate_and_dispatch_approval_boundaries,
 )
+
+
+def _tree_snapshot(root: Path) -> dict[str, tuple[Any, ...]]:
+    """Observe artifacts, Git metadata, and directory mtimes without atime noise."""
+    result = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        info = path.lstat()
+        payload = os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None
+        result[str(path.relative_to(root))] = (
+            info.st_mode, info.st_ino, info.st_size, info.st_mtime_ns, payload,
+        )
+    return result
+
+
+def _rejection_without_effects(root: Path, argv: list[str], expected: str, *, code: int = 20) -> None:
+    before = _tree_snapshot(root)
+    original_run = subprocess.run
+
+    def read_only_git(command: list[str], *args: Any, **kwargs: Any) -> Any:
+        assert Path(command[0]).name == "git", "provider/verifier/controller process started"
+        assert not {"remove", "prune", "reset", "clean", "update-ref", "checkout", "-D"}.intersection(command)
+        return original_run(command, *args, **kwargs)
+
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.ExitStack() as stack:
+        for name in ("_dispatch_run", "_run_lifecycle", "canonical_transmission_preview"):
+            stack.enter_context(mock.patch.object(WORKFLOW_MODULE, name, side_effect=AssertionError("effect before rejection")))
+        stack.enter_context(mock.patch.object(subprocess, "run", side_effect=read_only_git))
+        stack.enter_context(contextlib.redirect_stdout(stdout))
+        stack.enter_context(contextlib.redirect_stderr(stderr))
+        try:
+            result = WORKFLOW_MODULE.main(argv)
+        except SystemExit as exc:
+            raise AssertionError(f"parser exited before schema validation: {stderr.getvalue()}") from exc
+        assert result == code, stderr.getvalue()
+    diagnostic = stderr.getvalue()
+    assert expected in diagnostic, diagnostic
+    assert "Traceback" not in diagnostic and "fatal error" not in diagnostic
+    assert "untrusted-version-marker" not in diagnostic
+    assert not stdout.getvalue()
+    assert _tree_snapshot(root) == before, "rejected input changed bytes, identities, modes, or mtimes"
+
+
+def _explicit_state(f: RepoFixture) -> dict[str, Any]:
+    return {
+        "schema_version": 5, "kind": "agy-worker-workflow-state", "job_id": f.job_id,
+        "repo_path": str(f.repo), "repo_identity": WORKFLOW_MODULE.identity(f.repo.lstat()),
+        "worktree_path": str(f.worktree), "worktree_identity": WORKFLOW_MODULE.identity(f.worktree.lstat()),
+        "branch": f.branch, "branch_ref": f"refs/heads/{f.branch}", "base": f.base,
+        "provider_isolation": "session", "provider_execution": None,
+        "preview_manifest_sha256": "0" * 64, "preview_content_sha256": "1" * 64,
+        "preview_launch_approval_sha256": "2" * 64, "native_grant_profile": "baseline",
+        "dispatch_job_dir": None, "job_state_path": None, "receipt_path": None,
+    }
+
+
+def test_workflow_versions_reject_before_effects() -> bool:
+    f = RepoFixture("version-boundary")
+    try:
+        current = _explicit_state(f)
+        assert WORKFLOW_MODULE.validate_workflow_state(current) == current
+        for version in (1, 2, 3, 4, None, True, False, "untrusted-version-marker", "5", 5.5, 0, -1, 999999):
+            state = dict(current)
+            if version is None:
+                del state["schema_version"]
+            else:
+                state["schema_version"] = version
+            f.state_file.write_bytes(WORKFLOW_MODULE.canonical_json(state) + b"\n")
+            f.state_file.chmod(0o600)
+            before = _tree_snapshot(f.tmp)
+            try:
+                WORKFLOW_MODULE.WorkflowStateStore(f.state_file)
+            except WORKFLOW_MODULE.UnsupportedWorkflowSchemaError as exc:
+                assert "supports only v5 or v6" in str(exc)
+                assert "Finish or discard the job" in str(exc)
+                assert "untrusted-version-marker" not in str(exc)
+            else:
+                raise AssertionError(f"unsupported workflow schema accepted: {version!r}")
+            assert _tree_snapshot(f.tmp) == before
+            commands = [
+                ["status", "--state", str(f.state_file)],
+                ["run", "--state", str(f.state_file), "--repo", str(f.repo),
+                 "--worktree", str(f.worktree), "--branch", f.branch, "--base", f.base,
+                 "--job-id", f.job_id, "--approve-whole-worktree", "2" * 64, "--task", "bounded"],
+                ["verify-finalize", "--state", str(f.state_file), "--receipt", str(f.receipt_file),
+                 "--envelope", str(f.envelope_file),
+                 "--verify-argv", '["/usr/bin/true"]', "--assurance", "verified"],
+            ]
+            for argv in commands:
+                _rejection_without_effects(f.tmp, argv, "workflow state schema")
+        schema = json.loads(SCHEMA_PATH.read_bytes())
+        assert schema["properties"]["schema_version"]["enum"] == [5, 6]
+        return True
+    finally:
+        f.clean()
+
+
+check("retired and malformed workflow versions reject before reads become effects", test_workflow_versions_reject_before_effects)
+
+
+def test_referenced_dispatch_versions_reject_before_effects() -> bool:
+    f = RepoFixture("dispatch-version-boundary")
+    try:
+        spec = importlib.util.spec_from_file_location("workflow_dispatch_fixture", ROOT / "tests/test-self-verification-lifecycle.py")
+        assert spec is not None and spec.loader is not None
+        fixture_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture_module)
+        job, _sha, worktree = fixture_module.SelfVerificationLifecycle().fixture(str(f.tmp / "dispatch-fixture"), allow=False)
+        # The explicit dispatcher-status route requires dirname == job_id.
+        canonical_job = job.with_name("fixture")
+        job.rename(canonical_job)
+        job = canonical_job
+        dispatch = WORKFLOW_MODULE.DISPATCH
+        state_path, command_path = job / dispatch.STATE_NAME, job / dispatch.COMMAND_NAME
+        state_raw, command_raw = state_path.read_bytes(), command_path.read_bytes()
+        current_state, current_command = json.loads(state_raw), json.loads(command_raw)
+        assert (current_state["schema_version"], current_command["schema_version"]) == (14, 11)
+        state = _explicit_state(f)
+        repo = worktree.parent / "owner"
+        branch = git(worktree, "branch", "--show-current")
+        state.update({"job_id": current_state["job_id"], "repo_path": str(repo),
+                      "repo_identity": WORKFLOW_MODULE.identity(repo.lstat()),
+                      "worktree_path": str(worktree), "worktree_identity": WORKFLOW_MODULE.identity(worktree.lstat()),
+                      "branch": branch, "branch_ref": f"refs/heads/{branch}",
+                      "base": git(worktree, "rev-parse", "HEAD"), "dispatch_job_dir": str(job)})
+        f.state_file.write_bytes(WORKFLOW_MODULE.canonical_json(state) + b"\n")
+        f.state_file.chmod(0o600)
+        for target, current, versions, label in (
+            (state_path, current_state, range(1, 14), "dispatch state schema"),
+            (command_path, current_command, range(1, 11), "dispatch command schema"),
+        ):
+            for version in versions:
+                state_path.write_bytes(state_raw)
+                command_path.write_bytes(command_raw)
+                target.write_bytes(dispatch.canonical({**current, "schema_version": version}))
+                before = _tree_snapshot(f.tmp)
+                try:
+                    WORKFLOW_MODULE._bound_dispatch_status(job, current_state["job_id"])
+                except WORKFLOW_MODULE.UnsupportedWorkflowSchemaError as exc:
+                    assert label in str(exc)
+                    assert "Finish or discard the job" in str(exc)
+                else:
+                    raise AssertionError("retired dispatch record was projected")
+                assert _tree_snapshot(f.tmp) == before
+                for argv in (
+                    ["status", "--state", str(f.state_file)],
+                    ["status", "--dispatch-state", str(state_path)],
+                    ["verify-finalize", "--state", str(f.state_file), "--receipt", str(f.receipt_file),
+                     "--envelope", str(f.envelope_file),
+                     "--verify-argv", '["/usr/bin/true"]', "--approve-dispatch-sha", hashlib.sha256(state_path.read_bytes()).hexdigest(),
+                     "--assurance", "verified"],
+                ):
+                    _rejection_without_effects(f.tmp, argv, label)
+        return True
+    finally:
+        f.clean()
+
+
+check("workflow projections and finalization reject retired referenced dispatch records", test_referenced_dispatch_versions_reject_before_effects)
+
+
+def test_removed_approval_flags_reject_before_effects() -> bool:
+    f = RepoFixture("removed-approval-flags")
+    try:
+        f.state_file.write_bytes(WORKFLOW_MODULE.canonical_json(_explicit_state(f)) + b"\n")
+        f.state_file.chmod(0o600)
+        for flag, replacement, base in (
+            ("--approve-preview-sha", "--approve-whole-worktree", ["run", "--repo", str(f.repo), "--job-id", f.job_id]),
+            ("--legacy-preview-approval", "--approve-whole-worktree", ["run", "--repo", str(f.repo), "--job-id", f.job_id]),
+            ("--approve-state-sha", "--approve-dispatch-sha", ["verify-finalize", "--state", str(f.state_file),
+                                                                  "--envelope", str(f.envelope_file),
+                                                                  "--receipt", str(f.receipt_file), "--assurance", "verified"]),
+        ):
+            for removed in ([flag, "a" * 64], [f"{flag}={'a' * 64}"]):
+                for current in ([], [replacement, "b" * 64]):
+                    _rejection_without_effects(f.tmp, base + current + removed,
+                                               f"{flag} was removed in this unreleased development version; use {replacement}.", code=64)
+        return True
+    finally:
+        f.clean()
+
+
+check("removed workflow approval flags reject split, equals, and mixed current forms before effects", test_removed_approval_flags_reject_before_effects)
 
 
 # ============================================================================

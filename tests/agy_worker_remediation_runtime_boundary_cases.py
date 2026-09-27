@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from pathlib import Path
     SOURCE: Path = cast(Path, ...)
     def check(label: str, action: Callable[[], object]) -> None: ...
+    def current_command_fixture(values: dict, *, bind_launch: bool=True) -> dict: ...
     import copy
     import fcntl
     import io
@@ -111,9 +112,9 @@ def run(context: dict[str, object]) -> None:
             selection_path = job / "selection.json"
             MODULE.MODEL_SELECTION.publish_record(selection_path, selection)
             raw, info = MODULE.read_regular(selection_path, MODULE.MAX_COMMAND_BYTES, "fixture selection")
-            command = {
-                "schema_version": 7, "kind": "agy-worker-dispatch-command", "job_id": f"direct-{label}",
-                "workdir": str(repo), "argv": ["agy", "--sandbox", "--mode", "accept-edits", "--add-dir", str(repo), "--json-schema", str(schema), "--model", "gemini-3.6-flash-high", "--print", "task"],
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"direct-{label}",
+                "workdir": str(repo), "argv": ["agy", "--mode", "accept-edits", "--add-dir", str(repo), "--json-schema", str(schema), "--model", "gemini-3.6-flash-high", "--print", "task"],
                 "agy_version": "1.2.11", "agy_version_observed": True,
                 "selection_path": str(selection_path), "selection_sha256": MODULE.digest(raw), "selection_identity": list(MODULE._identity(info)),
                 "idle_seconds": idle_seconds, "hard_seconds": hard_seconds, "max_seconds": max_seconds, "notice_seconds": 3,
@@ -125,10 +126,7 @@ def run(context: dict[str, object]) -> None:
                 ],
                 "provider_scope_path": None, "provider_scope_sha256": None,
                 "provider_scope_identity": None, "approved_transmission_sha256": None,
-                "approved_whole_worktree_sha256": MODULE._manifest_digest(
-                    MODULE._scan_readable_worktree(repo)
-                ),
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             calls.unlink(missing_ok=True)
@@ -1063,13 +1061,11 @@ def run(context: dict[str, object]) -> None:
         launch_swapped = False
 
         def replace_during_running_transition(
-            job_path: Path, state: dict, prior_raw: bytes, updates: dict, *,
-            legacy_control_only: bool = False,
+            job_path: Path, state: dict, prior_raw: bytes, updates: dict,
         ):
             nonlocal launch_swapped
             result = original_transition(
                 job_path, state, prior_raw, updates,
-                legacy_control_only=legacy_control_only,
             )
             if updates.get("status") == "running" and not launch_swapped:
                 os.replace(launch_replacement, launch_fake)

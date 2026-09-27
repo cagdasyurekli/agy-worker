@@ -35,7 +35,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-import legacy_dispatch_state as LEGACY  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_verification as SELF_VERIFICATION  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_worktree as WORKTREE  # noqa: E402 -- sibling imports follow startup isolation/path setup
@@ -87,14 +86,14 @@ whole_worktree_content_manifest = WORKTREE.whole_worktree_content_manifest
 _MarkerPreflightLimit = WORKTREE._MarkerPreflightLimit
 _FIXED_GIT_READ_ARGV = WORKTREE._FIXED_GIT_READ_ARGV
 
-class _DispatchAPI:
-    """Expose this module's private helpers to the legacy compatibility adapter."""
+class _VerificationAPI:
+    """Expose dispatcher dependencies to the optional verification adapter."""
 
     def __getattr__(self, name: str) -> Any:
         return globals()[name]
 
 
-LEGACY_API = _DispatchAPI()
+VERIFICATION_API = _VerificationAPI()
 
 STATE_NAME = "dispatch-state.json"
 COMMAND_NAME = "dispatch-command.json"
@@ -116,30 +115,46 @@ CONTROL_POLL = 0.20
 CONVERSATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 JOB_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
-COMMAND_V1_FIELDS = {
-    "schema_version", "kind", "job_id", "workdir", "argv", "agy_version",
-    "idle_seconds", "hard_seconds", "max_seconds", "notice_seconds",
-    "stage_dir", "stage_file", "child_umask", "resume_prompt",
-}
-COMMAND_V2_FIELDS = COMMAND_V1_FIELDS | {"workflow", "max_cycles", "continue_prompt"}
-COMMAND_V3_FIELDS = COMMAND_V2_FIELDS | {"agy_version_observed"}
-COMMAND_V4_FIELDS = COMMAND_V3_FIELDS | {"selection_path", "selection_sha256", "selection_identity"}
-COMMAND_V5_FIELDS = COMMAND_V4_FIELDS | {"provider_env"}
-COMMAND_V6_FIELDS = COMMAND_V5_FIELDS | {
-    "provider_scope_path", "provider_scope_sha256", "provider_scope_identity", "approved_transmission_sha256",
-}
-COMMAND_V7_FIELDS = COMMAND_V6_FIELDS | {"approved_whole_worktree_sha256"}
-COMMAND_V8_FIELDS = COMMAND_V7_FIELDS | {
-    "boost", "boost_policy_sha256", "approved_boost_risk_sha256",
-}
-COMMAND_V9_FIELDS = COMMAND_V8_FIELDS | {
-    "allow_scoped_repair", "repair_authority_sha256",
-    "allow_self_verification", "self_verification_manifest_path",
-    "self_verification_manifest_sha256", "self_verification_manifest_identity",
-}
-COMMAND_V10_FIELDS = COMMAND_V9_FIELDS | {"provider_isolation"}
-COMMAND_V11_FIELDS = COMMAND_V10_FIELDS | {
-    "whole_worktree_content_sha256", "native_grant_profile",
+CURRENT_COMMAND_FIELDS = {
+    'agy_version',
+    'agy_version_observed',
+    'allow_scoped_repair',
+    'allow_self_verification',
+    'approved_boost_risk_sha256',
+    'approved_transmission_sha256',
+    'approved_whole_worktree_sha256',
+    'argv',
+    'boost',
+    'boost_policy_sha256',
+    'child_umask',
+    'continue_prompt',
+    'hard_seconds',
+    'idle_seconds',
+    'job_id',
+    'kind',
+    'max_cycles',
+    'max_seconds',
+    'native_grant_profile',
+    'notice_seconds',
+    'provider_env',
+    'provider_isolation',
+    'provider_scope_identity',
+    'provider_scope_path',
+    'provider_scope_sha256',
+    'repair_authority_sha256',
+    'resume_prompt',
+    'schema_version',
+    'selection_identity',
+    'selection_path',
+    'selection_sha256',
+    'self_verification_manifest_identity',
+    'self_verification_manifest_path',
+    'self_verification_manifest_sha256',
+    'stage_dir',
+    'stage_file',
+    'whole_worktree_content_sha256',
+    'workdir',
+    'workflow',
 }
 SCOPED_REPAIR_POLICY_TEXT = (
     "Scoped repair may transmit only controller-reconciled descendants under the "
@@ -152,46 +167,117 @@ BOOST_RISK_POLICY_TEXT = (
     "Boost may invoke subagents and protected tools; this acknowledgement does not grant runtime permissions."
 )
 BOOST_RISK_POLICY_SHA256 = hashlib.sha256(BOOST_RISK_POLICY_TEXT.encode("utf-8")).hexdigest()
-STATE_PROJECT_FIELDS = {
-    "workflow", "max_cycles", "cycle", "phase", "assurance",
-    "check_summary", "check_counts", "verification_path", "verification_sha256",
-    "verification_identity", "continue_available", "last_success_path",
-    "last_success_sha256", "last_success_identity",
-    "project_boundary",
+CURRENT_STATE_FIELDS = {
+    'agy_returncode',
+    'allow_scoped_repair',
+    'allow_self_verification',
+    'approved_transmission_sha256',
+    'assurance',
+    'attempt',
+    'attempt_base_elapsed',
+    'attempt_origin',
+    'cancel_requested',
+    'candidate_recognized',
+    'candidate_source',
+    'candidate_worktree_entries',
+    'candidate_worktree_sha256',
+    'canonical_schema_identity',
+    'canonical_schema_sha256',
+    'check_counts',
+    'check_summary',
+    'command_identity',
+    'command_sha256',
+    'continue_available',
+    'controller_pid',
+    'conversation_id',
+    'created_epoch',
+    'cycle',
+    'driver_disposition',
+    'elapsed_seconds',
+    'exit_code',
+    'failure_stage',
+    'finished_epoch',
+    'hard_seconds',
+    'idle_seconds',
+    'job_id',
+    'kind',
+    'last_activity',
+    'last_progress_epoch',
+    'last_success_identity',
+    'last_success_path',
+    'last_success_sha256',
+    'limit_kind',
+    'max_cycles',
+    'max_seconds',
+    'native_grant_profile',
+    'next_action',
+    'next_action_command',
+    'notice_count',
+    'phase',
+    'previous_state_sha256',
+    'progress_count',
+    'project_boundary',
+    'provider_isolation',
+    'provider_retry_after_seconds',
+    'provider_retry_observed_epoch',
+    'provider_schema_identity',
+    'provider_schema_sha256',
+    'provider_scope_identity',
+    'provider_scope_path',
+    'provider_scope_sha256',
+    'provider_stage_identity',
+    'provider_stage_manifest_sha256',
+    'provider_stage_path',
+    'provider_terminal_status',
+    'reason',
+    'reconciliation_manifest_sha256',
+    'remote_cancel_unverified',
+    'repair_authority_sha256',
+    'repair_lineage_attempt',
+    'repair_lineage_sha256',
+    'repair_parent_result_sha256',
+    'repair_parent_worktree_sha256',
+    'result_available',
+    'result_identity',
+    'result_path',
+    'result_sha256',
+    'resume_available',
+    'schema_version',
+    'selected_content_sha256',
+    'selected_file_count',
+    'selected_tree_count',
+    'selection_identity',
+    'selection_sha256',
+    'self_verification_elapsed_seconds',
+    'self_verification_return_phase',
+    'self_verification_run',
+    'self_verification_started_epoch',
+    'sequence',
+    'stage_identity',
+    'stage_sha256',
+    'started_epoch',
+    'status',
+    'stderr_path',
+    'stream_path',
+    'transmission_sha256',
+    'updated_epoch',
+    'verification_identity',
+    'verification_path',
+    'verification_sha256',
+    'whole_worktree_content_sha256',
+    'workdir',
+    'workflow',
+    'worktree_baseline',
+    'worktree_changed_since_dispatch',
+    'worktree_changes_present',
+    'worktree_reconciliation',
+    'worktree_root_identity',
+    'worktree_snapshot_algorithm',
 }
-STATE_V5_FIELDS = {
-    "candidate_recognized", "candidate_source", "result_available",
-    "worktree_reconciliation", "worktree_changes_present",
-    "worktree_changed_since_dispatch", "driver_disposition", "failure_stage",
-    "last_activity", "next_action", "next_action_command", "worktree_baseline",
-    "provider_schema_sha256", "provider_schema_identity",
-    "canonical_schema_sha256", "canonical_schema_identity",
-    "candidate_worktree_sha256", "candidate_worktree_entries",
-}
-STATE_V6_FIELDS = {"selection_sha256", "selection_identity"}
-STATE_V8_FIELDS = {"worktree_snapshot_algorithm"}
-STATE_V9_FIELDS = {"worktree_root_identity"}
-STATE_V10_FIELDS = {"provider_terminal_status"}
-STATE_V11_FIELDS = {
-    "provider_scope_path", "provider_scope_sha256", "provider_scope_identity",
-    "approved_transmission_sha256", "transmission_sha256",
-    "selected_content_sha256", "selected_file_count", "selected_tree_count",
-    "provider_stage_path", "provider_stage_identity",
-    "provider_stage_manifest_sha256", "reconciliation_manifest_sha256",
-}
-STATE_V12_FIELDS = {
-    "allow_scoped_repair", "repair_authority_sha256", "repair_lineage_sha256",
-    "repair_parent_result_sha256", "repair_parent_worktree_sha256",
-    "repair_lineage_attempt",
-    "allow_self_verification", "self_verification_elapsed_seconds",
-    "self_verification_run", "self_verification_started_epoch",
-    "self_verification_return_phase",
-}
-STATE_V13_FIELDS = {"provider_isolation"}
-STATE_V14_FIELDS = {"whole_worktree_content_sha256", "native_grant_profile"}
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
 CURRENT_STATE_SCHEMA = 14
-WORKTREE_SNAPSHOT_LEGACY_V6 = "legacy-v6"
+CURRENT_COMMAND_SCHEMA = 11
+LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
 CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1
 FAILURE_STAGES = {
@@ -268,14 +354,10 @@ class Parser(argparse.ArgumentParser):
 
 
 def _provider_isolation_for_command(command: dict[str, Any]) -> str:
-    """Derive the execution mode without rewriting historical command bytes."""
-    schema = command.get("schema_version")
-    if schema == 9:
-        return "native"
-    if isinstance(schema, int) and schema <= 8:
-        return "session"
+    """Read the current command's explicit execution mode."""
+    _require_supported_schema(command, label="dispatch command", supported=(CURRENT_COMMAND_SCHEMA,))
     mode = command.get("provider_isolation")
-    if schema not in {10, 11} or mode not in {"session", "native"}:
+    if mode not in {"session", "native"}:
         raise DispatchError("dispatch provider isolation is invalid")
     return mode
 
@@ -307,10 +389,8 @@ def scoped_repair_authority_sha256(
         "max_seconds": command.get("max_seconds"),
         "verification_binding_sha256": verification_binding_sha256,
     }
-    if command.get("schema_version") in {10, 11}:
-        payload["provider_isolation"] = command.get("provider_isolation")
-    if command.get("schema_version") == 11:
-        payload["native_grant_profile"] = command.get("native_grant_profile")
+    payload["provider_isolation"] = command.get("provider_isolation")
+    payload["native_grant_profile"] = command.get("native_grant_profile")
     return digest(canonical(payload))
 
 
@@ -499,6 +579,7 @@ def write_atomic(job: Path, name: str, value: Any) -> tuple[bytes, str]:
 
 @contextlib.contextmanager
 def lifecycle_lock(job: Path, *, blocking: bool) -> Iterator[int]:
+    _check_existing_dispatch_schemas(job)
     path = job / LOCK_NAME
     descriptor = os.open(
         path,
@@ -521,6 +602,7 @@ def lifecycle_lock(job: Path, *, blocking: bool) -> Iterator[int]:
 def state_lock(job: Path) -> Iterator[int]:
     """Serialize short state replacements without sharing controller ownership."""
 
+    _check_existing_dispatch_schemas(job)
     path = job / STATE_LOCK_NAME
     descriptor = os.open(
         path,
@@ -556,10 +638,62 @@ def inherited_lifecycle_lock(job: Path, descriptor: int) -> Iterator[int]:
         os.close(descriptor)
 
 
+class UnsupportedSchemaError(DispatchError):
+    """A fixed diagnostic for a record outside the supported schema boundary."""
+
+
+def _require_supported_schema(
+    value: Any, *, label: str, supported: tuple[int, ...],
+) -> None:
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    if type(version) is int and version in supported:
+        return
+    # Only bounded, retired positive integers enter a diagnostic. Never echo
+    # arbitrary JSON values, strings, or unbounded/future version numbers.
+    found = f"v{version}" if type(version) is int and 0 < version < max(supported) else "invalid or unsupported"
+    expected = " or ".join(f"v{item}" for item in supported)
+    raise UnsupportedSchemaError(
+        f"{label} schema {found} is not supported; this unreleased development "
+        f"version supports only {expected}. Finish or discard the job with the "
+        "release that created it. Last documented release with legacy-schema "
+        f"support: {LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}."
+    )
+
+
+def _check_existing_command_schema(job: Path) -> None:
+    """Reject retired commands before a state reader can recover or project."""
+    try:
+        raw, _info = read_regular(job / COMMAND_NAME, MAX_COMMAND_BYTES, "dispatch command")
+        value = parse_json(raw, "dispatch command")
+    except (OSError, DispatchError):
+        # Preserve the existing handling of missing/corrupt command artifacts.
+        # Their full binding remains owned by the ordinary command binder.
+        return
+    _require_supported_schema(value, label="dispatch command", supported=(CURRENT_COMMAND_SCHEMA,))
+
+
+def _check_existing_dispatch_schemas(job: Path) -> None:
+    """Reject decoded unsupported records before creating or chmodding locks.
+
+    This bounded read is only an early rejection, never transition authority.
+    Callers still reload and fully validate under their existing locks. Missing
+    or corrupt bytes retain the ordinary reader's existing error handling.
+    """
+    try:
+        raw, _info = read_regular(job / STATE_NAME, MAX_STATE_BYTES, "dispatch state")
+        value = parse_json(raw, "dispatch state")
+    except (OSError, DispatchError):
+        pass
+    else:
+        _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
+    _check_existing_command_schema(job)
+
+
 def load_state(job: Path) -> tuple[dict[str, Any], bytes, str]:
     raw, _info = read_regular(job / STATE_NAME, MAX_STATE_BYTES, "dispatch state")
     value = parse_json(raw, "dispatch state")
     value = validate_state(value)
+    _check_existing_command_schema(job)
     return value, raw, digest(raw)
 
 
@@ -573,121 +707,13 @@ def read_state_snapshot(job: Path) -> tuple[dict[str, Any], bytes, str]:
 def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int, int, int]]:
     raw, info = read_regular(job / COMMAND_NAME, MAX_COMMAND_BYTES, "dispatch command")
     value = parse_json(raw, "dispatch command")
+    _require_supported_schema(value, label="dispatch command", supported=(CURRENT_COMMAND_SCHEMA,))
     if not isinstance(value, dict):
         raise DispatchError("dispatch command fields are invalid")
-    if set(value) == COMMAND_V1_FIELDS and value.get("schema_version") == 1:
-        if raw != canonical(value):
-            raise DispatchError("legacy dispatch command is not canonical")
-        value = dict(value)
-        value.update({
-            "workflow": "legacy", "max_cycles": 1,
-            "continue_prompt": "legacy commands cannot continue projects",
-            "agy_version_observed": False,
-            "selection_path": None, "selection_sha256": None, "selection_identity": None,
-            "provider_env": [],
-        })
-    elif set(value) == COMMAND_V2_FIELDS and value.get("schema_version") == 2:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value["agy_version_observed"] = False
-        value.update({
-            "selection_path": None, "selection_sha256": None, "selection_identity": None,
-            "provider_env": [],
-        })
-    elif set(value) == COMMAND_V3_FIELDS and value.get("schema_version") == 3:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value.update({
-            "selection_path": None, "selection_sha256": None, "selection_identity": None,
-            "provider_env": [],
-        })
-    elif set(value) == COMMAND_V4_FIELDS and value.get("schema_version") == 4:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value["provider_env"] = []
-    elif set(value) == COMMAND_V5_FIELDS and value.get("schema_version") == 5:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value.update({
-            "provider_scope_path": None,
-            "provider_scope_sha256": None,
-            "provider_scope_identity": None,
-            "approved_transmission_sha256": None,
-            "approved_whole_worktree_sha256": None,
-        })
-    elif set(value) == COMMAND_V6_FIELDS and value.get("schema_version") == 6:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value["approved_whole_worktree_sha256"] = None
-    elif set(value) == COMMAND_V7_FIELDS and value.get("schema_version") == 7:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value.update({
-            "boost": False, "boost_policy_sha256": None,
-            "approved_boost_risk_sha256": None,
-        })
-    elif set(value) == COMMAND_V8_FIELDS and value.get("schema_version") == 8:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value.update({
-            "allow_scoped_repair": False,
-            "repair_authority_sha256": None,
-            "allow_self_verification": False,
-            "self_verification_manifest_path": None,
-            "self_verification_manifest_sha256": None,
-            "self_verification_manifest_identity": None,
-        })
-    elif set(value) == COMMAND_V9_FIELDS and value.get("schema_version") == 9:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value["provider_isolation"] = "native"
-    elif set(value) == COMMAND_V10_FIELDS and value.get("schema_version") == 10:
-        if raw != canonical(value):
-            raise DispatchError("dispatch command is not canonical")
-        value = dict(value)
-        value.update({
-            "whole_worktree_content_sha256": None,
-            "native_grant_profile": "baseline",
-        })
-    elif set(value) != COMMAND_V11_FIELDS or value.get("schema_version") != 11:
+    if set(value) != CURRENT_COMMAND_FIELDS:
         raise DispatchError("dispatch command fields are invalid")
-    elif raw != canonical(value):
+    if raw != canonical(value):
         raise DispatchError("dispatch command is not canonical")
-    if "boost" not in value:
-        value = dict(value)
-        value.update({
-            "boost": False, "boost_policy_sha256": None,
-            "approved_boost_risk_sha256": None,
-        })
-    if "allow_scoped_repair" not in value:
-        value = dict(value)
-        value.update({
-            "allow_scoped_repair": False,
-            "repair_authority_sha256": None,
-        })
-    if "allow_self_verification" not in value:
-        value = dict(value)
-        value.update({
-            "allow_self_verification": False,
-            "self_verification_manifest_path": None,
-            "self_verification_manifest_sha256": None,
-            "self_verification_manifest_identity": None,
-        })
-    if "provider_isolation" not in value:
-        value = dict(value)
-        value["provider_isolation"] = "native" if value["schema_version"] == 9 else "session"
-    if "native_grant_profile" not in value:
-        value = dict(value)
-        value["native_grant_profile"] = "baseline"
-        value["whole_worktree_content_sha256"] = None
     if value["kind"] != "agy-worker-dispatch-command":
         raise DispatchError("dispatch command version is invalid")
     if (
@@ -767,14 +793,11 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         or not isinstance(approved_sha, str) or SHA_RE.fullmatch(approved_sha) is None
     ):
         raise DispatchError("dispatch provider scope binding is invalid")
-    if value["schema_version"] in {7, 8, 9, 10, 11}:
-        if scope_path is None:
-            if not isinstance(approved_whole_sha, str) or SHA_RE.fullmatch(approved_whole_sha) is None:
-                raise DispatchError("dispatch whole-worktree approval binding is invalid")
-        elif approved_whole_sha is not None:
-            raise DispatchError("dispatch transmission modes conflict")
+    if scope_path is None:
+        if not isinstance(approved_whole_sha, str) or SHA_RE.fullmatch(approved_whole_sha) is None:
+            raise DispatchError("dispatch whole-worktree approval binding is invalid")
     elif approved_whole_sha is not None:
-        raise DispatchError("legacy dispatch command cannot carry whole-worktree approval")
+        raise DispatchError("dispatch transmission modes conflict")
     provider_isolation = value["provider_isolation"]
     if provider_isolation not in {"session", "native"}:
         raise DispatchError("dispatch provider isolation is invalid")
@@ -784,22 +807,18 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
     ):
         raise DispatchError("dispatch native grant profile is invalid")
     whole_content_sha = value["whole_worktree_content_sha256"]
-    if value["schema_version"] == 11:
-        if scope_path is None:
-            if not isinstance(whole_content_sha, str) or SHA_RE.fullmatch(whole_content_sha) is None:
-                raise DispatchError("dispatch V11 whole-worktree content binding is invalid")
-        elif whole_content_sha is not None:
-            raise DispatchError("scoped V11 dispatch cannot carry whole-worktree content")
+    if scope_path is None:
+        if not isinstance(whole_content_sha, str) or SHA_RE.fullmatch(whole_content_sha) is None:
+            raise DispatchError("dispatch V11 whole-worktree content binding is invalid")
     elif whole_content_sha is not None:
-        raise DispatchError("legacy dispatch cannot carry V11 whole-worktree content")
-    if value["schema_version"] in {10, 11}:
-        sandbox_count = value["argv"].count("--sandbox")
-        if provider_isolation == "session" and sandbox_count != 0:
-            raise DispatchError("session dispatch cannot request AGY sandbox")
-        if provider_isolation == "native" and (
-            scope_path is None or sandbox_count != 1
-        ):
-            raise DispatchError("native dispatch must be scoped and sandboxed")
+        raise DispatchError("scoped V11 dispatch cannot carry whole-worktree content")
+    sandbox_count = value["argv"].count("--sandbox")
+    if provider_isolation == "session" and sandbox_count != 0:
+        raise DispatchError("session dispatch cannot request AGY sandbox")
+    if provider_isolation == "native" and (
+        scope_path is None or sandbox_count != 1
+    ):
+        raise DispatchError("native dispatch must be scoped and sandboxed")
     boost = value["boost"]
     boost_policy = value["boost_policy_sha256"]
     boost_approval = value["approved_boost_risk_sha256"]
@@ -835,9 +854,7 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         if any(item is not None for item in self_verification_fields):
             raise DispatchError("disabled self-verification cannot carry a manifest")
     elif (
-        value["schema_version"] not in {9, 10, 11}
-        or value["workflow"] not in {"task", "project"}
-        or value["boost"]
+        value["workflow"] not in {"task", "project"} or value["boost"]
         or not isinstance(self_verification_fields[0], str)
         or not Path(self_verification_fields[0]).is_absolute()
         or not isinstance(self_verification_fields[1], str)
@@ -879,41 +896,8 @@ def _require_initial_transmission_choice(command: dict[str, Any], origin: str) -
 
 
 def validate_state(value: Any) -> dict[str, Any]:
-    fields = {
-        "schema_version", "kind", "sequence", "previous_state_sha256", "job_id",
-        "status", "attempt", "attempt_origin", "reason", "exit_code",
-        "controller_pid", "workdir", "created_epoch", "started_epoch",
-        "updated_epoch", "finished_epoch", "elapsed_seconds", "progress_count",
-        "last_progress_epoch", "notice_count", "hard_seconds", "max_seconds",
-        "cancel_requested", "conversation_id", "resume_available",
-        "remote_cancel_unverified", "result_path", "stream_path", "stderr_path",
-        "agy_returncode", "limit_kind", "command_sha256", "command_identity",
-        "stage_sha256", "stage_identity", "result_sha256", "result_identity",
-        "idle_seconds", "attempt_base_elapsed",
-        "workflow", "max_cycles", "cycle", "phase", "assurance",
-        "check_summary", "check_counts", "verification_path", "verification_sha256",
-        "verification_identity", "continue_available", "last_success_path",
-        "last_success_sha256", "last_success_identity", "project_boundary",
-        "provider_retry_after_seconds", "provider_retry_observed_epoch",
-        "candidate_recognized", "candidate_source", "result_available",
-        "worktree_reconciliation", "worktree_changes_present",
-        "worktree_changed_since_dispatch", "driver_disposition", "failure_stage",
-        "last_activity", "next_action", "next_action_command", "worktree_baseline",
-        "provider_schema_sha256", "provider_schema_identity",
-        "canonical_schema_sha256", "canonical_schema_identity",
-        "candidate_worktree_sha256", "candidate_worktree_entries",
-        "selection_sha256", "selection_identity",
-        "worktree_snapshot_algorithm", "worktree_root_identity",
-        "provider_terminal_status",
-    }
-    fields |= STATE_V11_FIELDS
-    fields |= STATE_V12_FIELDS
-    fields |= STATE_V13_FIELDS
-    fields |= STATE_V14_FIELDS
-    projected = LEGACY.project_for_read(LEGACY_API, value, fields)
-    if projected is not None:
-        value = projected
-    elif not isinstance(value, dict) or set(value) != fields:
+    _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
+    if not isinstance(value, dict) or set(value) != CURRENT_STATE_FIELDS:
         raise DispatchError("dispatch state fields are invalid")
     if value["kind"] != "agy-worker-dispatch-state":
         raise DispatchError("dispatch state version is invalid")
@@ -928,63 +912,58 @@ def validate_state(value: Any) -> dict[str, Any]:
         not isinstance(whole_content_sha, str) or SHA_RE.fullmatch(whole_content_sha) is None
     ):
         raise DispatchError("dispatch whole-worktree content state is invalid")
-    if value["schema_version"] in {9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA} and (
-        value["worktree_snapshot_algorithm"] != CURRENT_WORKTREE_SNAPSHOT_ALGORITHM
-    ):
+    if (value["worktree_snapshot_algorithm"] != CURRENT_WORKTREE_SNAPSHOT_ALGORITHM):
         raise DispatchError("dispatch worktree snapshot algorithm is invalid")
-    if value["schema_version"] in {10, 11, 12, 13, CURRENT_STATE_SCHEMA} and (
-        value.get("provider_terminal_status") not in {"unknown", "success", "error", "cancelled"}
-    ):
+    if (value.get("provider_terminal_status") not in {"unknown", "success", "error", "cancelled"}):
         raise DispatchError("dispatch provider terminal status is invalid")
     root_identity = value.get("worktree_root_identity")
-    if value["schema_version"] in {9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA}:
-        def valid_authority(authority: Any, *, directory: bool | None = None) -> bool:
-            if not isinstance(authority, dict) or set(authority) != {
-                "dev", "ino", "type", "mode", "uid", "gid",
-            }:
-                return False
-            if any(type(authority[key]) is not int or authority[key] < 0 for key in authority):
-                return False
-            if authority["type"] not in {stat.S_IFDIR, stat.S_IFREG}:
-                return False
-            return directory is None or (authority["type"] == stat.S_IFDIR) == directory
+    def valid_authority(authority: Any, *, directory: bool | None = None) -> bool:
+        if not isinstance(authority, dict) or set(authority) != {
+            "dev", "ino", "type", "mode", "uid", "gid",
+        }:
+            return False
+        if any(type(authority[key]) is not int or authority[key] < 0 for key in authority):
+            return False
+        if authority["type"] not in {stat.S_IFDIR, stat.S_IFREG}:
+            return False
+        return directory is None or (authority["type"] == stat.S_IFDIR) == directory
 
-        if (
-            not isinstance(root_identity, dict)
-            or set(root_identity) != {
-                "root", "git_marker", "git_dir", "common_dir", "object_format", "show_toplevel",
-            }
-            or not isinstance(root_identity["root"], dict)
-            or set(root_identity["root"]) != {"realpath", "dev", "ino"}
-            or not isinstance(root_identity["root"]["realpath"], str)
-            or not os.path.isabs(root_identity["root"]["realpath"])
-            or type(root_identity["root"]["dev"]) is not int or root_identity["root"]["dev"] < 0
-            or type(root_identity["root"]["ino"]) is not int or root_identity["root"]["ino"] < 0
-            or root_identity["show_toplevel"] != root_identity["root"]["realpath"]
-            or root_identity["object_format"] not in {"sha1", "sha256"}
-            or not isinstance(root_identity["git_marker"], dict)
-            or set(root_identity["git_marker"]) != {"kind", "authority", "content_sha256"}
-            or root_identity["git_marker"]["kind"] not in {"directory", "file"}
-            or not valid_authority(
-                root_identity["git_marker"]["authority"],
-                directory=root_identity["git_marker"]["kind"] == "directory",
-            )
-            or (
-                root_identity["git_marker"]["content_sha256"] is not None
-                if root_identity["git_marker"]["kind"] == "directory" else
-                not isinstance(root_identity["git_marker"]["content_sha256"], str)
-                or SHA_RE.fullmatch(root_identity["git_marker"]["content_sha256"]) is None
-            )
-            or any(
-                not isinstance(root_identity[key], dict)
-                or set(root_identity[key]) != {"realpath", "authority"}
-                or not isinstance(root_identity[key]["realpath"], str)
-                or not os.path.isabs(root_identity[key]["realpath"])
-                or not valid_authority(root_identity[key]["authority"], directory=True)
-                for key in ("git_dir", "common_dir")
-            )
-        ):
-            raise DispatchError("dispatch worktree root identity is invalid")
+    if (
+        not isinstance(root_identity, dict)
+        or set(root_identity) != {
+            "root", "git_marker", "git_dir", "common_dir", "object_format", "show_toplevel",
+        }
+        or not isinstance(root_identity["root"], dict)
+        or set(root_identity["root"]) != {"realpath", "dev", "ino"}
+        or not isinstance(root_identity["root"]["realpath"], str)
+        or not os.path.isabs(root_identity["root"]["realpath"])
+        or type(root_identity["root"]["dev"]) is not int or root_identity["root"]["dev"] < 0
+        or type(root_identity["root"]["ino"]) is not int or root_identity["root"]["ino"] < 0
+        or root_identity["show_toplevel"] != root_identity["root"]["realpath"]
+        or root_identity["object_format"] not in {"sha1", "sha256"}
+        or not isinstance(root_identity["git_marker"], dict)
+        or set(root_identity["git_marker"]) != {"kind", "authority", "content_sha256"}
+        or root_identity["git_marker"]["kind"] not in {"directory", "file"}
+        or not valid_authority(
+            root_identity["git_marker"]["authority"],
+            directory=root_identity["git_marker"]["kind"] == "directory",
+        )
+        or (
+            root_identity["git_marker"]["content_sha256"] is not None
+            if root_identity["git_marker"]["kind"] == "directory" else
+            not isinstance(root_identity["git_marker"]["content_sha256"], str)
+            or SHA_RE.fullmatch(root_identity["git_marker"]["content_sha256"]) is None
+        )
+        or any(
+            not isinstance(root_identity[key], dict)
+            or set(root_identity[key]) != {"realpath", "authority"}
+            or not isinstance(root_identity[key]["realpath"], str)
+            or not os.path.isabs(root_identity[key]["realpath"])
+            or not valid_authority(root_identity[key]["authority"], directory=True)
+            for key in ("git_dir", "common_dir")
+        )
+    ):
+        raise DispatchError("dispatch worktree root identity is invalid")
     if type(value["sequence"]) is not int or value["sequence"] < 1:
         raise DispatchError("dispatch sequence is invalid")
     previous = value["previous_state_sha256"]
@@ -1223,8 +1202,8 @@ def validate_state(value: Any) -> dict[str, Any]:
             reconciliation_sha256=reconciliation_manifest_sha,
             result_sha256=value["result_sha256"],
             candidate_worktree_sha256=candidate_worktree_sha,
-            selected_content_sha256=selected_content_sha,
-            transmission_sha256=transmission_sha,
+            selected_content_sha256=cast(str, selected_content_sha),
+            transmission_sha256=cast(str, transmission_sha),
         )
     ):
         raise DispatchError("dispatch repair lineage is invalid")
@@ -1298,69 +1277,55 @@ def validate_state(value: Any) -> dict[str, Any]:
     if value["status"] in TERMINAL:
         if value["finished_epoch"] is None or value["exit_code"] is None:
             raise DispatchError("terminal dispatch state is incomplete")
-    lifecycle_enabled = value["schema_version"] >= 5
-    if lifecycle_enabled:
-        if value["phase"] not in LIFECYCLE_PHASES:
-            raise DispatchError("dispatch lifecycle phase is invalid")
-        if value["assurance"] not in {"pending", "verified", "partially_verified", "rejected", "blocked"}:
-            raise DispatchError("dispatch lifecycle assurance is invalid")
-        if inaccessible_candidate and (
+    if value["phase"] not in LIFECYCLE_PHASES:
+        raise DispatchError("dispatch lifecycle phase is invalid")
+    if value["assurance"] not in {"pending", "verified", "partially_verified", "rejected", "blocked"}:
+        raise DispatchError("dispatch lifecycle assurance is invalid")
+    if inaccessible_candidate and (
+        value["phase"] != "blocked" or value["assurance"] != "blocked"
+    ):
+        raise DispatchError("dispatch inaccessible candidate lifecycle is invalid")
+    if value["continue_available"] and not (
+        value["assurance"] == "pending"
+        and value["candidate_recognized"]
+        and value["candidate_source"] != "provider_cancelled"
+        and value["cycle"] < value["max_cycles"]
+        and value["status"] in {"succeeded", "failed"}
+        and value["phase"] in {"awaiting-verification", "repair-failed"}
+    ):
+        raise DispatchError("dispatch continuation availability is invalid")
+    if value["assurance"] != "pending" and value["phase"] not in {"completed", "blocked"}:
+        raise DispatchError("terminal dispatch assurance has an invalid phase")
+    if value["status"] == "orphaned" and (
+        value["assurance"] != "pending"
+        or value["phase"] in {"completed", "blocked"}
+        or value["resume_available"] or value["continue_available"]
+    ):
+        raise DispatchError("orphaned dispatch state must remain preserve-only")
+    if value["workflow"] == "legacy":
+        active = value["status"] in {"queued", "running", "cancel-requested"}
+        if value["continue_available"]:
+            raise DispatchError("legacy lifecycle cannot continue as repair")
+        if active and (
+            value["phase"] != "dispatching"
+            or value["assurance"] != "pending"
+            or value["driver_disposition"] != "not_applicable"
+        ):
+            raise DispatchError("active legacy lifecycle is invalid")
+        if not active and inaccessible_candidate and (
             value["phase"] != "blocked" or value["assurance"] != "blocked"
         ):
-            raise DispatchError("dispatch inaccessible candidate lifecycle is invalid")
-        if value["continue_available"] and not (
-            value["assurance"] == "pending"
-            and value["candidate_recognized"]
-            and value["candidate_source"] != "provider_cancelled"
-            and value["cycle"] < value["max_cycles"]
-            and value["status"] in {"succeeded", "failed"}
-            and value["phase"] in {"awaiting-verification", "repair-failed"}
+            raise DispatchError("blocked legacy candidate lifecycle is invalid")
+        if not active and value["candidate_recognized"] and not inaccessible_candidate and (
+            value["phase"] != "awaiting-verification"
+            or value["assurance"] != "pending"
+            or value["driver_disposition"] != "unreviewed"
         ):
-            raise DispatchError("dispatch continuation availability is invalid")
-        if value["assurance"] != "pending" and value["phase"] not in {"completed", "blocked"}:
-            raise DispatchError("terminal dispatch assurance has an invalid phase")
-        if value["status"] == "orphaned" and (
-            value["assurance"] != "pending"
-            or value["phase"] in {"completed", "blocked"}
-            or value["resume_available"] or value["continue_available"]
+            raise DispatchError("legacy candidate lifecycle is invalid")
+        if not active and not value["candidate_recognized"] and (
+            value["phase"] != "attempt-failed" or value["assurance"] != "pending"
         ):
-            raise DispatchError("orphaned dispatch state must remain preserve-only")
-        if value["workflow"] == "legacy":
-            active = value["status"] in {"queued", "running", "cancel-requested"}
-            if value["continue_available"]:
-                raise DispatchError("legacy lifecycle cannot continue as repair")
-            if active and (
-                value["phase"] != "dispatching"
-                or value["assurance"] != "pending"
-                or value["driver_disposition"] != "not_applicable"
-            ):
-                raise DispatchError("active legacy lifecycle is invalid")
-            if not active and inaccessible_candidate and (
-                value["phase"] != "blocked" or value["assurance"] != "blocked"
-            ):
-                raise DispatchError("blocked legacy candidate lifecycle is invalid")
-            if not active and value["candidate_recognized"] and not inaccessible_candidate and (
-                value["phase"] != "awaiting-verification"
-                or value["assurance"] != "pending"
-                or value["driver_disposition"] != "unreviewed"
-            ):
-                raise DispatchError("legacy candidate lifecycle is invalid")
-            if not active and not value["candidate_recognized"] and (
-                value["phase"] != "attempt-failed" or value["assurance"] != "pending"
-            ):
-                raise DispatchError("failed legacy lifecycle is invalid")
-    elif value["schema_version"] >= 5 and (value["phase"] is not None or value["assurance"] is not None or value["continue_available"]):
-        raise DispatchError("legacy state has lifecycle status")
-    elif value["schema_version"] < 5 and value["workflow"] == "project":
-        if value["phase"] not in {
-            "dispatching", "awaiting-verification", "repairing", "completed",
-            "blocked", "provider-failed", "repair-failed",
-        } or value["assurance"] not in {"pending", "verified", "partially_verified", "blocked"}:
-            raise DispatchError("legacy project lifecycle state is invalid")
-    elif value["schema_version"] < 5 and (
-        value["phase"] is not None or value["assurance"] is not None or value["continue_available"]
-    ):
-        raise DispatchError("legacy non-project state has lifecycle status")
+            raise DispatchError("failed legacy lifecycle is invalid")
     summary = value["check_summary"]
     if summary is not None and (
         not isinstance(summary, str) or not (1 <= len(summary) <= MAX_CHECK_SUMMARY)
@@ -1397,22 +1362,19 @@ def initial_state(
     stage_identity: tuple[int, int, int, int, int] | None,
     project_boundary: dict[str, Any] | None = None,
     schema_bindings: dict[str, Any] | None = None,
-    state_schema: int = CURRENT_STATE_SCHEMA,
     explain_worktree_rejection: bool = False,
     repair_authority_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if state_schema not in {6, 7, 8, 9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA}:
-        raise DispatchError("dispatch state schema is invalid")
     now = time.time()
     workflow = command.get("workflow", "legacy")
     max_cycles = command.get("max_cycles", 1)
     try:
         worktree_baseline = WORKTREE._worktree_snapshot(
-            command["workdir"], legacy=state_schema == 6, explain_unsupported=explain_worktree_rejection)
+            command["workdir"], explain_unsupported=explain_worktree_rejection)
     except ResolveUndoPresentError:
         worktree_baseline = None
     state = {
-        "schema_version": state_schema,
+        "schema_version": CURRENT_STATE_SCHEMA,
         "kind": "agy-worker-dispatch-state",
         "sequence": 1,
         "previous_state_sha256": None,
@@ -1495,200 +1457,119 @@ def initial_state(
         "selection_sha256": command.get("selection_sha256"),
         "selection_identity": command.get("selection_identity"),
     }
-    if state_schema >= 8:
-        state["worktree_snapshot_algorithm"] = CURRENT_WORKTREE_SNAPSHOT_ALGORITHM
-    if state_schema >= 9:
-        root_identity = _dispatch_root_identity(command["workdir"])
-        if root_identity is None:
-            raise DispatchError("dispatch worktree root cannot be bound")
-        state["worktree_root_identity"] = root_identity
-    if state_schema >= 10:
-        state["provider_terminal_status"] = "unknown"
-    if state_schema >= 12:
+    state["worktree_snapshot_algorithm"] = CURRENT_WORKTREE_SNAPSHOT_ALGORITHM
+    root_identity = _dispatch_root_identity(command["workdir"])
+    if root_identity is None:
+        raise DispatchError("dispatch worktree root cannot be bound")
+    state["worktree_root_identity"] = root_identity
+    state["provider_terminal_status"] = "unknown"
+    state.update({
+        "allow_scoped_repair": command.get("allow_scoped_repair", False),
+        "repair_authority_sha256": command.get("repair_authority_sha256"),
+        "repair_lineage_sha256": None,
+        "repair_parent_result_sha256": None,
+        "repair_parent_worktree_sha256": None,
+        "repair_lineage_attempt": None,
+        "allow_self_verification": command.get("allow_self_verification", False),
+        "self_verification_elapsed_seconds": 0.0,
+        "self_verification_run": 0,
+        "self_verification_started_epoch": None,
+        "self_verification_return_phase": None,
+    })
+    state["provider_isolation"] = _provider_isolation_for_command(command)
+    if command.get("provider_scope_path") is not None:
+        _scope_path, raw_scope, scope_info = _read_provider_scope_file(
+            command["provider_scope_path"], MAX_COMMAND_BYTES,
+        )
+        if digest(raw_scope) != command["provider_scope_sha256"]:
+            raise DispatchError("provider scope file changed since dispatch")
+        if list(_identity(scope_info)) != command["provider_scope_identity"]:
+            raise DispatchError("provider scope file identity changed since dispatch")
+        try:
+            scope = WORKTREE._parse_provider_scope(raw_scope)
+        except ValueError as exc:
+            raise DispatchError(f"invalid provider scope: {exc}") from exc
+        readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
+        manifest_sha = WORKTREE._manifest_digest(readable_manifest)
+        WORKTREE._validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
+        selected_manifest = WORKTREE._build_selected_content_manifest(command["workdir"], scope)
+        selected_sha = WORKTREE._selected_content_digest(selected_manifest)
+        policy_sha = WORKTREE._canonical_digest(scope)
+        transmission_sha = _bound_transmission_sha256(
+            command, policy_sha, manifest_sha, selected_sha,
+        )
+        _require_scoped_transmission_authority(
+            command,
+            state if repair_authority_state is None else repair_authority_state,
+            selected_content_sha256=selected_sha,
+            transmission_sha256=transmission_sha,
+            provider_origin=origin,
+        )
         state.update({
-            "allow_scoped_repair": command.get("allow_scoped_repair", False),
-            "repair_authority_sha256": command.get("repair_authority_sha256"),
-            "repair_lineage_sha256": None,
-            "repair_parent_result_sha256": None,
-            "repair_parent_worktree_sha256": None,
-            "repair_lineage_attempt": None,
-            "allow_self_verification": command.get("allow_self_verification", False),
-            "self_verification_elapsed_seconds": 0.0,
-            "self_verification_run": 0,
-            "self_verification_started_epoch": None,
-            "self_verification_return_phase": None,
+            "provider_scope_path": command["provider_scope_path"],
+            "provider_scope_sha256": command["provider_scope_sha256"],
+            "provider_scope_identity": command["provider_scope_identity"],
+            "approved_transmission_sha256": command["approved_transmission_sha256"],
+            "transmission_sha256": transmission_sha,
+            "selected_content_sha256": selected_sha,
+            "selected_file_count": sum(1 for e in selected_manifest if e["kind"] == "file"),
+            "selected_tree_count": sum(1 for e in selected_manifest if e["kind"] == "directory"),
+            "provider_stage_path": None,
+            "provider_stage_identity": None,
+            "provider_stage_manifest_sha256": None,
+            "reconciliation_manifest_sha256": None,
         })
-    if state_schema >= 13:
-        state["provider_isolation"] = _provider_isolation_for_command(command)
-    if state_schema == CURRENT_STATE_SCHEMA:
-        if command.get("provider_scope_path") is not None:
-            _scope_path, raw_scope, scope_info = _read_provider_scope_file(
-                command["provider_scope_path"], MAX_COMMAND_BYTES,
-            )
-            if digest(raw_scope) != command["provider_scope_sha256"]:
-                raise DispatchError("provider scope file changed since dispatch")
-            if list(_identity(scope_info)) != command["provider_scope_identity"]:
-                raise DispatchError("provider scope file identity changed since dispatch")
-            try:
-                scope = WORKTREE._parse_provider_scope(raw_scope)
-            except ValueError as exc:
-                raise DispatchError(f"invalid provider scope: {exc}") from exc
+    else:
+        approved_whole_sha = command.get("approved_whole_worktree_sha256")
+        if approved_whole_sha is not None and origin == "initial":
+            content = WORKTREE.whole_worktree_content_manifest(command["workdir"])
+            content_sha = content["manifest_sha256"]
             readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
-            manifest_sha = WORKTREE._manifest_digest(readable_manifest)
-            WORKTREE._validate_scope_against_worktree(scope, command["workdir"], readable_manifest)
-            selected_manifest = WORKTREE._build_selected_content_manifest(command["workdir"], scope)
-            selected_sha = WORKTREE._selected_content_digest(selected_manifest)
-            policy_sha = WORKTREE._canonical_digest(scope)
-            transmission_sha = _bound_transmission_sha256(
-                command, policy_sha, manifest_sha, selected_sha,
+            expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
+                _provider_isolation_for_command(command), command["native_grant_profile"],
+                whole_worktree_content_sha256=content_sha,
+                readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
             )
-            _require_scoped_transmission_authority(
-                command,
-                state if repair_authority_state is None else repair_authority_state,
-                selected_content_sha256=selected_sha,
-                transmission_sha256=transmission_sha,
-                provider_origin=origin,
-            )
-            state.update({
-                "provider_scope_path": command["provider_scope_path"],
-                "provider_scope_sha256": command["provider_scope_sha256"],
-                "provider_scope_identity": command["provider_scope_identity"],
-                "approved_transmission_sha256": command["approved_transmission_sha256"],
-                "transmission_sha256": transmission_sha,
-                "selected_content_sha256": selected_sha,
-                "selected_file_count": sum(1 for e in selected_manifest if e["kind"] == "file"),
-                "selected_tree_count": sum(1 for e in selected_manifest if e["kind"] == "directory"),
-                "provider_stage_path": None,
-                "provider_stage_identity": None,
-                "provider_stage_manifest_sha256": None,
-                "reconciliation_manifest_sha256": None,
-            })
-        else:
-            approved_whole_sha = command.get("approved_whole_worktree_sha256")
-            if approved_whole_sha is not None and origin == "initial":
-                if command["schema_version"] == 11:
-                    content = WORKTREE.whole_worktree_content_manifest(command["workdir"])
-                    content_sha = content["manifest_sha256"]
-                    readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
-                    expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
-                        _provider_isolation_for_command(command), command["native_grant_profile"],
-                        whole_worktree_content_sha256=content_sha,
-                        readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
-                    )
-                    if content_sha != command["whole_worktree_content_sha256"]:
-                        raise DispatchError("whole-worktree content binding changed")
-                else:
-                    readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
-                    expected_approval = WORKTREE._compute_provider_launch_approval_sha256(
-                        _provider_isolation_for_command(command), WORKTREE._manifest_digest(readable_manifest),
-                    ) if command["schema_version"] == 10 else WORKTREE._manifest_digest(readable_manifest)
-                if expected_approval != approved_whole_sha:
-                    raise DispatchError(
-                        "approved whole-worktree manifest does not match current worktree"
-                    )
-            state.update({
-                "provider_scope_path": None,
-                "provider_scope_sha256": None,
-                "provider_scope_identity": None,
-                "approved_transmission_sha256": None,
-                "transmission_sha256": None,
-                "selected_content_sha256": None,
-                "selected_file_count": None,
-                "selected_tree_count": None,
-                "provider_stage_path": None,
-                "provider_stage_identity": None,
-                "provider_stage_manifest_sha256": None,
-                "reconciliation_manifest_sha256": None,
-            })
-    if state_schema >= 14:
-        state["whole_worktree_content_sha256"] = command.get("whole_worktree_content_sha256")
-        state["native_grant_profile"] = command.get("native_grant_profile", "baseline")
+            if content_sha != command["whole_worktree_content_sha256"]:
+                raise DispatchError("whole-worktree content binding changed")
+            if expected_approval != approved_whole_sha:
+                raise DispatchError(
+                    "approved whole-worktree manifest does not match current worktree"
+                )
+        state.update({
+            "provider_scope_path": None,
+            "provider_scope_sha256": None,
+            "provider_scope_identity": None,
+            "approved_transmission_sha256": None,
+            "transmission_sha256": None,
+            "selected_content_sha256": None,
+            "selected_file_count": None,
+            "selected_tree_count": None,
+            "provider_stage_path": None,
+            "provider_stage_identity": None,
+            "provider_stage_manifest_sha256": None,
+            "reconciliation_manifest_sha256": None,
+        })
+    state["whole_worktree_content_sha256"] = command.get("whole_worktree_content_sha256")
+    state["native_grant_profile"] = command.get("native_grant_profile", "baseline")
     return state
 
 
-def _upgrade_legacy_state(
-    state: dict[str, Any], command: dict[str, Any], *,
-    migration_facts: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Delegate retired state upgrades to the compatibility adapter."""
-    return LEGACY.upgrade(LEGACY_API, state, command, migration_facts=migration_facts)
-
-
-def _legacy_migration_facts(
-    job: Path, state: dict[str, Any], state_sha: str,
-) -> dict[str, Any]:
-    """Delegate retired V3/V4 migration proof to the compatibility adapter."""
-    return LEGACY.migration_facts(LEGACY_API, job, state, state_sha)
-
-
-def _legacy_migration_sha(job: Path | None, state: dict[str, Any], state_sha: str) -> str | None:
-    """Delegate retired V3/V4 migration-digest calculation."""
-    return LEGACY.migration_sha(LEGACY_API, job, state, state_sha)
-
-
-def _approved_legacy_migration(
-    job: Path, state: dict[str, Any], raw: bytes, approve_migration_sha: str | None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Delegate approved V3/V4 recovery to the compatibility adapter."""
-    return LEGACY.approved_migration(
-        LEGACY_API, job, state, raw, approve_migration_sha,
-    )
-
-
 def _transition_locked(
-    job: Path, state: dict[str, Any], prior_raw: bytes, updates: dict[str, Any], *,
-    legacy_control_only: bool = False,
+    job: Path, state: dict[str, Any], prior_raw: bytes, updates: dict[str, Any],
 ) -> tuple[dict[str, Any], bytes, str]:
     current, _info = read_regular(job / STATE_NAME, MAX_STATE_BYTES, "dispatch state")
     if current != prior_raw:
         raise DispatchError("dispatch state changed before transition")
     value = dict(state)
     value.update(updates)
-    if value["schema_version"] < CURRENT_STATE_SCHEMA and not legacy_control_only:
-        command = _load_bound_command(job, state, stage_readonly=False)
-        value = _upgrade_legacy_state(value, command)
-    elif legacy_control_only:
-        # ``validate_state`` projects additive facts while reading old bytes.
-        # A cheap active control must write the old generation's exact field
-        # shape back, not accidentally persist a partial migration.
-        omitted = set(STATE_V12_FIELDS)
-        if value["schema_version"] < 14:
-            omitted |= set(STATE_V14_FIELDS)
-        if value["schema_version"] < 13:
-            omitted |= set(STATE_V13_FIELDS)
-        if value["schema_version"] < 11:
-            omitted |= set(STATE_V11_FIELDS)
-        if value["schema_version"] < 10:
-            omitted |= set(STATE_V10_FIELDS)
-        if value["schema_version"] < 9:
-            omitted |= set(STATE_V9_FIELDS)
-        if value["schema_version"] < 8:
-            omitted |= set(STATE_V8_FIELDS)
-        if value["schema_version"] < 6:
-            omitted |= set(STATE_V6_FIELDS)
-        if value["schema_version"] < 5:
-            omitted |= set(STATE_V5_FIELDS)
-        if value["schema_version"] == 1:
-            omitted |= set(STATE_PROJECT_FIELDS) | {
-                "provider_retry_after_seconds", "provider_retry_observed_epoch",
-            }
-        elif value["schema_version"] == 3:
-            omitted |= {"provider_retry_after_seconds", "provider_retry_observed_epoch"}
-        for key in omitted:
-            value.pop(key, None)
-    # New V7+ writes retain these only for private legacy read compatibility.
-    # A control-only legacy transition preserves its original field shape.
-    if not legacy_control_only:
-        value["next_action"] = "none"
-        value["next_action_command"] = None
+    value["next_action"] = "none"
+    value["next_action_command"] = None
     value["sequence"] = state["sequence"] + 1
     value["previous_state_sha256"] = digest(prior_raw)
     value["updated_epoch"] = time.time()
     validate_state(value)
     raw, sha = write_atomic(job, STATE_NAME, value)
-    # Return the same additive read projection that ordinary callers receive;
-    # control-only V1/V3/V4 writes intentionally used their historical storage
-    # shape above and must still be safe for the public status formatter.
     return validate_state(value), raw, sha
 
 
@@ -1786,15 +1667,6 @@ def _extend_is_eligible(value: dict[str, Any], now: float) -> bool:
     )
 
 
-def _legacy_prior_result_is_unknown(value: dict[str, Any]) -> bool:
-    """Recognize only the historical V3/V4 last-success pointer as unknown."""
-    return bool(
-        value["schema_version"] in {3, 4}
-        and value["result_path"] is None
-        and all(value[key] is not None for key in (
-            "last_success_path", "last_success_sha256", "last_success_identity",
-        ))
-    )
 
 
 def _resume_is_eligible(value: dict[str, Any], now: float) -> bool:
@@ -1851,30 +1723,22 @@ def _finalize_is_eligible(value: dict[str, Any]) -> bool:
         value["candidate_recognized"] and value["result_available"]
         and value["result_path"] and value["workflow"] != "legacy"
         and value["driver_disposition"] == "unreviewed"
-        and (value["assurance"] == "pending" or value["schema_version"] in {3, 4})
+        and (value["assurance"] == "pending")
         and _controller_phase(value) in {"awaiting-verification", "repair-failed"}
     )
 
 
 def _verification_copy_is_eligible(value: dict[str, Any]) -> bool:
-    """Return the exact state predicate for the non-migrating copy helper.
-
-    A V3/V4 finalization can first obtain an explicit migration capability, but
-    ``verification-copy`` deliberately accepts no migration approval.  Keep it
-    current-state-only so status never advertises a command the helper rejects.
-    """
+    """Return the exact state predicate for the current candidate copy helper."""
     return bool(
-        value["schema_version"] >= 9
-        and _finalize_is_eligible(value)
+        _finalize_is_eligible(value)
     )
 
 
 def _controller_phase(value: dict[str, Any]) -> str | None:
-    """Project controller-owned mechanics without trusting legacy raw phase."""
+    """Project controller-owned mechanics from the current bound state."""
     if value.get("phase") == "self-verifying":
         return "self-verifying"
-    if value["schema_version"] in {3, 4} and _legacy_prior_result_is_unknown(value):
-        return None
     if value["driver_disposition"] in {"verified", "partially_verified", "rejected"}:
         return "completed"
     if value["driver_disposition"] == "blocked" or (
@@ -1898,6 +1762,8 @@ def _candidate_actions_are_bound(job: Path | None, value: dict[str, Any]) -> boo
         return False
     try:
         _bound_current_candidate(job, value)
+    except UnsupportedSchemaError:
+        raise
     except (OSError, DispatchError):
         return False
     return True
@@ -1918,12 +1784,16 @@ def _post_candidate_selection_binding_drift(job: Path | None, value: dict[str, A
     try:
         bound_job = canonical_job(Path(job).resolve(strict=True))
         command = _load_bound_command(bound_job, value, stage_readonly=False)
+    except UnsupportedSchemaError:
+        raise
     except (OSError, DispatchError):
         return False
     if command.get("selection_path") is None:
         return False
     try:
         _load_bound_selection(command, value)
+    except UnsupportedSchemaError:
+        raise
     except (OSError, DispatchError):
         return True
     return False
@@ -1944,6 +1814,8 @@ def _lifecycle_mutation_bindings(
     try:
         bound_job = canonical_job(Path(job).resolve(strict=True))
         command = _load_bound_command(bound_job, value, stage_readonly=False)
+    except UnsupportedSchemaError:
+        raise
     except (OSError, DispatchError):
         return False, False
     try:
@@ -1954,20 +1826,21 @@ def _lifecycle_mutation_bindings(
                 _load_bound_selection(command, value)
             )
         )
+    except UnsupportedSchemaError:
+        raise
     except (OSError, DispatchError):
         # A changed current scoped candidate is valid driver evidence, but
         # transmitting those new bytes again requires a fresh exact approval
         # that the continuation interface cannot collect. Keep result/finalize
-        # available while declining to advertise provider continuation. Legacy
-        # mutation authority retains its original strict migration binder.
+        # available while declining to advertise provider continuation.
         if not (
-            value["schema_version"] >= 9
-            and value["candidate_recognized"]
-            and value["status"] in TERMINAL
+            value['candidate_recognized'] and value['status'] in TERMINAL
         ):
             return False, False
         try:
             _bound_current_candidate(bound_job, value)
+        except UnsupportedSchemaError:
+            raise
         except (OSError, DispatchError):
             return False, False
         return True, False
@@ -1991,23 +1864,13 @@ def _selection_launch_is_authorized(record: dict[str, Any] | None) -> bool:
     )
 
 
-def _legacy_result_action_is_bound(job: Path | None, value: dict[str, Any]) -> bool:
-    """Probe an unknown-provenance legacy result with its command guard."""
-    if job is None:
-        return False
-    try:
-        _bound_legacy_unknown_result(job, value)
-    except (OSError, DispatchError):
-        return False
-    return True
 
 
 def _available_actions(
     value: dict[str, Any], sha: str, now: float, *, job: Path | None = None,
-    candidate_bound: bool | None = None, legacy_result_bound: bool | None = None,
+    candidate_bound: bool | None = None,
     lifecycle_mutation_bound: bool | None = None,
     provider_launch_bound: bool | None = None,
-    legacy_migration_sha: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return only state/time-applicable mechanical controller operations.
 
@@ -2094,24 +1957,12 @@ def _available_actions(
                 ),
                 "requires": ["new owner-private destination outside the candidate"],
             })
-    elif (
-        not active and value["status"] in TERMINAL
-        and _legacy_prior_result_is_unknown(value) and legacy_result_bound
-    ):
-        actions.append({
-            "action": "result",
-            "command": f"{PUBLIC_LAUNCHER} result --job-id {job_id} --format json",
-        })
     # A public recovery operation is useful only when the same frozen command,
     # schemas, worktree root/boundary, and selector the command will use are
     # still present.  ``None`` keeps pure in-memory compatibility callers from
     # claiming a failed local probe; CLI status always supplies a concrete bool.
-    # V1 remains result-only.  V3/V4 may advertise a lifecycle action only
-    # with a fresh public migration digest which the command recomputes under
-    # its transition lock.  V5-V8 retain their existing migration proof.
     lifecycle_mutation_available = bool(
-        (value["schema_version"] >= 5 and lifecycle_mutation_bound is not False)
-        or (value["schema_version"] in {3, 4} and legacy_migration_sha is not None)
+        lifecycle_mutation_bound is not False
     )
     provider_mutation_available = bool(
         lifecycle_mutation_available and provider_launch_bound is not False
@@ -2121,7 +1972,6 @@ def _available_actions(
             "action": "resume",
             "command": (
                 f"{PUBLIC_LAUNCHER} resume --job-id {job_id} --approve-state-sha {sha}"
-                + (f" --approve-migration-sha {legacy_migration_sha}" if value["schema_version"] in {3, 4} else "")
                 + " --format text"
             ),
         })
@@ -2133,7 +1983,6 @@ def _available_actions(
             "action": "restart",
             "command": (
                 f"{PUBLIC_LAUNCHER} restart --job-id {job_id} --approve-state-sha {sha}"
-                + (f" --approve-migration-sha {legacy_migration_sha}" if value["schema_version"] in {3, 4} else "")
                 + " --format text"
             ),
         })
@@ -2146,13 +1995,14 @@ def _available_actions(
             try:
                 _bound_self_verification_feedback(job, value)
                 stored_feedback = True
+            except UnsupportedSchemaError:
+                raise
             except (DispatchError, OSError):
                 pass
         actions.append({
             "action": "continue",
             "command": (
                 f"{PUBLIC_LAUNCHER} continue --job-id {job_id} --approve-state-sha {sha} "
-                + (f"--approve-migration-sha {legacy_migration_sha} " if value["schema_version"] in {3, 4} else "")
                 + ("--use-self-verification" if stored_feedback else "< DRIVER_VERIFICATION_JSON")
             ),
             "requires": [] if stored_feedback else ["verification JSON"],
@@ -2165,7 +2015,6 @@ def _available_actions(
             "action": "finalize",
             "command": (
                 f"{PUBLIC_LAUNCHER} finalize --job-id {job_id} --approve-state-sha {sha} "
-                + (f"--approve-migration-sha {legacy_migration_sha} " if value["schema_version"] in {3, 4} else "")
                 + "--assurance ASSURANCE < DRIVER_VERIFICATION_JSON"
             ),
             "requires": ["--assurance", "verification JSON"],
@@ -2186,21 +2035,11 @@ def _public_next_action(actions: list[dict[str, Any]]) -> tuple[str, str | None]
 
 
 def _provider_execution_from_bound_command(command: dict[str, Any]) -> dict[str, Any]:
-    """Describe the bound launch mechanics without reclassifying old whole jobs."""
+    """Describe the current bound launch mechanics."""
 
     provider_isolation = _provider_isolation_for_command(command)
-    legacy = command["schema_version"] < 10
     scoped = command.get("provider_scope_path") is not None
     sandboxed = "--sandbox" in command["argv"]
-    if legacy:
-        if not sandboxed:
-            raise DispatchError("legacy dispatch sandbox binding is unavailable")
-        return {
-            "legacy": True,
-            "scope": "provider-scope" if scoped else "whole-worktree",
-            "agy_sandbox": True,
-            "native_containment": scoped and command["schema_version"] == 9,
-        }
     return {
         "legacy": False,
         "scope": "provider-scope" if scoped else "whole-worktree",
@@ -2217,6 +2056,9 @@ def bound_provider_execution(job: Path, state: dict[str, Any]) -> dict[str, Any]
 
 
 def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -> dict[str, Any]:
+    _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
+    if job is not None:
+        _check_existing_command_schema(job)
     now = time.time()
     elapsed = _live_elapsed(value, now)
     last_age = None
@@ -2232,10 +2074,8 @@ def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -
             )),
         )
     candidate_bound: bool | None = None
-    legacy_result_bound: bool | None = None
     lifecycle_mutation_bound: bool | None = None
     provider_launch_bound: bool | None = None
-    legacy_migration_sha: str | None = None
     terminal_candidate = bool(
         not _is_active(value) and value.get("phase") != "self-verifying" and value["status"] in TERMINAL
         and value["candidate_recognized"] and value["result_available"]
@@ -2246,37 +2086,7 @@ def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -
         # the clocks so an extension that expired during that scan is omitted.
         now = time.time()
         elapsed = _live_elapsed(value, now)
-    elif (
-        job is not None and not _is_active(value) and value["status"] in TERMINAL
-        and _legacy_prior_result_is_unknown(value)
-    ):
-        legacy_result_bound = _legacy_result_action_is_bound(job, value)
-        # Legacy reconciliation is also a bounded terminal scan.  Do not let
-        # its duration publish stale elapsed-time action eligibility.
-        now = time.time()
-        elapsed = _live_elapsed(value, now)
-    if (
-        job is not None and not _is_active(value) and value["schema_version"] in {3, 4}
-        and (
-            _resume_is_eligible(value, now)
-            or _restart_guard_accepts(value, elapsed_seconds=_live_elapsed(value, now))
-            or _continue_is_eligible(value, now)
-            or _finalize_is_eligible(value)
-        )
-    ):
-        try:
-            migration_facts = _legacy_migration_facts(job, value, sha)
-            legacy_migration_sha = digest(canonical(migration_facts))
-            lifecycle_mutation_bound = True
-            provider_launch_bound = bool(migration_facts["provider_launch_authorized"])
-            if terminal_candidate:
-                candidate_bound = True
-        except (OSError, DispatchError):
-            # A stale root, artifact, schema, selector, or boundary may not be
-            # advertised as a migration route.  Terminal result readback keeps
-            # its own stricter, non-mutating binder.
-            legacy_migration_sha = None
-    elif job is not None and (
+    if job is not None and (
         _resume_is_eligible(value, now)
         or _restart_guard_accepts(value, elapsed_seconds=_live_elapsed(value, now))
         or _continue_is_eligible(value, now)
@@ -2287,10 +2097,8 @@ def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -
         )
     available_actions = _available_actions(
         value, sha, now, job=job, candidate_bound=candidate_bound,
-        legacy_result_bound=legacy_result_bound,
         lifecycle_mutation_bound=lifecycle_mutation_bound,
         provider_launch_bound=provider_launch_bound,
-        legacy_migration_sha=legacy_migration_sha,
     )
     action_names = {item["action"] for item in available_actions}
     public_result_available = bool(
@@ -2319,11 +2127,11 @@ def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -
     if job is not None:
         try:
             provider_execution = bound_provider_execution(job, value)
+        except UnsupportedSchemaError:
+            raise
         except (OSError, DispatchError):
             provider_execution = None
     public_provider_isolation = (
-        None
-        if job is None and value["schema_version"] < 13 else
         value["provider_isolation"]
         if job is None else
         None
@@ -2375,9 +2183,9 @@ def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -
         "controller_phase": _controller_phase(value),
         "phase": value["phase"],
         "legacy_result_provenance": (
-            "unknown_bound_legacy" if _legacy_prior_result_is_unknown(value) else "none"
+            "none"
         ),
-        "migration_binding_sha256": legacy_migration_sha,
+        "migration_binding_sha256": None,
         "reason": value["reason"],
         "retry_after_seconds": retry_remaining,
         "remote_cancel_unverified": value["remote_cancel_unverified"],
@@ -2413,10 +2221,6 @@ def print_text_status(value: dict[str, Any], sha: str, *, job: Path | None = Non
         item.get("command") for item in actions
         if item["action"] == "restart" and isinstance(item.get("command"), str)
     ), None)
-    historical_result = bool(
-        result_command is not None
-        and public["legacy_result_provenance"] == "unknown_bound_legacy"
-    )
     finalized_result = bool(
         result_command is not None
         and value["driver_disposition"] in {
@@ -2485,8 +2289,6 @@ def print_text_status(value: dict[str, Any], sha: str, *, job: Path | None = Non
                 "Next safe action: create a fresh job using the unchanged caller selection after reviewing the current sanitized agy interface evidence. No same-job action is available."
             )
             if selection_preflight_recovery_blocked else
-            f"Next safe action: retrieve historical result evidence only with {result_command}; do not use it for Verification v2, continue, or finalize."
-            if historical_result else
             (
                 f"Next safe action: optional finalized result JSON readback with {result_command}; driver disposition is already recorded; do not construct Verification v2, continue, or finalize. Available fresh restart command: {restart_command}."
                 if restart_command is not None else
@@ -2550,7 +2352,7 @@ def _attempt_paths(job: Path, attempt: int) -> tuple[Path, Path, Path]:
 
 def _bind_workspace_prompt(
     argv: list[str], workspace_root: Path, *, scoped: bool, boost: bool,
-    provider_isolation: str, legacy_sandbox: bool,
+    provider_isolation: str,
 ) -> None:
     """Bind every worker's file tools to the exact provider launch cwd."""
     if argv.count("--print") != 1:
@@ -2568,14 +2370,10 @@ def _bind_workspace_prompt(
     )
     profile = "BOOST " if boost else ""
     authority_note = (
-        "This legacy launch retains AGY sandbox behavior without native scoped containment."
-        if legacy_sandbox else
         "This session has normal same-user filesystem and network authority; this prompt "
         "does not confine host access. Work only beneath the stated root."
         if provider_isolation == "session" else
         "Native scoped containment limits this provider to the stated root."
-        if scoped else
-        "This legacy whole-worktree launch retains AGY sandbox behavior without native scoped containment."
     )
     prefix = (
         f"{profile}FILE-TOOL ROOT — non-negotiable:\n"
@@ -2953,20 +2751,14 @@ def _bound_transmission_sha256(
     command: dict[str, Any], policy_sha256: str,
     readable_manifest_sha256: str, selected_content_sha256: str,
 ) -> str:
-    """Keep legacy scoped approval bytes while binding V10 mode authority."""
+    """Bind current mode and content authority without changing approval bytes."""
 
     base = WORKTREE._compute_transmission_sha256(
         policy_sha256, readable_manifest_sha256, selected_content_sha256,
     )
-    if command["schema_version"] < 10:
-        return base
-    if command["schema_version"] == 11:
-        return WORKTREE._compute_v11_launch_approval_sha256(
-            _provider_isolation_for_command(command), command["native_grant_profile"],
-            transmission_sha256=base,
-        )
-    return WORKTREE._compute_provider_launch_approval_sha256(
-        _provider_isolation_for_command(command), readable_manifest_sha256, base,
+    return WORKTREE._compute_v11_launch_approval_sha256(
+        _provider_isolation_for_command(command), command["native_grant_profile"],
+        transmission_sha256=base,
     )
 
 
@@ -3037,24 +2829,12 @@ def _dispatch_root_identity(workdir: str) -> dict[str, Any] | None:
 
 
 def _state_worktree_snapshot(state: dict[str, Any], workdir: str) -> dict[str, Any] | None:
-    """Use a persisted algorithm identity; historical snapshots stay exact."""
-    algorithm: str | None
-    if state.get("schema_version") in {5, 6}:
-        algorithm = WORKTREE_SNAPSHOT_LEGACY_V6
-    elif state.get("schema_version") == 7:
-        # V7 predates the explicit field but its semantic digest is frozen.
-        algorithm = WORKTREE_SNAPSHOT_SEMANTIC_V1
-    elif state.get("schema_version") is None:
-        # This private helper also accepts a baseline-only test/launch probe;
-        # it is never a validated persisted state.
-        algorithm = WORKTREE_SNAPSHOT_SEMANTIC_V1
-    else:
-        algorithm = state.get("worktree_snapshot_algorithm")
-    if algorithm == WORKTREE_SNAPSHOT_LEGACY_V6:
-        return WORKTREE._worktree_snapshot(workdir, legacy=True)
-    if algorithm == WORKTREE_SNAPSHOT_SEMANTIC_V1:
-        return WORKTREE._worktree_snapshot(workdir)
-    raise DispatchError("dispatch worktree snapshot algorithm is unavailable")
+    """Use the one persisted semantic algorithm without changing its digest."""
+    if state.get("schema_version") is not None:
+        _require_supported_schema(state, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
+        if state.get("worktree_snapshot_algorithm") != CURRENT_WORKTREE_SNAPSHOT_ALGORITHM:
+            raise DispatchError("dispatch worktree snapshot algorithm is unavailable")
+    return WORKTREE._worktree_snapshot(workdir)
 
 
 def _reconciliation_from_snapshot(
@@ -3165,10 +2945,8 @@ def _bound_candidate_worktree(state: dict[str, Any], command: dict[str, Any]) ->
     # same V9 extractor used by lifecycle recovery is repeated here so a
     # direct candidate-binding caller cannot turn a substituted Git boundary
     # into a content-only comparison.
-    if state.get("schema_version") in {9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA} and (
-        WORKTREE._git_boundary_identity(command["workdir"])
-        != state.get("worktree_root_identity")
-    ):
+    if (WORKTREE._git_boundary_identity(command["workdir"])
+        != state.get("worktree_root_identity")):
         raise DispatchError("dispatch worktree root binding changed")
     expected_sha = state["candidate_worktree_sha256"]
     expected_entries = state["candidate_worktree_entries"]
@@ -3205,10 +2983,6 @@ def _bound_current_candidate(job: Path, state: dict[str, Any]) -> tuple[dict[str
         bound_job = canonical_job(Path(job).resolve(strict=True))
     except OSError as exc:
         raise DispatchError("job directory is unavailable") from exc
-    # Old snapshots are readable evidence only.  Do not synthesize a V9 root
-    # identity during a result/status read: that would make a replacement root
-    # look approved before an explicit, provable transition.
-    legacy_read = state["schema_version"] < 9
     result_path = Path(state["result_path"])
     try:
         result_parent = result_path.parent.resolve(strict=True)
@@ -3218,7 +2992,7 @@ def _bound_current_candidate(job: Path, state: dict[str, Any]) -> tuple[dict[str
         raise DispatchError("dispatch result path is outside this job")
     command = _load_bound_command(bound_job, state, stage_readonly=False)
     command, state = _bound_lifecycle_inputs(
-        bound_job, state, command, read_legacy=legacy_read,
+        bound_job, state, command,
         bind_terminal_candidate=True,
     )
     schema_paths = _schema_paths(command)
@@ -3244,7 +3018,7 @@ def _bound_current_candidate(job: Path, state: dict[str, Any]) -> tuple[dict[str
     # The validator opened both schema pathnames; bind them and the project
     # marker again before accepting its answer.
     _bound_lifecycle_inputs(
-        bound_job, state, command, read_legacy=legacy_read,
+        bound_job, state, command,
         bind_terminal_candidate=True,
     )
     # Project jobs created before the external-log-root boundary can place their
@@ -3252,7 +3026,7 @@ def _bound_current_candidate(job: Path, state: dict[str, Any]) -> tuple[dict[str
     # changes the semantic snapshot, so that stored snapshot is self-invalidating.
     # Keep exact command/schema/root/result bindings for readback and a driver-only
     # final disposition; provider recovery is denied by the inside-worktree guard.
-    if not legacy_read and not _job_is_inside_worktree(bound_job, command["workdir"]):
+    if not _job_is_inside_worktree(bound_job, command["workdir"]):
         _bound_candidate_worktree(state, command)
     return command, raw
 
@@ -3478,57 +3252,13 @@ def command_verification_copy(job: Path, destination: Path, output_format: str) 
     return 0
 
 
-def _bound_legacy_unknown_result(job: Path, state: dict[str, Any]) -> bytes:
-    """Revalidate a V3/V4 historical result without promoting its provenance."""
-    if not _legacy_prior_result_is_unknown(state):
-        raise DispatchError("dispatch has no unknown legacy result")
-    try:
-        bound_job = canonical_job(Path(job).resolve(strict=True))
-    except OSError as exc:
-        raise DispatchError("job directory is unavailable") from exc
-    result_path = Path(state["last_success_path"])
-    try:
-        result_parent = result_path.parent.resolve(strict=True)
-    except OSError as exc:
-        raise DispatchError("legacy dispatch result path is unavailable") from exc
-    if not result_path.is_absolute() or result_parent != bound_job:
-        raise DispatchError("legacy dispatch result path is outside this job")
-    command = _load_bound_command(bound_job, state, stage_readonly=False)
-    command, state = _bound_lifecycle_inputs(bound_job, state, command, read_legacy=True)
-    if state["workflow"] != "project" or (
-        WORKTREE._project_boundary(command["workdir"]) != state["project_boundary"]
-    ):
-        raise DispatchError("legacy dispatch result boundary is unavailable")
-    schema_paths = _schema_paths(command)
-    if schema_paths is None:
-        raise DispatchError("dispatch result schema is unavailable")
-    raw, info = read_regular(result_path, 1024 * 1024, "dispatch result")
-    if digest(raw) != state["last_success_sha256"] or list(_identity(info)) != state["last_success_identity"]:
-        raise DispatchError("dispatch result binding changed")
-    validator = Path(__file__).with_name("validate-envelope.py")
-    checked = [
-        subprocess.run(
-            [sys.executable, "-I", "-S", "-B", str(validator), str(schema), str(result_path)],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=False,
-        )
-        for schema in schema_paths
-    ]
-    if any(item.returncode != 0 for item in checked):
-        raise DispatchError("dispatch result is no longer valid")
-    rebound, rebound_info = read_regular(result_path, 1024 * 1024, "dispatch result")
-    if rebound != raw or _identity(rebound_info) != _identity(info):
-        raise DispatchError("dispatch result binding changed")
-    _bound_lifecycle_inputs(bound_job, state, command, read_legacy=True)
-    return raw
 
 def _bound_worktree_baseline(state: dict[str, Any], command: dict[str, Any]) -> None:
     """Require the queued worktree fact set immediately before provider launch."""
     expected = state["worktree_baseline"]
     current = _state_worktree_snapshot(state, command["workdir"])
     if expected is None or current is None:
-        if state.get("schema_version", CURRENT_STATE_SCHEMA) >= 7:
-            WORKTREE._worktree_snapshot(command["workdir"], explain_unsupported=True)
+        WORKTREE._worktree_snapshot(command["workdir"], explain_unsupported=True)
         raise WorktreeBaselineError("queued worktree baseline is unavailable")
     if (
         current["sha256"] != expected["sha256"]
@@ -3576,8 +3306,7 @@ def _load_bound_command(
 
 
 def _load_bound_selection(
-    command: dict[str, Any], state: dict[str, Any], *,
-    legacy_command_binding: bool = False,
+    command: dict[str, Any], state: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Read the frozen selection bytes and bind them to command and state.
 
@@ -3590,16 +3319,8 @@ def _load_bound_selection(
         if state["selection_sha256"] is not None or state["selection_identity"] is not None:
             raise DispatchError("dispatch selection state binding changed")
         return None
-    # V1-V5 predate the duplicate state-level selection fields.  Their bound
-    # command still freezes the selection path, digest, and identity, which is
-    # sufficient for a read-only result revalidation.  Provider-causing and
-    # V6+ paths retain the stricter duplicate state binding.
-    if not (
-        legacy_command_binding and state["schema_version"] < 6
-    ) and (
-        state["selection_sha256"] != command["selection_sha256"]
-        or state["selection_identity"] != command["selection_identity"]
-    ):
+    if (state["selection_sha256"] != command["selection_sha256"]
+        or state["selection_identity"] != command["selection_identity"]):
         raise DispatchError("dispatch selection state binding changed")
     try:
         raw, info = read_regular(Path(path_value), MAX_COMMAND_BYTES, "dispatch selection")
@@ -3619,7 +3340,7 @@ def _load_bound_selection(
 
 def _bound_lifecycle_inputs(
     job: Path, state: dict[str, Any], command: dict[str, Any] | None = None,
-    *, read_legacy: bool = False, bind_terminal_candidate: bool = False,
+    *, bind_terminal_candidate: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Bind non-provider recovery/finalization inputs before any state write.
 
@@ -3631,47 +3352,26 @@ def _bound_lifecycle_inputs(
     if command is None:
         command = _load_bound_command(job, state, stage_readonly=False)
     checked = state
-    if checked["schema_version"] < CURRENT_STATE_SCHEMA and not read_legacy:
-        checked = _upgrade_legacy_state(checked, command)
-    # V3/V4 still carry their own lifecycle copy.  Before those historical
-    # bytes can produce a migration approval (or be upgraded under one), bind
-    # every immutable overlap to the frozen command.  ``hard_seconds`` is not
-    # included: an approved local extend is allowed to change that one limit.
-    # V1 has no comparable workflow contract and remains result-only.
-    if checked["schema_version"] in {3, 4}:
-        for key in ("job_id", "workflow", "max_cycles"):
-            if checked[key] != command[key]:
-                raise DispatchError("dispatch immutable lifecycle binding changed")
-        for key in ("idle_seconds", "max_seconds"):
-            if float(checked[key]) != float(command[key]):
-                raise DispatchError("dispatch immutable lifecycle binding changed")
     if checked["workdir"] != command["workdir"]:
         raise DispatchError("dispatch worktree root binding changed")
-    if checked["schema_version"] >= 13 and (
-        checked["provider_isolation"] != _provider_isolation_for_command(command)
-    ):
+    if (checked["provider_isolation"] != _provider_isolation_for_command(command)):
         raise DispatchError("dispatch provider isolation binding changed")
-    if checked["schema_version"] >= 14 and (
-        checked["native_grant_profile"]
+    if (checked["native_grant_profile"]
         != command.get("native_grant_profile", "baseline")
         or checked["whole_worktree_content_sha256"]
-        != command.get("whole_worktree_content_sha256")
-    ):
+        != command.get("whole_worktree_content_sha256")):
         raise DispatchError("dispatch V11 authority binding changed")
     root = Path(command["workdir"])
     try:
         root_info = root.lstat()
     except OSError as exc:
         raise DispatchError("dispatch worktree root is unavailable") from exc
-    if checked["schema_version"] in {9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA}:
-        root_identity = _dispatch_root_identity(command["workdir"])
-        if (
-            root_identity is None
-            or root_identity != checked["worktree_root_identity"]
-        ):
-            raise DispatchError("dispatch worktree root binding changed")
-    elif not read_legacy:
-        raise DispatchError("legacy dispatch root identity cannot be proved")
+    root_identity = _dispatch_root_identity(command["workdir"])
+    if (
+        root_identity is None
+        or root_identity != checked["worktree_root_identity"]
+    ):
+        raise DispatchError("dispatch worktree root binding changed")
     if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
         raise DispatchError("dispatch worktree root binding changed")
     try:
@@ -3687,28 +3387,22 @@ def _bound_lifecycle_inputs(
     if not WORKTREE._worktree_symlink_boundary(command["workdir"]):
         raise DispatchError("dispatch worktree symlink boundary changed")
     _load_bound_selection(
-        command, checked, legacy_command_binding=read_legacy,
+        command, checked,
     )
-    if checked["schema_version"] in {9, 10, 11, 12, 13, CURRENT_STATE_SCHEMA}:
-        _bound_schemas(command, checked)
-    elif not read_legacy or _schema_paths(command) is None:
-        raise DispatchError("legacy dispatch schema binding cannot be proved")
+    _bound_schemas(command, checked)
     if checked["workflow"] == "project" and (
         WORKTREE._project_boundary(command["workdir"]) != checked["project_boundary"]
     ):
         raise DispatchError("project worktree boundary changed")
-    if checked["schema_version"] >= 12 and (
-        checked["allow_scoped_repair"] != command.get("allow_scoped_repair", False)
+    if (checked["allow_scoped_repair"] != command.get("allow_scoped_repair", False)
         or checked["repair_authority_sha256"] != command.get("repair_authority_sha256")
-        or command.get("repair_authority_sha256") != _repair_authority_for_command(command)
-    ):
+        or command.get("repair_authority_sha256") != _repair_authority_for_command(command)):
         raise DispatchError("dispatch scoped repair authority changed")
-    if checked["schema_version"] >= 12:
-        if checked["allow_self_verification"] != command.get(
-            "allow_self_verification", False
-        ):
-            raise DispatchError("dispatch self-verification authority changed")
-        _bound_self_verification_manifest(command, job)
+    if checked["allow_self_verification"] != command.get(
+        "allow_self_verification", False
+    ):
+        raise DispatchError("dispatch self-verification authority changed")
+    _bound_self_verification_manifest(command, job)
     if checked.get("provider_scope_path") is not None:
         _scope_path, raw_scope, scope_info = _read_provider_scope_file(
             checked["provider_scope_path"], MAX_COMMAND_BYTES,
@@ -4801,26 +4495,20 @@ def _confirm_whole_controller_approval(
         and (
             binding.state["attempt_origin"] == "initial"
             or (
-                binding.command["schema_version"] == 11
-                and binding.state.get("conversation_id") is None
+                binding.state.get("conversation_id") is None
             )
         )
     ):
         readable_manifest = WORKTREE._scan_readable_worktree(binding.command["workdir"])
-        if binding.command["schema_version"] == 11:
-            content = WORKTREE.whole_worktree_content_manifest(binding.command["workdir"])
-            content_sha = content["manifest_sha256"]
-            if content_sha != binding.command["whole_worktree_content_sha256"]:
-                raise DispatchError("whole-worktree content binding changed")
-            expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
-                _provider_isolation_for_command(binding.command), binding.command["native_grant_profile"],
-                whole_worktree_content_sha256=content_sha,
-                readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
-            )
-        else:
-            expected_approval = WORKTREE._compute_provider_launch_approval_sha256(
-                _provider_isolation_for_command(binding.command), WORKTREE._manifest_digest(readable_manifest),
-            ) if binding.command["schema_version"] == 10 else WORKTREE._manifest_digest(readable_manifest)
+        content = WORKTREE.whole_worktree_content_manifest(binding.command["workdir"])
+        content_sha = content["manifest_sha256"]
+        if content_sha != binding.command["whole_worktree_content_sha256"]:
+            raise DispatchError("whole-worktree content binding changed")
+        expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
+            _provider_isolation_for_command(binding.command), binding.command["native_grant_profile"],
+            whole_worktree_content_sha256=content_sha,
+            readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
+        )
         if expected_approval != approved_whole_sha:
             raise DispatchError("whole-worktree transmission binding changed")
 
@@ -5004,7 +4692,6 @@ def _launch_controller_provider(
             launch.argv, Path(os.path.realpath(launch.launch_cwd)),
             scoped=launch.scope is not None, boost=bool(binding.command["boost"]),
             provider_isolation=_provider_isolation_for_command(binding.command),
-            legacy_sandbox=binding.command["schema_version"] < 9,
         )
         if launch.scoped_executable is not None and _provider_isolation_for_command(binding.command) == "native":
             _prepare_native_controller_launch(job, binding, launch)
@@ -5678,7 +5365,7 @@ def _controller_repair_lineage(
     current: dict[str, Any],
 ) -> dict[str, Any]:
     repair_lineage_updates: dict[str, Any] = {}
-    if current["schema_version"] >= 12 and outcome.result_binding is not None:
+    if (outcome.result_binding is not None):
         repair_lineage_updates = {
             "repair_lineage_sha256": None,
             "repair_parent_result_sha256": None,
@@ -5814,52 +5501,51 @@ def _controller_terminal_updates(
                 "advisory": 0, "missing": 0,
             },
         })
-    if current["schema_version"] >= 5:
-        if outcome.boundary_failed or disposition.candidate_unavailable:
-            updates.update({"phase": "blocked", "assurance": "blocked"})
-        elif disposition.candidate_recognized:
-            updates.update({
-                "phase": (
-                    "repair-failed"
-                    if outcome.final_status == "failed" and current["attempt_origin"] == "conversation-continue"
-                    else "awaiting-verification"
-                ),
-                "assurance": "pending",
-                "continue_available": bool(
-                    outcome.final_status in {"succeeded", "failed"}
-                    and outcome.reason not in {"selection_preflight_failed", "permission_required"}
-                    and disposition.candidate_source != "provider_cancelled"
-                    and current["conversation_id"] and not is_boost
-                    and current["attempt"] < current["max_cycles"]
-                    and execution.elapsed < _provider_max_seconds(current)
-                    and (
-                        current.get("provider_scope_path") is None
-                        or candidate_data.derived_transmission_sha
-                        == current.get("approved_transmission_sha256")
-                        or repair_lineage_updates.get(
-                            "repair_lineage_sha256"
-                        ) is not None
-                        or (
-                            outcome.result_binding is None
-                            and (
-                                current.get("transmission_sha256")
-                                == current.get("approved_transmission_sha256")
-                                or current.get("repair_lineage_sha256") is not None
-                            )
+    if outcome.boundary_failed or disposition.candidate_unavailable:
+        updates.update({"phase": "blocked", "assurance": "blocked"})
+    elif disposition.candidate_recognized:
+        updates.update({
+            "phase": (
+                "repair-failed"
+                if outcome.final_status == "failed" and current["attempt_origin"] == "conversation-continue"
+                else "awaiting-verification"
+            ),
+            "assurance": "pending",
+            "continue_available": bool(
+                outcome.final_status in {"succeeded", "failed"}
+                and outcome.reason not in {"selection_preflight_failed", "permission_required"}
+                and disposition.candidate_source != "provider_cancelled"
+                and current["conversation_id"] and not is_boost
+                and current["attempt"] < current["max_cycles"]
+                and execution.elapsed < _provider_max_seconds(current)
+                and (
+                    current.get("provider_scope_path") is None
+                    or candidate_data.derived_transmission_sha
+                    == current.get("approved_transmission_sha256")
+                    or repair_lineage_updates.get(
+                        "repair_lineage_sha256"
+                    ) is not None
+                    or (
+                        outcome.result_binding is None
+                        and (
+                            current.get("transmission_sha256")
+                            == current.get("approved_transmission_sha256")
+                            or current.get("repair_lineage_sha256") is not None
                         )
                     )
-                ),
-            })
-        else:
-            updates.update({
-                "phase": (
-                    "repair-failed"
-                    if outcome.final_status == "failed" and current["attempt_origin"] == "conversation-continue"
-                    else "attempt-failed"
-                ),
-                "assurance": "pending",
-                "continue_available": False,
-            })
+                )
+            ),
+        })
+    else:
+        updates.update({
+            "phase": (
+                "repair-failed"
+                if outcome.final_status == "failed" and current["attempt_origin"] == "conversation-continue"
+                else "attempt-failed"
+            ),
+            "assurance": "pending",
+            "continue_available": False,
+        })
     return updates
 
 
@@ -6027,7 +5713,7 @@ def controller(job: Path, ownership_fd: int) -> int:
 
 def create_state(
     job: Path, origin: str, *, resume: bool, approve_sha: str | None = None,
-    approve_migration_sha: str | None = None, verification: dict[str, Any] | None = None,
+    verification: dict[str, Any] | None = None,
     require_initial_choice: bool = False,
 ) -> tuple[dict[str, Any], str]:
     command, command_raw, command_info = load_command(job)
@@ -6057,12 +5743,7 @@ def create_state(
                     raise DispatchError("dispatch fresh restart is unavailable")
                 if origin == "conversation-resume" and not _resume_is_eligible(state, time.time()):
                     raise DispatchError("dispatch is not resume-eligible")
-            if state["schema_version"] in {3, 4}:
-                command, state = _approved_legacy_migration(
-                    job, state, raw, approve_migration_sha,
-                )
-            else:
-                command = _load_bound_command(job, state, stage_readonly=False)
+            command = _load_bound_command(job, state, stage_readonly=False)
             if command.get("boost") and origin in {"conversation-resume", "fresh-restart", "conversation-continue"}:
                 raise DispatchError("Boost dispatches do not resume, restart, or continue")
             if _job_is_inside_worktree(job, command["workdir"]):
@@ -6103,7 +5784,6 @@ def create_state(
                     stage_sha=stage_sha, stage_identity=stage_info,
                     project_boundary=state["project_boundary"],
                     schema_bindings=schema_bindings,
-                    state_schema=state["schema_version"],
                     explain_worktree_rejection=True,
                     repair_authority_state=(
                         state if origin == "conversation-continue" else None
@@ -6120,13 +5800,12 @@ def create_state(
                     float(state["elapsed_seconds"]) + float(command["hard_seconds"]),
                 )
                 next_state["max_seconds"] = float(state["max_seconds"])
-                if state["schema_version"] >= 12:
-                    next_state["self_verification_elapsed_seconds"] = float(
-                        state["self_verification_elapsed_seconds"]
-                    )
-                    next_state["self_verification_run"] = state[
-                        "self_verification_run"
-                    ]
+                next_state["self_verification_elapsed_seconds"] = float(
+                    state["self_verification_elapsed_seconds"]
+                )
+                next_state["self_verification_run"] = state[
+                    "self_verification_run"
+                ]
                 if state["workflow"] != "legacy":
                     next_state["phase"] = "repairing" if origin == "conversation-continue" else "dispatching"
                     next_state["check_summary"] = state["check_summary"]
@@ -6144,15 +5823,14 @@ def create_state(
                             "worktree_changed_since_dispatch",
                         ):
                             next_state[key] = state[key]
-                        if state["schema_version"] >= 12:
-                            for key in (
-                                "repair_lineage_sha256",
-                                "repair_parent_result_sha256",
-                                "repair_parent_worktree_sha256",
-                                "repair_lineage_attempt",
-                                "reconciliation_manifest_sha256",
-                            ):
-                                next_state[key] = state[key]
+                        for key in (
+                            "repair_lineage_sha256",
+                            "repair_parent_result_sha256",
+                            "repair_parent_worktree_sha256",
+                            "repair_lineage_attempt",
+                            "reconciliation_manifest_sha256",
+                        ):
+                            next_state[key] = state[key]
                 if verification_path is not None:
                     next_state.update({
                         "verification_path": str(verification_path),
@@ -6188,7 +5866,6 @@ def create_state(
 def spawn(
     job: Path, origin: str, *, resume: bool, foreground: bool,
     approve_sha: str | None = None, verification: dict[str, Any] | None = None,
-    approve_migration_sha: str | None = None,
     output_format: str = "json",
 ) -> int:
     parent_signal: int | None = None
@@ -6208,7 +5885,7 @@ def spawn(
       with lifecycle_lock(job, blocking=False) as ownership_fd:
         state, _sha = create_state(
             job, origin, resume=resume, approve_sha=approve_sha,
-            approve_migration_sha=approve_migration_sha, verification=verification,
+            verification=verification,
             require_initial_choice=True,
         )
         if parent_signal is not None:
@@ -6350,11 +6027,10 @@ def _terminal_projection(
             "next_action": "resume" if resume_eligible else "blocked",
             "next_action_command": None,
         })
-    if state["schema_version"] >= 5:
-        updates.update({
-            "phase": "blocked" if candidate_unavailable else ("awaiting-verification" if candidate else "attempt-failed"),
-            "assurance": "blocked" if candidate_unavailable else "pending",
-        })
+    updates.update({
+        "phase": "blocked" if candidate_unavailable else ("awaiting-verification" if candidate else "attempt-failed"),
+        "assurance": "blocked" if candidate_unavailable else "pending",
+    })
     return updates
 
 
@@ -6445,13 +6121,12 @@ def _terminalize_owned(
                 "remote_cancel_unverified": bool(was_cancelled and postlaunch_cancel),
                 "provider_terminal_status": current.get("provider_terminal_status", "unknown"),
             }
-            if current["schema_version"] >= 5:
-                updates.update({
-                    "phase": "blocked" if candidate_unavailable else (
-                        "awaiting-verification" if candidate else "attempt-failed"
-                    ),
-                    "assurance": "blocked" if candidate_unavailable else "pending",
-                })
+            updates.update({
+                "phase": "blocked" if candidate_unavailable else (
+                    "awaiting-verification" if candidate else "attempt-failed"
+                ),
+                "assurance": "blocked" if candidate_unavailable else "pending",
+            })
         else:
             updates = dict(cancelled if current["cancel_requested"] else primary)
         if elapsed_seconds is not None:
@@ -6580,14 +6255,6 @@ def command_result(job: Path, output_format: str = "json") -> int:
             sys.stdout.buffer.write(candidate_raw)
             sys.stdout.buffer.flush()
         return 0
-    if _legacy_prior_result_is_unknown(state):
-        legacy_raw = _bound_legacy_unknown_result(job, state)
-        if output_format == "text":
-            print_text_status(state, sha, job=job)
-        else:
-            sys.stdout.buffer.write(legacy_raw)
-            sys.stdout.buffer.flush()
-        return 0
     result_path = state["result_path"]
     result_sha = state["result_sha256"]
     result_identity = state["result_identity"]
@@ -6610,8 +6277,7 @@ def command_result(job: Path, output_format: str = "json") -> int:
     schema_paths = _schema_paths(command)
     if schema_paths is None:
         raise DispatchError("dispatch result schema is unavailable")
-    if state["schema_version"] >= 5:
-        schema_paths = _bound_schemas(command, state)
+    schema_paths = _bound_schemas(command, state)
     validator = Path(__file__).with_name("validate-envelope.py")
     checked = [
         subprocess.run(
@@ -6656,7 +6322,7 @@ def _bound_self_verification_feedback(job: Path, state: dict[str, Any]) -> dict[
 
 
 def command_continue(
-    job: Path, approve_sha: str, approve_migration_sha: str | None,
+    job: Path, approve_sha: str,
     output_format: str = "json",
     use_self_verification: bool = False,
 ) -> int:
@@ -6670,13 +6336,13 @@ def command_continue(
         verification = _verification_from_stdin()
     return spawn(
         job, "conversation-continue", resume=True, foreground=False,
-        approve_sha=approve_sha, approve_migration_sha=approve_migration_sha,
+        approve_sha=approve_sha,
         verification=verification, output_format=output_format,
     )
 
 
 def command_finalize(
-    job: Path, approve_sha: str, approve_migration_sha: str | None,
+    job: Path, approve_sha: str,
     assurance: str, output_format: str = "json",
 ) -> int:
     if assurance not in {"verified", "partially_verified", "rejected", "blocked"}:
@@ -6686,12 +6352,7 @@ def command_finalize(
         state, raw, sha = load_state(job)
         if sha != approve_sha:
             raise _state_approval_error(state, sha, "finalize")
-        if state["schema_version"] in {3, 4}:
-            command, state = _approved_legacy_migration(
-                job, state, raw, approve_migration_sha,
-            )
-        else:
-            command = _load_bound_command(job, state, stage_readonly=False)
+        command = _load_bound_command(job, state, stage_readonly=False)
         command, state = _bound_lifecycle_inputs(
             job, state, command, bind_terminal_candidate=True,
         )
@@ -6754,10 +6415,6 @@ def command_control(job: Path, action: str, approve_sha: str, seconds: float | N
             updates = {"hard_seconds": state["hard_seconds"] + seconds}
         state, _raw, sha = _transition_locked(
             job, state, raw, updates,
-            # Cancel/extend are cheap active-process controls.  They must not
-            # trigger a candidate/root migration scan or turn an active V3/V4
-            # record into a different lifecycle state.
-            legacy_control_only=state["schema_version"] in {1, 3, 4},
         )
     print_json(public_status(state, sha, job=job))
     return 0
@@ -6784,7 +6441,6 @@ def parser() -> Parser:
             item.add_argument("--ownership-fd", required=True, type=int)
         if name in {"resume", "restart", "continue"}:
             item.add_argument("--approve-state-sha", required=name != "resume")
-            item.add_argument("--approve-migration-sha")
         if name in {"resume", "restart", "continue", "status", "result", "verification-copy"}:
             item.add_argument("--format", choices=("json", "text"), default="json")
         if name == "verification-copy":
@@ -6797,7 +6453,6 @@ def parser() -> Parser:
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--job-dir", required=True)
     finalize.add_argument("--approve-state-sha", required=True)
-    finalize.add_argument("--approve-migration-sha")
     finalize.add_argument("--assurance", required=True)
     finalize.add_argument("--format", choices=("json", "text"), default="json")
     wait = commands.add_parser("wait")
@@ -6815,7 +6470,13 @@ def parser() -> Parser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if any(arg.partition("=")[0] == "--approve-migration-sha" for arg in arguments):
+        raise DispatchError(
+            "--approve-migration-sha was removed in this unreleased development version; "
+            "finish or discard the old job with the release that created it."
+        )
+    args = parser().parse_args(arguments)
     job = canonical_job(Path(args.job_dir))
     if args.command == "controller":
         if args.ownership_fd < 3:
@@ -6831,17 +6492,17 @@ def main(argv: list[str] | None = None) -> int:
         return spawn(
             job, "conversation-resume", resume=True, foreground=False,
             approve_sha=args.approve_state_sha,
-            approve_migration_sha=args.approve_migration_sha, output_format=args.format,
+            output_format=args.format,
         )
     if args.command == "restart":
         return spawn(
             job, "fresh-restart", resume=True, foreground=False,
             approve_sha=args.approve_state_sha,
-            approve_migration_sha=args.approve_migration_sha, output_format=args.format,
+            output_format=args.format,
         )
     if args.command == "continue":
         return command_continue(
-            job, args.approve_state_sha, args.approve_migration_sha, args.format,
+            job, args.approve_state_sha, args.format,
             use_self_verification=args.use_self_verification,
         )
     if args.command == "status":
@@ -6855,13 +6516,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "self-verify":
         try:
             return SELF_VERIFICATION.command_self_verify(
-                LEGACY_API, job, args.approve_state_sha, args.format, containment=CONTAINMENT,
+                VERIFICATION_API, job, args.approve_state_sha, args.format, containment=CONTAINMENT,
             )
         except (SELF_VERIFICATION.VerificationError, OSError) as exc:
             raise DispatchError("self-verification could not bind or execute the approved checks") from exc
     if args.command == "finalize":
         return command_finalize(
-            job, args.approve_state_sha, args.approve_migration_sha,
+            job, args.approve_state_sha,
             args.assurance, args.format,
         )
     if args.command in {"cancel", "extend"}:

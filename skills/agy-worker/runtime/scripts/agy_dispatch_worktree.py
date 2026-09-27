@@ -2104,7 +2104,7 @@ def _git_boundary_identity(workdir: str) -> dict[str, Any] | None:
 
 
 def _worktree_snapshot_raw(
-    workdir: str, *, legacy: bool = False, explain_unsupported: bool = False,
+    workdir: str, *, explain_unsupported: bool = False,
 ) -> dict[str, Any] | None:
     """Hash a bounded worktree fact set without executing repository programs.
 
@@ -2114,8 +2114,7 @@ def _worktree_snapshot_raw(
     root descriptor, so symlinks contribute their own target bytes only.  The
     persisted v7 form deliberately excludes volatile inode/timestamp/cache
     details; the complete bindings below remain in this one scan to detect
-    replacement and TOCTOU races.  ``legacy`` retains the exact v6 digest
-    algorithm for already-persisted v6 state only.
+    replacement and TOCTOU races.
     """
     root_fd = -1
     try:
@@ -2143,8 +2142,6 @@ def _worktree_snapshot_raw(
         def persistent_metadata(value: tuple[int, ...]) -> tuple[int, ...]:
             """Persist semantic file shape while retaining full race bindings."""
             if not value:
-                return value
-            if legacy:
                 return value
             return stat.S_IFMT(value[2]), stat.S_IMODE(value[2])
 
@@ -2430,28 +2427,27 @@ def _worktree_snapshot_raw(
         def listings() -> tuple[bytes, bytes, bytes, bytes, bytes, bytes] | None:
             head_id = bound_git_read(["rev-parse", "--verify", "-q", "HEAD^{tree}"], allowed=(0, 1))
             staged = bound_git_read(["ls-files", "--stage", "-z"])
-            debug = None if legacy else bound_git_read(["ls-files", "--debug", "-z"])
-            resolve_undo = None if legacy else bound_git_read(["ls-files", "--resolve-undo", "-z"])
+            debug = bound_git_read(["ls-files", "--debug", "-z"])
+            resolve_undo = bound_git_read(["ls-files", "--resolve-undo", "-z"])
             other = bound_git_read(["ls-files", "-z", "--others", "--exclude-standard"])
             ignored = bound_git_read(["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])
             if (
-                head_id is None or staged is None or (not legacy and debug is None)
-                or (not legacy and resolve_undo is None) or other is None or ignored is None
+                head_id is None or staged is None or debug is None
+                or resolve_undo is None or other is None or ignored is None
             ):
                 return None
-            if not legacy:
-                parsed_resolve_undo = _parse_resolve_undo(cast(tuple[int, bytes], resolve_undo)[1], object_length)
-                if parsed_resolve_undo is None or parsed_resolve_undo:
-                    if explain_unsupported and parsed_resolve_undo:
-                        second_resolve_undo = bound_git_read(["ls-files", "--resolve-undo", "-z"])
-                        if (
-                            second_resolve_undo is not None
-                            and second_resolve_undo[1] == cast(tuple[int, bytes], resolve_undo)[1]
-                            and index_binding(index_path) == before_index
-                            and _parse_resolve_undo(second_resolve_undo[1], object_length) == parsed_resolve_undo
-                        ):
-                            raise _ResolveUndoPresentError("resolve_undo_present")
-                    return None
+            parsed_resolve_undo = _parse_resolve_undo(cast(tuple[int, bytes], resolve_undo)[1], object_length)
+            if parsed_resolve_undo is None or parsed_resolve_undo:
+                if explain_unsupported and parsed_resolve_undo:
+                    second_resolve_undo = bound_git_read(["ls-files", "--resolve-undo", "-z"])
+                    if (
+                        second_resolve_undo is not None
+                        and second_resolve_undo[1] == cast(tuple[int, bytes], resolve_undo)[1]
+                        and index_binding(index_path) == before_index
+                        and _parse_resolve_undo(second_resolve_undo[1], object_length) == parsed_resolve_undo
+                    ):
+                        raise _ResolveUndoPresentError("resolve_undo_present")
+                return None
             if head_id[0] == 1:
                 if head_id[1]:
                     return None
@@ -2469,7 +2465,7 @@ def _worktree_snapshot_raw(
             values = (head, staged[1], other[1], ignored[1])
             if any(raw and not raw.endswith(b"\0") for raw in values):
                 return None
-            return values[0], values[1], b"" if debug is None else debug[1], values[2], values[3], head_id[1]
+            return values[0], values[1], debug[1], values[2], values[3], head_id[1]
 
         first = listings()
         if first is None:
@@ -2552,10 +2548,10 @@ def _worktree_snapshot_raw(
 
         head = parse_tree(head_raw)
         staged = parse_index(staged_raw)
-        flags = {} if legacy else debug_index_flags(debug_raw)
+        flags = debug_index_flags(debug_raw)
         if head is None or staged is None or flags is None:
             return None
-        if not legacy and (set(flags) != set(staged) or any(value != 0 for value in flags.values())):
+        if set(flags) != set(staged) or any(value != 0 for value in flags.values()):
             return None
         other = set(other_raw.split(b"\0")[:-1])
         ignored = set(ignored_raw.split(b"\0")[:-1])
@@ -2698,7 +2694,7 @@ def _worktree_snapshot_raw(
             return manifest, empty_directories
 
         observation = hashlib.sha256()
-        observation.update(b"agy-worker-worktree-v5\0" if legacy else b"agy-worker-worktree-v7\0")
+        observation.update(b"agy-worker-worktree-v7\0")
         canonical_root = os.fsencode(root)
         observation.update(len(canonical_root).to_bytes(8, "big")); observation.update(canonical_root)
         observation.update(canonical([root_info.st_dev, root_info.st_ino]))
@@ -2709,9 +2705,7 @@ def _worktree_snapshot_raw(
         observation.update(canonical([
             git_dir_boundary[0], list(authority(git_dir_boundary[1])),
             common_dir_boundary[0], list(authority(common_dir_boundary[1])),
-            os.path.realpath(index_path) if legacy else None,
-            None if before_index[0] is None else hashlib.sha256(before_index[0]).hexdigest() if legacy else None,
-            None if before_index[1] is None else list(authority(before_index[1])) if legacy else None,
+            None, None, None,
         ]))
         content_bytes = 0
         changed = 0
@@ -2900,12 +2894,12 @@ def _worktree_snapshot_raw(
 
 
 def _worktree_snapshot(
-    workdir: str, *, legacy: bool = False, explain_unsupported: bool = False,
+    workdir: str, *, explain_unsupported: bool = False,
 ) -> dict[str, Any] | None:
     """Translate internal snapshot failures to the controller's stable contract."""
     try:
         return _worktree_snapshot_raw(
-            workdir, legacy=legacy, explain_unsupported=explain_unsupported,
+            workdir, explain_unsupported=explain_unsupported,
         )
     except _ResolveUndoPresentError as exc:
         raise ResolveUndoPresentError(str(exc)) from None

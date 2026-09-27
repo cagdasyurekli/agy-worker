@@ -512,10 +512,6 @@ helper_path = root / "skills/agy-worker/runtime/scripts/agy_dispatch_worktree.py
 spec = importlib.util.spec_from_file_location("preview_helper", helper_path)
 assert spec is not None and spec.loader is not None
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-legacy_v10_approval = module._compute_provider_launch_approval_sha256(
-    "session", first["manifest_sha256"],
-)
-assert legacy_v10_approval != first["launch_approval_sha256"]
 try:
     module._decode_manifest_path(b"non-utf8-\xff")
 except module.ReadableManifestError:
@@ -1573,120 +1569,11 @@ legacy_unapproved_initial_rc=$?
 if [[ "$legacy_unapproved_initial_rc" == 64 \
         && ! -s "$TMP/legacy-unapproved-initial.out" \
         && ! -e "$LEGACY_UNAPPROVED_JOB/dispatch-state.json" ]] \
-        && grep -Fq 'initial whole-worktree dispatch lacks explicit approval' \
+        && grep -Fq 'dispatch command schema v6 is not supported' \
             "$TMP/legacy-unapproved-initial.err"; then
     ok "direct dispatcher rejects a fresh legacy broad command before provider launch"
 else
     bad "direct dispatcher legacy broad initial boundary"
-fi
-
-PYTHONDONTWRITEBYTECODE=1 python3 -B - \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
-        "$TMP/logs/tier/dispatch-command.json" \
-        "$TMP/legacy-queued-v6-job" "$TMP/repo" "$TMP/bin" "$TMP" <<'PY'
-import fcntl
-import importlib.util
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
-
-source_text, template_text, job_text, workdir_text, bin_text, temp_text = sys.argv[1:]
-source = Path(source_text).resolve()
-workdir = str(Path(workdir_text).resolve())
-job = Path(job_text).resolve()
-job.mkdir(mode=0o700)
-spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_queued_v6", source)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-
-command = json.loads(Path(template_text).read_text(encoding="utf-8"))
-command.update({
-    "schema_version": 6,
-    "job_id": "legacy-queued-v6",
-    "workdir": workdir,
-    "idle_seconds": 1,
-    "hard_seconds": 3,
-    "max_seconds": 5,
-    "notice_seconds": 2,
-})
-command.pop("whole_worktree_content_sha256")
-command.pop("native_grant_profile")
-command.pop("provider_isolation")
-command.pop("approved_whole_worktree_sha256")
-command.pop("boost")
-command.pop("boost_policy_sha256")
-command.pop("approved_boost_risk_sha256")
-command.pop("allow_scoped_repair")
-command.pop("repair_authority_sha256")
-command.pop("allow_self_verification")
-command.pop("self_verification_manifest_path")
-command.pop("self_verification_manifest_sha256")
-command.pop("self_verification_manifest_identity")
-# V6 whole-worktree records predate provider_isolation; their historical AGY
-# sandbox argv remains the authoritative execution fact after normalization.
-command["argv"].insert(1, "--sandbox")
-module.write_atomic(job, module.COMMAND_NAME, command)
-loaded, command_raw, command_identity = module.load_command(job)
-assert loaded["argv"].count("--sandbox") == 1
-state = module.initial_state(
-    loaded,
-    "initial",
-    1,
-    command_sha=module.digest(command_raw),
-    command_identity=command_identity,
-    stage_sha=None,
-    stage_identity=None,
-    schema_bindings=module._schema_bindings(loaded),
-)
-module.write_atomic(job, module.STATE_NAME, state)
-
-lock_fd = os.open(job / module.LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
-os.fchmod(lock_fd, 0o600)
-fcntl.flock(lock_fd, fcntl.LOCK_EX)
-temp = Path(temp_text)
-environment = dict(os.environ)
-environment.update({
-    "PATH": f"{Path(bin_text).resolve()}{os.pathsep}{environment.get('PATH', '')}",
-    "FAKE_VERSION_MODE": "ready",
-    "FAKE_HELP_MODE": "ready",
-    "FAKE_DISPATCH_MODE": "result",
-    "FAKE_MODEL_FILE": str(temp / "legacy-queued-v6.model"),
-    "FAKE_PROMPT_FILE": str(temp / "legacy-queued-v6.prompt"),
-    "FAKE_DIRS_FILE": str(temp / "legacy-queued-v6.dirs"),
-    "FAKE_ARGV_FILE": str(temp / "legacy-queued-v6.argv"),
-    "FAKE_STAGE_RESULT_FILE": str(temp / "legacy-queued-v6.stage-result"),
-    "FAKE_CALLS_FILE": str(temp / "legacy-queued-v6.calls"),
-    "FAKE_WORKER_CALLS_FILE": str(temp / "legacy-queued-v6.worker-calls"),
-})
-child = subprocess.Popen(
-    [sys.executable, "-I", "-S", "-B", str(source), "controller", "--job-dir", str(job),
-     "--ownership-fd", str(lock_fd)],
-    pass_fds=(lock_fd,),
-    env=environment,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-)
-os.close(lock_fd)
-assert child.wait(timeout=10) == 0
-terminal, _, _ = module.load_state(job)
-assert terminal["status"] == "succeeded"
-assert terminal["attempt_origin"] == "initial"
-assert terminal["candidate_recognized"] is True
-assert module.bound_provider_execution(job, terminal) == {
-    "legacy": True, "scope": "whole-worktree", "agy_sandbox": True,
-    "native_containment": False,
-}
-assert (temp / "legacy-queued-v6.worker-calls").read_text(encoding="utf-8").splitlines() == ["worker"]
-PY
-legacy_queued_v6_rc=$?
-if [[ "$legacy_queued_v6_rc" == 0 ]]; then
-    ok "already-queued legacy V6 broad state remains provider-runnable"
-else
-    bad "already-queued legacy V6 compatibility"
 fi
 
 BOOST_DEFAULT_MANIFEST_SHA="$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")"
@@ -2034,7 +1921,7 @@ weird_root = Path('/private/tmp/space "quote" \\ slash\nline/stage-001')
 synthetic = ["agy", "--print", "ORIGINAL-PROMPT"]
 module._bind_workspace_prompt(
     synthetic, weird_root, scoped=True, boost=True,
-    provider_isolation="native", legacy_sandbox=False,
+    provider_isolation="native",
 )
 assert synthetic[-2] == "--print" and synthetic[-1].endswith("ORIGINAL-PROMPT")
 synthetic_start = synthetic[-1].index(root_marker) + len(root_marker)
@@ -2045,7 +1932,7 @@ oversized = ["agy", "--print", "x" * module.MAX_INLINE_PROMPT_BYTES]
 try:
     module._bind_workspace_prompt(
         oversized, weird_root, scoped=True, boost=True,
-        provider_isolation="native", legacy_sandbox=False,
+        provider_isolation="native",
     )
 except module.DispatchError:
     pass
@@ -4912,47 +4799,25 @@ duplicate_key.write_text(
 )
 assert module._quota_terminal_failure(duplicate_key, "1.1.13") is None
 
-# Older command schemas normalize conservatively: their version text was not a
-# runtime observation and therefore cannot authorize this classifier.
-job = root / "quota-command-v2"
+# Current command validation rejects malformed observed AGY versions.
+job = root / "quota-command-current"
 job.mkdir(mode=0o700)
-command = {
-    "schema_version": 2, "kind": "agy-worker-dispatch-command", "job_id": "quota-v2",
-    "workdir": str(root), "argv": ["agy", "--print", "task"], "agy_version": "1.1.13",
-    "idle_seconds": 1, "hard_seconds": 2, "max_seconds": 3, "notice_seconds": 1,
-    "stage_dir": None, "stage_file": None, "child_umask": "022",
-    "resume_prompt": "resume", "continue_prompt": "continue",
-    "workflow": "legacy", "max_cycles": 1,
-}
-(job / module.COMMAND_NAME).write_bytes(module.canonical(command))
-(job / module.COMMAND_NAME).chmod(0o600)
-loaded, _raw, _identity = module.load_command(job)
-assert loaded["agy_version_observed"] is False
+command = json.loads((root / "logs" / "quota-terminal" / module.COMMAND_NAME).read_text(encoding="utf-8"))
+assert command["schema_version"] == module.CURRENT_COMMAND_SCHEMA
 for bad_version in ([], {}, "01.1.13", "1.1", "1.1.123456"):
     bad = copy.deepcopy(command); bad["agy_version"] = bad_version
     (job / module.COMMAND_NAME).write_bytes(module.canonical(bad))
+    (job / module.COMMAND_NAME).chmod(0o600)
     try:
         module.load_command(job)
     except module.DispatchError as exc:
         assert str(exc) == "dispatch agy version is invalid"
     else:
         raise AssertionError("invalid command agy version accepted")
-state = json.loads((root / "logs" / "quota-terminal" / module.STATE_NAME).read_text(encoding="utf-8"))
-state.pop("provider_retry_after_seconds")
-state.pop("provider_retry_observed_epoch")
-for field in module.STATE_V5_FIELDS:
-    state.pop(field)
-for field in {*module.STATE_V6_FIELDS, *module.STATE_V8_FIELDS, *module.STATE_V9_FIELDS, *module.STATE_V10_FIELDS, *module.STATE_V11_FIELDS, *module.STATE_V12_FIELDS, *module.STATE_V13_FIELDS, *module.STATE_V14_FIELDS}:
-    state.pop(field)
-state["schema_version"] = 3
-state["phase"] = None
-state["assurance"] = None
-migrated = module.validate_state(state)
-assert migrated["provider_retry_after_seconds"] is None
-assert migrated["provider_retry_observed_epoch"] is None
+
 PY
 then
-    ok "agy 1.1.13 quota classifier is exact-shape, exact-version, and legacy-command conservative"
+    ok "agy 1.1.13 quota classifier is exact-shape, exact-version, and current-command strict"
 else
     bad "quota terminal exact contract matrix"
 fi
@@ -5369,6 +5234,7 @@ fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
         "$TMP/state-snapshot-job" <<'PY'
+import contextlib
 import importlib.util
 import os
 from pathlib import Path
@@ -5388,7 +5254,7 @@ workdir = job.parent / "state-snapshot-workdir"
 workdir.mkdir(mode=0o700)
 subprocess.run(["git", "init", "-q", str(workdir)], check=True)
 command = {
-    "schema_version": 10, "provider_isolation": "session",
+    "schema_version": module.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
     "job_id": "state-snapshot", "workdir": str(workdir),
     "idle_seconds": 1.0, "hard_seconds": 2.0, "max_seconds": 3.0,
     "workflow": "legacy", "max_cycles": 1,
@@ -5443,12 +5309,24 @@ finally:
 Path(done_text).touch(mode=0o600)
 '''
 original_lstat = Path.lstat
+original_state_lock = module.state_lock
 child = None
 writer_was_blocked = False
+locked_read = False
+
+@contextlib.contextmanager
+def observe_state_lock(job_path):
+    global locked_read
+    with original_state_lock(job_path) as descriptor:
+        locked_read = True
+        try:
+            yield descriptor
+        finally:
+            locked_read = False
 
 def replace_during_identity_check(path: Path):
     global child, writer_was_blocked
-    if path == job / module.STATE_NAME and child is None:
+    if locked_read and path == job / module.STATE_NAME and child is None:
         child = subprocess.Popen(
             [sys.executable, "-I", "-S", "-B", "-c", writer_source,
              source, str(job), str(done), str(blocked), str(acquired)],
@@ -5467,10 +5345,12 @@ def replace_during_identity_check(path: Path):
     return original_lstat(path)
 
 Path.lstat = replace_during_identity_check
+module.state_lock = observe_state_lock
 try:
     snapshot, raw, sha = module.read_state_snapshot(job)
 finally:
     Path.lstat = original_lstat
+    module.state_lock = original_state_lock
 assert child is not None and child.wait(timeout=3) == 0
 terminal, terminal_raw, terminal_sha = module.read_state_snapshot(job)
 assert writer_was_blocked
@@ -5671,8 +5551,11 @@ root = Path(sys.argv[2]).resolve()
 spec = importlib.util.spec_from_file_location("agy_dispatch_v2_continue_parity", source)
 module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 
-repo = root / "historical-v2-direct-repo"; repo.mkdir()
-subprocess.run(["git", "init", "-q", str(repo)], check=True)
+origin = root / "historical-v2-direct-origin"; origin.mkdir()
+subprocess.run(["git", "init", "-q", str(origin)], check=True)
+subprocess.run(["git", "-C", str(origin), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "base"], check=True)
+repo = root / "historical-v2-direct-repo"
+subprocess.run(["git", "-C", str(origin), "worktree", "add", "-q", "-b", "historical-selection", str(repo)], check=True)
 job = (root / "historical-v2-direct-job"); job.mkdir(mode=0o700); job = job.resolve()
 provider_schema = source.parent.parent / "schemas" / "worker-result.provider.schema.json"
 # The provider consumes RE2, where `$` is a strict end-of-text anchor. Keep the
@@ -5717,7 +5600,7 @@ selection_raw, selection_info = module.read_regular(
     selection_path, module.MAX_COMMAND_BYTES, "fixture selection",
 )
 command = {
-    "schema_version": 4, "kind": "agy-worker-dispatch-command",
+    "schema_version": module.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
     "job_id": "historical-v2-direct", "workdir": str(repo),
     "argv": [
         "agy", "--json-schema", str(provider_schema), "--model", resolved_model,
@@ -5730,7 +5613,21 @@ command = {
     "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20, "notice_seconds": 3,
     "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
     "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
+    "provider_env": [], "provider_scope_path": None, "provider_scope_sha256": None,
+    "provider_scope_identity": None, "approved_transmission_sha256": None,
+    "provider_isolation": "session", "native_grant_profile": "baseline",
+    "boost": False, "boost_policy_sha256": None, "approved_boost_risk_sha256": None,
+    "allow_scoped_repair": False, "repair_authority_sha256": None,
+    "allow_self_verification": False, "self_verification_manifest_path": None,
+    "self_verification_manifest_sha256": None, "self_verification_manifest_identity": None,
 }
+content = module.whole_worktree_content_manifest(str(repo))
+command["whole_worktree_content_sha256"] = content["manifest_sha256"]
+command["approved_whole_worktree_sha256"] = module._compute_v11_launch_approval_sha256(
+    "session", "baseline", whole_worktree_content_sha256=content["manifest_sha256"],
+    readable_manifest_sha256=module._manifest_digest(module._scan_readable_worktree(str(repo))),
+)
+assert set(command) == module.CURRENT_COMMAND_FIELDS
 module.write_atomic(job, module.COMMAND_NAME, command)
 command_raw, command_info = module.read_regular(
     job / module.COMMAND_NAME, module.MAX_COMMAND_BYTES, "fixture command",
@@ -6285,107 +6182,6 @@ if [[ "$project_orphan_continue_rc" == 64 && "$project_orphan_resume_rc" == 21 \
     ok "orphaned project state is preserve-only across continuation, finalization, and result surfaces"
 else
     bad "orphaned project state must not progress or expose a trusted partial result"
-fi
-
-LEGACY_V1_JOB="$TMP/logs/resume-case"
-PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
-        "$LEGACY_V1_JOB" <<'PY'
-import importlib.util
-from pathlib import Path
-import sys
-spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_v1", sys.argv[1])
-module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
-job = Path(sys.argv[2])
-state, _raw, _sha = module.load_state(job)
-for field in module.STATE_PROJECT_FIELDS:
-    state.pop(field)
-for field in module.STATE_V5_FIELDS:
-    state.pop(field)
-for field in {*module.STATE_V6_FIELDS, *module.STATE_V8_FIELDS, *module.STATE_V9_FIELDS, *module.STATE_V10_FIELDS, *module.STATE_V11_FIELDS, *module.STATE_V12_FIELDS, *module.STATE_V13_FIELDS, *module.STATE_V14_FIELDS}:
-    state.pop(field)
-state.pop("provider_retry_after_seconds")
-state.pop("provider_retry_observed_epoch")
-state["schema_version"] = 1
-module.write_atomic(job, module.STATE_NAME, state)
-PY
-legacy_v1_bytecode_manifest() {
-    PYTHONDONTWRITEBYTECODE=1 python3 -B - "$ROOT/skills/agy-worker/runtime/scripts" <<'PY'
-import hashlib
-from pathlib import Path
-import sys
-
-root = Path(sys.argv[1])
-for path in sorted(root.rglob("*")):
-    if path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}:
-        if path.is_file():
-            print(path.relative_to(root), hashlib.sha256(path.read_bytes()).hexdigest())
-        elif path.is_dir():
-            print(path.relative_to(root), "directory")
-PY
-}
-legacy_v1_bytecode_manifest > "$TMP/legacy-v1.bytecode-before"
-legacy_v1_calls_before="$(wc -l < "$TMP/resume-case.worker-calls" | tr -d ' ')"
-control_worker status resume-case > "$TMP/legacy-v1.status"
-legacy_v1_status_rc=$?
-control_worker result resume-case > "$TMP/legacy-v1.result"
-legacy_v1_result_rc=$?
-legacy_v1_sha="$(status_sha "$TMP/legacy-v1.status")"
-cp "$LEGACY_V1_JOB/dispatch-state.json" "$TMP/legacy-v1.state-before"
-control_worker resume resume-case --approve-state-sha "$legacy_v1_sha" > /dev/null 2>&1
-legacy_v1_resume_rc=$?
-legacy_v1_resume_unchanged=1
-cmp -s "$TMP/legacy-v1.state-before" "$LEGACY_V1_JOB/dispatch-state.json" \
-    || legacy_v1_resume_unchanged=0
-control_worker restart resume-case --approve-state-sha "$legacy_v1_sha" --format json \
-    > "$TMP/legacy-v1.restart" 2> "$TMP/legacy-v1.restart.err"
-legacy_v1_restart_rc=$?
-legacy_v1_restart_unchanged=1
-cmp -s "$TMP/legacy-v1.state-before" "$LEGACY_V1_JOB/dispatch-state.json" \
-    || legacy_v1_restart_unchanged=0
-PYTHONDONTWRITEBYTECODE=1 python3 -B - "$LEGACY_V1_JOB/selection.json" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-path.write_bytes(path.read_bytes() + b" ")
-PY
-control_worker result resume-case > /dev/null 2>&1
-legacy_v1_tampered_result_rc=$?
-legacy_v1_tamper_unchanged=1
-cmp -s "$TMP/legacy-v1.state-before" "$LEGACY_V1_JOB/dispatch-state.json" \
-    || legacy_v1_tamper_unchanged=0
-legacy_v1_bytecode_manifest > "$TMP/legacy-v1.bytecode-after"
-legacy_v1_bytecode_unchanged=1
-cmp -s "$TMP/legacy-v1.bytecode-before" "$TMP/legacy-v1.bytecode-after" \
-    || legacy_v1_bytecode_unchanged=0
-legacy_v1_calls_after="$(wc -l < "$TMP/resume-case.worker-calls" | tr -d ' ')"
-if [[ "$legacy_v1_status_rc" == 0 && "$legacy_v1_result_rc" == 0 \
-        && "$legacy_v1_resume_rc" == 21 && "$legacy_v1_resume_unchanged" == 1 \
-        && "$legacy_v1_restart_rc" == 64 && "$legacy_v1_restart_unchanged" == 1 \
-        && "$legacy_v1_tampered_result_rc" == 20 && "$legacy_v1_tamper_unchanged" == 1 \
-        && "$legacy_v1_bytecode_unchanged" == 1 \
-        && "$legacy_v1_calls_after" == "$legacy_v1_calls_before" ]] \
-        && PYTHONDONTWRITEBYTECODE=1 python3 -B - "$TMP/legacy-v1.status" \
-            "$LEGACY_V1_JOB/dispatch-state.json" \
-            "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" <<'PY'
-import importlib.util
-import json, sys
-from pathlib import Path
-old = json.load(open(sys.argv[1], encoding="utf-8"))
-stored = json.load(open(sys.argv[2], encoding="utf-8"))
-spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_assert", sys.argv[3])
-module = importlib.util.module_from_spec(spec); assert spec.loader is not None; sys.modules[spec.name] = module; spec.loader.exec_module(module)
-assert old["next_action"] == "result"
-assert old["next_action_command"] == '"$PIPELINE/agy-worker.sh" result --job-id resume-case --format json'
-assert old["phase"] is None and old["assurance"] is None
-assert [item["action"] for item in old["available_actions"]] == ["result"]
-assert stored["schema_version"] == 1
-assert stored["attempt"] == old["attempt"] == 2
-assert stored["attempt_origin"] == old["attempt_origin"]
-PY
-then
-    ok "legacy v1 reads safely, rejects selection drift, and remains result-only without recovery authority"
-else
-    bad "legacy v1 control-state compatibility"
 fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \

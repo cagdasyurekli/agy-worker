@@ -46,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 120
+EXPECTED_CHECKS = 115
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -56,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 72, "runtime": 1, "recovery": 47}
+GROUP_CHECKS = {"core": 68, "runtime": 1, "recovery": 46}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -93,6 +93,74 @@ def assert_symbolic_action_commands(actions: list[dict], expected: set[str]) -> 
         command = by_action[action].get("command")
         assert isinstance(command, str)
         assert command.startswith(f"{MODULE.PUBLIC_LAUNCHER} {action} "), command
+
+
+def initialize_linked_fixture(worktree: Path) -> None:
+    """Create real current launch authority without changing repository policy."""
+    origin = worktree.with_name(worktree.name + "-origin")
+    origin.mkdir(mode=0o700)
+    subprocess.run(["git", "init", "-q", str(origin)], check=True)
+    subprocess.run([
+        "git", "-C", str(origin), "-c", "user.name=Fixture",
+        "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "base",
+    ], check=True)
+    subprocess.run([
+        "git", "-C", str(origin), "worktree", "add", "-q", "-b",
+        "fixture/" + worktree.name, str(worktree),
+    ], check=True)
+
+
+def current_command_fixture(values: dict, *, bind_launch: bool = True) -> dict:
+    """Build a complete current test command with explicit launch authority.
+
+    Defaults model a session task with optional features disabled. A scoped
+    sandbox argv selects native mode; fixture authors supply scope/schema files.
+    Private in-memory projection tests may omit launch binding explicitly.
+    """
+    command = {
+        "schema_version": MODULE.CURRENT_COMMAND_SCHEMA,
+        "kind": "agy-worker-dispatch-command", "agy_version": "1.1.22",
+        "agy_version_observed": True, "notice_seconds": 3,
+        "stage_dir": None, "stage_file": None, "child_umask": "022",
+        "workflow": "task", "max_cycles": 2,
+        "resume_prompt": "resume", "continue_prompt": "continue",
+        "selection_path": None, "selection_sha256": None, "selection_identity": None,
+        "provider_env": [], "provider_scope_path": None, "provider_scope_sha256": None,
+        "provider_scope_identity": None, "approved_transmission_sha256": None,
+        "approved_whole_worktree_sha256": None, "whole_worktree_content_sha256": None,
+        "provider_isolation": "session", "native_grant_profile": "baseline",
+        "boost": False, "boost_policy_sha256": None, "approved_boost_risk_sha256": None,
+        "allow_scoped_repair": False, "repair_authority_sha256": None,
+        "allow_self_verification": False, "self_verification_manifest_path": None,
+        "self_verification_manifest_sha256": None, "self_verification_manifest_identity": None,
+        **values,
+    }
+    assert command["schema_version"] == MODULE.CURRENT_COMMAND_SCHEMA
+    if "provider_isolation" not in values and "--sandbox" in command.get("argv", []):
+        assert command["provider_scope_path"] is not None
+        command["provider_isolation"] = "native"
+    if bind_launch:
+        workdir = command["workdir"]
+        manifest = MODULE._scan_readable_worktree(workdir)
+        if command["provider_scope_path"] is not None and command["approved_transmission_sha256"] is None:
+            scope = MODULE._parse_provider_scope(Path(command["provider_scope_path"]).read_bytes())
+            selected = MODULE._build_selected_content_manifest(workdir, scope)
+            command["approved_transmission_sha256"] = MODULE._bound_transmission_sha256(
+                command, MODULE._canonical_digest(scope), MODULE._manifest_digest(manifest),
+                MODULE._selected_content_digest(selected),
+            )
+        elif command["provider_scope_path"] is None and command["approved_whole_worktree_sha256"] is None:
+            content = MODULE.WORKTREE.whole_worktree_content_manifest(workdir)
+            command["whole_worktree_content_sha256"] = content["manifest_sha256"]
+            command["approved_whole_worktree_sha256"] = MODULE.WORKTREE._compute_v11_launch_approval_sha256(
+                command["provider_isolation"], command["native_grant_profile"],
+                whole_worktree_content_sha256=content["manifest_sha256"],
+                readable_manifest_sha256=MODULE._manifest_digest(manifest),
+            )
+        if command["allow_scoped_repair"]:
+            command["repair_authority_sha256"] = MODULE._repair_authority_for_command(command)
+        assert set(command) == MODULE.CURRENT_COMMAND_FIELDS
+    return command
 
 
 def provider_schema(path: Path) -> None:
@@ -543,7 +611,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check("controller pure wait uses each clock and the zero floor", controller_wait_uses_each_clock_and_zero_floor)
     check("controller pure terminal policy preserves candidate facts", controller_terminal_policy_preserves_candidate_facts)
     check("controller signals and context ownership stay isolated", controller_signal_and_context_ownership_are_isolated)
-    root = Path(temporary)
+    root = Path(temporary).resolve()
     provider = root / "provider.json"
     provider_schema(provider)
 
@@ -674,14 +742,15 @@ with tempfile.TemporaryDirectory() as temporary:
     check("wrong type NaN invalid UTF-8 and oversized reports fail closed", invalid_report_encodings_types_and_size_fail_closed)
 
     def text_projection_is_three_line_private_and_driver_owned() -> None:
-        command = {
-            "workdir": str(root), "job_id": "text-job", "idle_seconds": 1,
+        repo = root / "text-projection-repo"; repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        command = current_command_fixture({
+            "workdir": str(repo), "job_id": "text-job", "idle_seconds": 1,
             "hard_seconds": 2, "max_seconds": 3, "workflow": "task", "max_cycles": 2,
-        }
+        }, bind_launch=False)
         state = MODULE.initial_state(
             command, "initial", 1, command_sha="a" * 64,
             command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
-            state_schema=8,
         )
         state.update({
             "status": "failed", "reason": "provider_terminal_error", "exit_code": 25,
@@ -749,16 +818,16 @@ with tempfile.TemporaryDirectory() as temporary:
     def control_formats_and_resume_approval_are_private_and_pre_dispatch() -> None:
         log_root = root / "control-logs"; log_root.mkdir(mode=0o700)
         repo = root / "control-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = log_root / "format-job"; job.mkdir(mode=0o700)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "format-job",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "format-job",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(PROVIDER_SCHEMA), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 2, "max_seconds": 3, "notice_seconds": 1,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         _state, _initial_sha = MODULE.create_state(job, "initial", resume=False)
         worker = ROOT / "skills/agy-worker/runtime/agy-worker.sh"
@@ -883,8 +952,8 @@ with tempfile.TemporaryDirectory() as temporary:
         })
         manifest.write_bytes(manifest_raw); manifest.chmod(0o600)
         manifest_info = manifest.stat()
-        command = {
-            "schema_version": 9, "kind": "agy-worker-dispatch-command",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
             "job_id": "self-verification-binding", "workdir": str(candidate),
             "argv": ["agy", "--print", "task"],
             "agy_version": "1.1.22", "agy_version_observed": True,
@@ -907,7 +976,7 @@ with tempfile.TemporaryDirectory() as temporary:
             "allow_scoped_repair": True,
             "workflow": "task", "max_cycles": 2,
             "repair_authority_sha256": None,
-        }
+        }, bind_launch=False)
         parsed = MODULE._bound_self_verification_manifest(command, job)
         assert parsed is not None and parsed.checks[0].identifier == "required"
         binding = MODULE.self_verification_binding_sha256(command)
@@ -937,193 +1006,25 @@ with tempfile.TemporaryDirectory() as temporary:
         self_verification_manifest_is_private_and_bound_into_repair_authority,
     )
 
-    def state_v4_migrates_additively() -> None:
-        command = {
-            "workdir": str(root), "workflow": "legacy", "max_cycles": 1, "job_id": "legacy",
-            "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
-        }
-        state = MODULE.initial_state(command, "initial", 1, command_sha="0" * 64, command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None, state_schema=8)
-        state.update({"phase": None, "assurance": None})
-        state["schema_version"] = 4
-        for key in {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            state.pop(key, None)
-        migrated = MODULE.validate_state(state)
-        assert migrated["candidate_source"] == "none"
-        assert migrated["driver_disposition"] == "not_applicable"
-        assert migrated["worktree_changes_present"] is None
 
-    check("v4 state reads as additive current state", state_v4_migrates_additively)
 
-    def v1_v3_v4_remain_read_compatible() -> None:
-        command = {
-            "workdir": str(root), "workflow": "legacy", "max_cycles": 1, "job_id": "legacy-read",
-            "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
-        }
-        original = MODULE.initial_state(
-            command, "initial", 1, command_sha="0" * 64,
-            command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
-            state_schema=8,
-        )
-        original.update({"phase": None, "assurance": None})
-        v3 = copy.deepcopy(original); v3["schema_version"] = 3
-        for key in {"provider_retry_after_seconds", "provider_retry_observed_epoch", *MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            v3.pop(key, None)
-        validated_v3 = MODULE.validate_state(v3)
-        assert validated_v3["schema_version"] == 3
-        assert validated_v3["phase"] is None and validated_v3["assurance"] is None
-        v1 = copy.deepcopy(v3); v1["schema_version"] = 1
-        for key in MODULE.STATE_PROJECT_FIELDS:
-            v1.pop(key)
-        validated_v1 = MODULE.validate_state(v1)
-        assert validated_v1["schema_version"] == 1
-        assert validated_v1["phase"] is None and validated_v1["assurance"] is None
 
-    check("v1 v3 and v4 state snapshots remain read compatible", v1_v3_v4_remain_read_compatible)
 
-    def v3_v4_last_success_is_unknown_bound_result_only() -> None:
-        """A historical result remains readable, but never becomes a candidate."""
-        def fixture(label: str) -> tuple[Path, Path, Path]:
-            source_repo = root / f"legacy-prior-{label}-source"; source_repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(source_repo)], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "config", "user.email", "fixture@example.invalid"], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "config", "user.name", "Fixture"], check=True)
-            (source_repo / "base.txt").write_text("base\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(source_repo), "add", "base.txt"], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "commit", "-qm", "base"], check=True)
-            worktree = root / f"legacy-prior-{label}-worktree"
-            subprocess.run(["git", "-C", str(source_repo), "worktree", "add", "-q", "-b", f"legacy-prior-{label}", str(worktree)], check=True)
-            worktree = worktree.resolve()
-            job = root / f"legacy-prior-{label}-job"; job.mkdir(mode=0o700); job = job.resolve()
-            bound_provider = root / f"legacy-prior-{label}-provider.json"; provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"legacy-prior-{label}",
-                "workdir": str(worktree), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
-                "agy_version": "1.1.16", "agy_version_observed": True,
-                "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
-                "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
-                "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
-            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
-            state, _sha = MODULE.create_state(job, "initial", resume=False)
-            artifact = job / "historical-result.json"
-            payload = json.dumps(report(summary=f"legacy-{label}"), indent=2).encode("utf-8") + b"\n"
-            artifact.write_bytes(payload); artifact.chmod(0o600)
-            _raw, info = MODULE.read_regular(artifact, 1024 * 1024, "legacy result")
-            state.update({
-                "schema_version": 4, "status": "succeeded", "finished_epoch": 1.0, "exit_code": 0,
-                "result_path": None, "result_sha256": None, "result_identity": None,
-                "last_success_path": str(artifact), "last_success_sha256": MODULE.digest(payload),
-                "last_success_identity": list(MODULE._identity(info)),
-                "phase": "awaiting-verification", "assurance": "pending", "resume_available": False,
-            })
-            for key in {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-                state.pop(key)
-            MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-            return job, worktree, artifact
 
-        job, _worktree, _artifact = fixture("valid")
-        state, _raw, sha = MODULE.load_state(job)
-        assert not state["candidate_recognized"] and state["candidate_source"] == "none"
-        public = MODULE.public_status(state, sha, job=job)
-        assert public["legacy_result_provenance"] == "unknown_bound_legacy"
-        assert public["driver_disposition"] == "not_applicable" and public["next_action"] == "result"
-        assert public["candidate_sha256"] is None and public["result_available"] is False
-        # V3/V4 historical evidence remains readable, but its missing V9 root
-        # identity cannot authorize a fresh provider attempt.
-        assert {item["action"] for item in public["available_actions"]} == {"result"}
-
-        captured = io.BytesIO()
-        original_stdout = MODULE.sys.stdout
-
-        class _Stdout:
-            buffer = captured
-
-        MODULE.sys.stdout = _Stdout()
-        try:
-            MODULE.print_text_status(state, sha, job=job)
-        finally:
-            MODULE.sys.stdout = original_stdout
-        assert captured.getvalue().decode("utf-8").splitlines() == [
-            "Provider attempt: succeeded; reason: none; failure stage: none; bound result available: no; driver disposition: not_applicable.",
-            "Driver evidence: 0 passed, 0 failed, 0 advisory, 0 missing; cycle: 1/2.",
-            'Next safe action: retrieve historical result evidence only with "$PIPELINE/agy-worker.sh" result --job-id legacy-prior-valid --format json; do not use it for Verification v2, continue, or finalize.',
-        ]
-        historical_verification = {
-            "schema_version": 2, "summary": "driver must not promote history", "passed_checks": [],
-            "failed_checks": ["historical-only"], "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": state["last_success_sha256"], "coverage": "partial",
-            "verified_findings": 0, "unresolved_gaps": 1, "diff_review_complete": True,
-        }
-        assert MODULE._validate_verification(historical_verification) == historical_verification
-        try:
-            MODULE._require_current_candidate_verification(historical_verification, state)
-        except MODULE.DispatchError:
-            pass
-        else:
-            raise AssertionError("a historical last-success digest became Verification v2 input")
-
-        # An active V3/V4 attempt can still carry the historical pointer, but
-        # status/wait/cancel/extend must never reopen it.  A slow or failing
-        # legacy binder is terminal-result work and cannot delay active control.
-        active = dict(state)
-        active.update({
-            "status": "running", "controller_pid": 123, "finished_epoch": None,
-            "exit_code": None, "started_epoch": time.time(), "phase": "repairing",
-            "elapsed_seconds": 1.0, "attempt_base_elapsed": 1.0,
-        })
-        binder_calls = 0
-        original_legacy_binder = MODULE._legacy_result_action_is_bound
-        def slow_failing_legacy_binder(_job, _state):
-            nonlocal binder_calls
-            binder_calls += 1
-            time.sleep(0.3)
-            raise AssertionError("active status invoked the legacy result binder")
-        MODULE._legacy_result_action_is_bound = slow_failing_legacy_binder
-        started = time.monotonic()
-        try:
-            active_public = MODULE.public_status(active, sha, job=job)
-        finally:
-            MODULE._legacy_result_action_is_bound = original_legacy_binder
-        assert time.monotonic() - started < 0.15
-        assert binder_calls == 0
-        assert [item["action"] for item in active_public["available_actions"]] == ["wait", "cancel"]
-        assert_symbolic_action_commands(active_public["available_actions"], {"wait", "cancel"})
-
-        delivered = subprocess.run([sys.executable, str(SOURCE), "result", "--job-dir", str(job)], check=True, stdout=subprocess.PIPE)
-        assert json.loads(delivered.stdout)["summary"] == "legacy-valid"
-        for label, mutation in (("missing", "missing"), ("tampered", "tampered"), ("boundary", "boundary")):
-            bad_job, bad_worktree, artifact = fixture(label)
-            if mutation == "missing":
-                artifact.unlink()
-            elif mutation == "tampered":
-                artifact.write_bytes(b"{}\n"); artifact.chmod(0o600)
-            else:
-                marker = bad_worktree / ".git"
-                marker.write_text("gitdir: /nonexistent\n", encoding="utf-8")
-            bad_state, _bad_raw, bad_sha = MODULE.load_state(bad_job)
-            bad_public = MODULE.public_status(bad_state, bad_sha, job=bad_job)
-            assert "result" not in {
-                item["action"] for item in bad_public["available_actions"]
-            }
-            rejected = subprocess.run(
-                [sys.executable, str(SOURCE), "result", "--job-dir", str(bad_job)],
-                check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            assert rejected.returncode == MODULE.EXIT_BY_REASON["status_unavailable"] and not rejected.stdout
-
-    check("v3/v4 last_success stays unknown, reads only with bindings, and fails closed on drift", v3_v4_last_success_is_unknown_bound_result_only)
 
     def new_current_legacy_attempts_have_nonrepair_lifecycle() -> None:
-        command = {
-            "workdir": str(root), "workflow": "legacy", "max_cycles": 1,
+        repo = root / "legacy-lifecycle-repo"; repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        command = current_command_fixture({
+            "workdir": str(repo), "workflow": "legacy", "max_cycles": 1,
             "job_id": "legacy-lifecycle", "hard_seconds": 2,
             "max_seconds": 4, "idle_seconds": 1,
-        }
+        }, bind_launch=False)
         for origin in ("initial", "conversation-resume", "fresh-restart"):
             state = MODULE.initial_state(
                 command, origin, 2, command_sha="0" * 64,
                 command_identity=(1, 2, 3, 4, 5), stage_sha=None,
-                stage_identity=None, state_schema=8,
+                stage_identity=None,
             )
             validated = MODULE.validate_state(copy.deepcopy(state))
             assert validated["phase"] == "dispatching"
@@ -1132,7 +1033,7 @@ with tempfile.TemporaryDirectory() as temporary:
         restarted = MODULE.initial_state(
             command, "fresh-restart", 2, command_sha="0" * 64,
             command_identity=(1, 2, 3, 4, 5), stage_sha=None,
-            stage_identity=None, state_schema=8,
+            stage_identity=None,
         )
         invalid = copy.deepcopy(restarted)
         invalid["phase"] = "repairing"
@@ -1196,7 +1097,7 @@ with tempfile.TemporaryDirectory() as temporary:
             label: str, workflow: str, *, internal_link: bool, outward_link: bool,
         ) -> tuple[Path, Path, Path, Path]:
             source = root / f"symlink-source-{label}"; source.mkdir()
-            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            initialize_linked_fixture(source)
             subprocess.run(["git", "-C", str(source), "config", "user.email", "fixture@example.invalid"], check=True)
             subprocess.run(["git", "-C", str(source), "config", "user.name", "Fixture"], check=True)
             (source / "base.txt").write_text("base\n", encoding="utf-8")
@@ -1214,9 +1115,6 @@ with tempfile.TemporaryDirectory() as temporary:
             if internal_link:
                 target = repo / "inside.txt"; target.write_text("inside\n", encoding="utf-8")
                 (repo / "inside-link").symlink_to(target.name)
-            if outward_link:
-                outside = root / f"symlink-outside-{label}"; outside.write_text("outside\n", encoding="utf-8")
-                (repo / "escape").symlink_to(outside)
             job = root / f"symlink-job-{label}"; job.mkdir(mode=0o700)
             bin_dir = root / f"symlink-bin-{label}"; bin_dir.mkdir(mode=0o700)
             marker = root / f"symlink-provider-{label}"
@@ -1234,17 +1132,20 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o700)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"symlink-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"symlink-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": workflow,
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             if not outward_link or workflow != "project":
                 MODULE.create_state(job, "initial", resume=False)
+            if outward_link:
+                outside = root / f"symlink-outside-{label}"; outside.write_text("outside\n", encoding="utf-8")
+                (repo / "escape").symlink_to(outside)
             return job, bin_dir, repo, marker
 
         for workflow in ("explore", "task", "project"):
@@ -2180,12 +2081,12 @@ with tempfile.TemporaryDirectory() as temporary:
         repo = root / "bound-repo"; repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         bound_provider = root / "bound-provider.json"; provider_schema(bound_provider)
-        command = {
-            "schema_version": 10, "provider_isolation": "session",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
             "workdir": str(repo), "workflow": "task", "max_cycles": 1, "job_id": "bound",
             "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
             "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
-        }
+        }, bind_launch=False)
         bindings = MODULE._schema_bindings(command)
         state = MODULE.initial_state(
             command, "initial", 1, command_sha="0" * 64,
@@ -2236,7 +2137,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def controller_binds_snapshot_before_provider_and_quiescent_candidate_after_termination() -> None:
         repo = root / "snapshot-order-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "snapshot-order-job"; job.mkdir(mode=0o700); job = job.resolve()
         bin_dir = root / "snapshot-order-bin"; bin_dir.mkdir()
         calls = root / "snapshot-order-provider-calls"
@@ -2256,14 +2157,14 @@ with tempfile.TemporaryDirectory() as temporary:
             encoding="utf-8",
         )
         fake.chmod(0o755)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "snapshot-order",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "snapshot-order",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
 
@@ -2336,7 +2237,7 @@ with tempfile.TemporaryDirectory() as temporary:
             ("cancelled", "CANCELLED", "provider_cancelled"),
         ):
             repo = root / f"terminal-missing-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"terminal-missing-{label}-job"; job.mkdir(mode=0o700); job = job.resolve()
             bin_dir = root / f"terminal-missing-{label}-bin"; bin_dir.mkdir()
             bound_provider = root / f"terminal-missing-{label}-provider.json"; provider_schema(bound_provider)
@@ -2352,14 +2253,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 "#!/bin/sh\nprintf '%s\\n' " + " ".join(shlex.quote(json.dumps(item)) for item in events) + "\n",
                 encoding="utf-8",
             ); fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"terminal-missing-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"terminal-missing-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             original_snapshot = MODULE.WORKTREE._worktree_snapshot
@@ -2405,7 +2306,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def controller_preserves_outer_error_candidate() -> None:
         repo = root / "controller-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "controller-job"; job.mkdir(mode=0o700)
         bin_dir = root / "controller-bin"; bin_dir.mkdir()
         events = [
@@ -2423,14 +2324,14 @@ with tempfile.TemporaryDirectory() as temporary:
             encoding="utf-8",
         )
         fake.chmod(0o755)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "controller",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "controller",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 4, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         lock = job / MODULE.LOCK_NAME
@@ -2477,7 +2378,7 @@ with tempfile.TemporaryDirectory() as temporary:
             expected_status, expected_reason, expected_exit,
         ) in cases:
             repo = root / f"denied-actions-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"denied-actions-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"denied-actions-{label}-bin"; bin_dir.mkdir()
             terminal = {
@@ -2504,14 +2405,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 ) + "\n",
                 encoding="utf-8",
             ); fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"denied-actions-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"denied-actions-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             actual_exit = run_controller(job, bin_dir)
@@ -2685,7 +2586,7 @@ with tempfile.TemporaryDirectory() as temporary:
             expected_terminal_status,
         ) in cases:
             repo = root / f"refusal-canary-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"refusal-canary-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"refusal-canary-{label}-bin"; bin_dir.mkdir()
             events = [
@@ -2702,14 +2603,14 @@ with tempfile.TemporaryDirectory() as temporary:
             ); fake.chmod(0o755)
             bound_provider = root / f"refusal-canary-{label}-provider.json"
             provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"refusal-canary-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"refusal-canary-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": version_observed,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             actual_exit = run_controller(job, bin_dir)
@@ -3006,7 +2907,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
         # 7. Controller integration dispatch test
         ctrl_repo = root / "ctrl-agy-error-repo"; ctrl_repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(ctrl_repo)], check=True)
+        initialize_linked_fixture(ctrl_repo)
         ctrl_job = root / "ctrl-agy-error-job"; ctrl_job.mkdir(mode=0o700)
         ctrl_bin = root / "ctrl-agy-error-bin"; ctrl_bin.mkdir()
         fake_agy = ctrl_bin / "agy"
@@ -3018,14 +2919,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake_agy.chmod(0o755)
         bound_provider = root / "ctrl-agy-error-provider.json"
         provider_schema(bound_provider)
-        cmd = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error",
+        cmd = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error",
             "workdir": str(ctrl_repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.6", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(ctrl_job, MODULE.COMMAND_NAME, cmd)
         MODULE.create_state(ctrl_job, "initial", resume=False)
         c_exit = run_controller(ctrl_job, ctrl_bin)
@@ -3043,7 +2944,7 @@ with tempfile.TemporaryDirectory() as temporary:
         assert "resume" not in pub_actions and "continue" not in pub_actions and "result" not in pub_actions
 
         ctrl_repo_127 = root / "ctrl-agy-error-127-repo"; ctrl_repo_127.mkdir()
-        subprocess.run(["git", "init", "-q", str(ctrl_repo_127)], check=True)
+        initialize_linked_fixture(ctrl_repo_127)
         ctrl_job_127 = root / "ctrl-agy-error-127-job"; ctrl_job_127.mkdir(mode=0o700)
         ctrl_bin_127 = root / "ctrl-agy-error-127-bin"; ctrl_bin_127.mkdir()
         fake_agy_127 = ctrl_bin_127 / "agy"
@@ -3055,14 +2956,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake_agy_127.chmod(0o755)
         bound_provider_127 = root / "ctrl-agy-error-127-provider.json"
         provider_schema(bound_provider_127)
-        cmd_127 = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error-127",
+        cmd_127 = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error-127",
             "workdir": str(ctrl_repo_127), "argv": ["agy", "--json-schema", str(bound_provider_127), "--print", "task"],
             "agy_version": "1.2.7", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(ctrl_job_127, MODULE.COMMAND_NAME, cmd_127)
         MODULE.create_state(ctrl_job_127, "initial", resume=False)
         c_exit_127 = run_controller(ctrl_job_127, ctrl_bin_127)
@@ -3132,7 +3033,7 @@ with tempfile.TemporaryDirectory() as temporary:
             expected_reason, expected_exit, expected_candidate,
         ) in cases:
             repo = root / f"partial-timeout-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"partial-timeout-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"partial-timeout-{label}-bin"; bin_dir.mkdir()
             terminal = {
@@ -3160,14 +3061,14 @@ with tempfile.TemporaryDirectory() as temporary:
             ); fake.chmod(0o755)
             bound_provider = root / f"partial-timeout-{label}-provider.json"
             provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"partial-timeout-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"partial-timeout-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": version_observed,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             actual_exit = run_controller(job, bin_dir)
@@ -3203,7 +3104,7 @@ with tempfile.TemporaryDirectory() as temporary:
         # its process-group deadline, reap that descendant, and then retain the
         # already-bound partial candidate under the provider timeout signal.
         repo = root / "partial-timeout-descendant-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "partial-timeout-descendant-job"; job.mkdir(mode=0o700)
         bin_dir = root / "partial-timeout-descendant-bin"; bin_dir.mkdir()
         child_record = root / "partial-timeout-descendant-child"
@@ -3235,14 +3136,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake.chmod(0o755)
         bound_provider = root / "partial-timeout-descendant-provider.json"
         provider_schema(bound_provider)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-descendant",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-descendant",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.2", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 4, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         actual_exit = run_controller(job, bin_dir)
@@ -3274,7 +3175,7 @@ with tempfile.TemporaryDirectory() as temporary:
             ("idle-live-no-marker", False),
         ):
             repo = root / f"{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"{label}-bin"; bin_dir.mkdir()
             child_record = root / f"{label}-child"
@@ -3303,14 +3204,14 @@ with tempfile.TemporaryDirectory() as temporary:
             fake.write_text(program, encoding="utf-8"); fake.chmod(0o755)
             bound_provider = root / f"{label}-provider.json"
             provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": label,
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": label,
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": "1.2.2", "agy_version_observed": True,
                 "idle_seconds": 1, "hard_seconds": 4, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["idle_timeout"]
@@ -3335,7 +3236,7 @@ with tempfile.TemporaryDirectory() as temporary:
         # Marker-driven recovery after an idle timeout still obeys denial
         # precedence and cannot make the retained conversation reusable.
         repo = root / "partial-timeout-denied-descendant-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "partial-timeout-denied-descendant-job"; job.mkdir(mode=0o700)
         bin_dir = root / "partial-timeout-denied-descendant-bin"; bin_dir.mkdir()
         denied_events = [
@@ -3364,15 +3265,15 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake.chmod(0o755)
         bound_provider = root / "partial-timeout-denied-descendant-provider.json"
         provider_schema(bound_provider)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
             "job_id": "partial-timeout-denied-descendant", "workdir": str(repo),
             "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.2", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 4, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["permission_required"]
@@ -3388,7 +3289,7 @@ with tempfile.TemporaryDirectory() as temporary:
         # This also tests 1.2.11 timeout handling without claiming that its
         # unobserved print-timeout warning matches an older release.
         repo = root / "partial-timeout-hard-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "partial-timeout-hard-job"; job.mkdir(mode=0o700)
         bin_dir = root / "partial-timeout-hard-bin"; bin_dir.mkdir()
         fake = bin_dir / "agy"
@@ -3402,14 +3303,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake.chmod(0o755)
         bound_provider = root / "partial-timeout-hard-provider.json"
         provider_schema(bound_provider)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-hard",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-hard",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.11", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 1, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["hard_deadline_exceeded"]
@@ -3434,7 +3335,7 @@ with tempfile.TemporaryDirectory() as temporary:
         ]
         for label, outer_status, candidate, expected_exit, status, reason, source_name, stage_name, terminal_status in cases:
             repo = root / f"{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"{label}-bin"; bin_dir.mkdir()
             events = [
@@ -3452,14 +3353,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": label,
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": label,
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 4, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             assert run_controller(job, bin_dir) == expected_exit
@@ -3528,14 +3429,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"repair-{suffix}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"repair-{suffix}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": "1.2.11", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
                 "max_cycles": 3, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             assert run_controller(job, bin_dir) == 0
@@ -3615,14 +3516,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"projection-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"projection-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
                 "max_cycles": 3, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             return job, bin_dir, bound_provider
@@ -3814,130 +3715,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     check("explore and task allow two cycles while project allows five and legacy one", lifecycle_cycle_ranges_match_workflow_contract)
 
-    def legacy_candidate_read_is_nonmutating_and_approved_finalize_upgrades_atomically() -> None:
-        repo = root / "legacy-upgrade-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        job = root / "legacy-upgrade-job"; job.mkdir(mode=0o700); job = job.resolve()
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "legacy-upgrade",
-            "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
-            "agy_version": "1.1.16", "agy_version_observed": True,
-            "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 10, "notice_seconds": 3,
-            "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
-            "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
-        command_raw, _command_sha = MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
-        _loaded, _raw, command_identity = MODULE.load_command(job)
-        state = MODULE.initial_state(
-            command, "initial", 1, command_sha=MODULE.digest(command_raw),
-            command_identity=command_identity, stage_sha=None, stage_identity=None,
-            schema_bindings=MODULE._schema_bindings(command),
-        )
-        result_path = job / "envelope.json"
-        candidate_raw = json.dumps(report(), ensure_ascii=True, indent=2).encode("ascii") + b"\n"
-        result_path.write_bytes(candidate_raw); result_path.chmod(0o600)
-        _bound, result_info = MODULE.read_regular(result_path, 1024 * 1024, "fixture")
-        state.update({
-            "status": "succeeded", "exit_code": 0, "finished_epoch": 1.0,
-            "conversation_id": "legacy-conversation", "result_path": str(result_path),
-            "result_sha256": MODULE.digest(candidate_raw), "result_identity": list(MODULE._identity(result_info)),
-            "phase": None, "assurance": None,
-        })
-        state["schema_version"] = 4
-        for key in {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            state.pop(key)
-        old_raw, old_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-        loaded, _raw, read_sha = MODULE.read_state_snapshot(job)
-        assert read_sha == old_sha and loaded["candidate_recognized"]
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        # A V4 historical read may establish no new mutation authority.  It
-        # cannot persist an assurance claim or a V9 migration.
-        public = MODULE.public_status(loaded, read_sha, job=job)
-        assert public["assurance"] is None and public["driver_disposition"] == "unreviewed"
-        assert public["controller_phase"] == "awaiting-verification"
-        assert "result" in {item["action"] for item in public["available_actions"]}
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        delivered = subprocess.run(
-            [sys.executable, str(SOURCE), "result", "--job-dir", str(job)],
-            check=True, stdout=subprocess.PIPE,
-        )
-        assert json.loads(delivered.stdout)["summary"] == "candidate"
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
 
-        # The current V3/V4 candidate is eligible only through a second,
-        # no-write migration approval.  Status and command use the same exact
-        # digest; omitting it must leave the old bytes untouched.
-        migration_sha = public["migration_binding_sha256"]
-        assert isinstance(migration_sha, str) and len(migration_sha) == 64
-        action_commands = {item["action"]: item.get("command", "") for item in public["available_actions"]}
-        assert "finalize" in action_commands and migration_sha in action_commands["finalize"]
-        verification = {
-            "schema_version": 2, "summary": "driver verified", "passed_checks": ["fixture"],
-            "failed_checks": [], "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": loaded["result_sha256"], "coverage": "complete",
-            "verified_findings": 1, "unresolved_gaps": 0, "diff_review_complete": True,
-        }
-        missing = subprocess.run(
-            [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-             "--approve-state-sha", old_sha, "--assurance", "verified"],
-            input=json.dumps(verification).encode(), check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert missing.returncode == 64 and missing.stdout == b""
-        assert b"legacy migration approval" in missing.stderr
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-
-        # A same-path symlink substitution cannot reuse a status-time approval.
-        moved_repo = root / "legacy-upgrade-repo-moved"
-        repo.rename(moved_repo)
-        repo.symlink_to(moved_repo, target_is_directory=True)
-        try:
-            replaced = MODULE.public_status(loaded, read_sha, job=job)
-            assert replaced["migration_binding_sha256"] is None
-            assert "finalize" not in {item["action"] for item in replaced["available_actions"]}
-            assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        finally:
-            repo.unlink()
-            moved_repo.rename(repo)
-
-        # A semantic snapshot change makes the previously displayed digest stale
-        # and must roll back before a verification artifact or V9 state write.
-        drift = repo / "migration-drift.txt"
-        drift.write_text("drift\n", encoding="utf-8")
-        stale_approval = subprocess.run(
-            [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-             "--approve-state-sha", old_sha, "--approve-migration-sha", migration_sha,
-             "--assurance", "verified"],
-            input=json.dumps(verification).encode(), check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert stale_approval.returncode == 64 and stale_approval.stdout == b""
-        assert b"legacy migration approval is stale" in stale_approval.stderr
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        drift.unlink()
-
-        # Schema drift invalidates the advertised approval before state write.
-        provider_raw = provider.read_bytes()
-        provider.write_bytes(b"{")
-        try:
-            stale = MODULE.public_status(loaded, read_sha, job=job)
-            assert "result" not in {item["action"] for item in stale["available_actions"]}
-            assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        finally:
-            provider.write_bytes(provider_raw)
-        approved = subprocess.run(
-            [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-             "--approve-state-sha", old_sha, "--approve-migration-sha", migration_sha,
-             "--assurance", "verified"],
-            input=json.dumps(verification).encode(), check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert approved.returncode == 0 and approved.stderr == b""
-        current, _current_raw, _current_sha = MODULE.read_state_snapshot(job)
-        assert current["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
-        assert current["driver_disposition"] == "verified"
-
-    check("v4 current candidate needs an exact migration approval then upgrades atomically", legacy_candidate_read_is_nonmutating_and_approved_finalize_upgrades_atomically)
 
     def preflight_rejections_never_invoke_provider() -> None:
         job = root / "controller-job"
@@ -4559,7 +4337,7 @@ with tempfile.TemporaryDirectory() as temporary:
     def queued_baseline_drift_blocks_every_provider_launch_origin() -> None:
         def make_job(label: str) -> tuple[Path, Path, Path, dict]:
             repo = root / f"queued-drift-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = (root / f"queued-drift-{label}-job"); job.mkdir(mode=0o700); job = job.resolve()
             bin_dir = root / f"queued-drift-{label}-bin"; bin_dir.mkdir()
             marker = root / f"queued-drift-{label}-provider"
@@ -4567,14 +4345,14 @@ with tempfile.TemporaryDirectory() as temporary:
             fake.write_text("#!/bin/sh\ntouch " + shlex.quote(str(marker)) + "\nexit 99\n", encoding="utf-8")
             fake.chmod(0o755)
             schema = root / f"queued-drift-{label}-provider.json"; provider_schema(schema)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"queued-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"queued-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             return repo, job, bin_dir, command
@@ -4642,11 +4420,11 @@ with tempfile.TemporaryDirectory() as temporary:
         empty.rmdir()
         removed = MODULE._worktree_snapshot(str(repo)); assert removed is not None
         assert removed["sha256"] == baseline["sha256"] and removed["entries"] == baseline["entries"]
-        command = {
-            "schema_version": 10, "provider_isolation": "session",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
             "workdir": str(repo), "workflow": "task", "max_cycles": 2, "job_id": "empty-topology",
             "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
-        }
+        }, bind_launch=False)
         state = MODULE.initial_state(
             command, "initial", 1, command_sha="0" * 64,
             command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
@@ -4773,14 +4551,14 @@ with tempfile.TemporaryDirectory() as temporary:
             repo = repo.resolve()
             job = root / f"result-current-{label}-job"; job.mkdir(mode=0o700); job = job.resolve()
             schema = root / f"result-current-{label}-provider.json"; provider_schema(schema)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"result-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"result-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             state, _state_sha = MODULE.create_state(job, "initial", resume=False)
             older = job / "older.json"; current = job / "current.json"
@@ -4840,7 +4618,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def current_candidate_fixture(
         label: str, *, selection: bool = False, staged: bool = False,
-        wrapper_addressable: bool = False, workflow: str = "task", linked: bool = False,
+        wrapper_addressable: bool = False, workflow: str = "task", linked: bool = True,
         inside_worktree: bool = False,
     ) -> tuple[Path, dict, str, Path]:
         """Create one schema-bound terminal candidate without any provider call."""
@@ -4860,12 +4638,9 @@ with tempfile.TemporaryDirectory() as temporary:
             repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
         job_id = f"current-{label}"
-        if inside_worktree:
-            logs_dir = repo / "logs"
-            logs_dir.mkdir(mode=0o700, exist_ok=True)
-            job = logs_dir / job_id
-        else:
-            job = root / (job_id if wrapper_addressable else f"current-candidate-{label}-job")
+        # Bind a current job externally first. Relocation below preserves its
+        # original launch approval, which becomes stale when artifacts move in.
+        job = root / (job_id if wrapper_addressable else f"current-candidate-{label}-job")
         job.mkdir(mode=0o700); job = job.resolve()
         schema = root / f"current-candidate-{label}-provider.json"; provider_schema(schema)
         selection_path = None
@@ -4888,15 +4663,15 @@ with tempfile.TemporaryDirectory() as temporary:
             stage_file = stage_dir / "full-prompt.txt"
             stage_file.write_text("bounded fixture prompt", encoding="utf-8")
             stage_file.chmod(0o600)
-        command = {
-            "schema_version": 4 if selection else 3, "kind": "agy-worker-dispatch-command", "job_id": job_id,
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": job_id,
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None if stage_dir is None else str(stage_dir),
             "stage_file": None if stage_file is None else str(stage_file), "child_umask": "022", "workflow": workflow,
             "max_cycles": 1 if workflow == "legacy" else 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         if selection:
             command.update({
                 "selection_path": str(selection_path), "selection_sha256": selection_sha,
@@ -4904,6 +4679,17 @@ with tempfile.TemporaryDirectory() as temporary:
             })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         state, _initial_sha = MODULE.create_state(job, "initial", resume=False)
+        if inside_worktree:
+            assert not selection and not staged
+            logs_dir = repo / "logs"
+            logs_dir.mkdir(mode=0o700, exist_ok=True)
+            original_command = (job / MODULE.COMMAND_NAME).read_bytes()
+            original_identity = MODULE._identity((job / MODULE.COMMAND_NAME).stat())
+            destination = logs_dir / job_id
+            job.rename(destination)
+            job = destination
+            assert (job / MODULE.COMMAND_NAME).read_bytes() == original_command
+            assert MODULE._identity((job / MODULE.COMMAND_NAME).stat()) == original_identity
         envelope = job / "envelope.json"
         payload = json.dumps(report(summary=f"candidate-{label}"), ensure_ascii=True, indent=2).encode("ascii") + b"\n"
         envelope.write_bytes(payload); envelope.chmod(0o600)
@@ -4925,14 +4711,14 @@ with tempfile.TemporaryDirectory() as temporary:
         assert loaded_sha == sha
         return job, loaded, sha, envelope
 
-    def v9_repository_controlled_git_fails_closed_before_guarded_commands() -> None:
-        """A V9 root probe must never execute a worktree's ``bin/git`` wrapper."""
-        job, state, sha, _envelope = current_candidate_fixture("v9-root-git-guard")
+    def current_repository_controlled_git_fails_closed_before_guarded_commands() -> None:
+        """A current root probe must never execute a worktree's ``bin/git`` wrapper."""
+        job, state, sha, _envelope = current_candidate_fixture("current-root-git-guard")
         command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
         repo = Path(command["workdir"])
         real_git = shutil.which("git"); assert real_git is not None
         repo_bin = repo / "bin"; repo_bin.mkdir(mode=0o700); repo_bin.chmod(0o700)
-        marker = root / "v9-root-git-executed"
+        marker = root / "current-root-git-executed"
         wrapper = repo_bin / "git"
         wrapper.write_text(
             "#!/bin/sh\nprintf ran > " + shlex.quote(str(marker)) + "\nexec "
@@ -4985,7 +4771,7 @@ with tempfile.TemporaryDirectory() as temporary:
         })
         assert not marker.exists()
 
-    check("V9 repository-controlled Git fails closed before status result continue or finalize", v9_repository_controlled_git_fails_closed_before_guarded_commands)
+    check("Current repository-controlled Git fails closed before status result continue or finalize", current_repository_controlled_git_fails_closed_before_guarded_commands)
 
     def outward_symlink_removes_candidate_actions_and_rejects_their_commands() -> None:
         """Status must not advertise lifecycle actions that their guards reject."""
@@ -5513,8 +5299,8 @@ with tempfile.TemporaryDirectory() as temporary:
 
     check("public verification-copy wrapper preserves output privacy and maps runtime failures", public_verification_copy_wrapper_has_exact_success_privacy_and_runtime_exits)
 
-    def v9_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement() -> None:
-        """V9 separates stable Git authority from mutable candidate content."""
+    def current_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement() -> None:
+        """Current state separates stable Git authority from mutable candidate content."""
         def git_toplevel_alias_is_narrowly_bound_to_the_held_directory() -> None:
             """Only macOS's documented spelling alias survives a full binding."""
             fixture = root / "git-toplevel-alias"; fixture.mkdir()
@@ -5586,7 +5372,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
             }
 
-        def provider_changed_candidate(label: str, *, linked: bool = False) -> tuple[Path, dict, str, Path, Path]:
+        def provider_changed_candidate(label: str, *, linked: bool = True) -> tuple[Path, dict, str, Path, Path]:
             job, state, _sha, envelope = current_candidate_fixture(label, linked=linked)
             command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
             repo = Path(command["workdir"])
@@ -5612,36 +5398,37 @@ with tempfile.TemporaryDirectory() as temporary:
 
         # Ordinary provider-tracked/untracked changes remain candidate content;
         # result, continue, and finalize each retain their normal authority.
-        result_job, result_state, _result_sha, _envelope, _repo = provider_changed_candidate("v9-standard-result")
+        result_job, result_state, _result_sha, _envelope, _repo = provider_changed_candidate("current-standard-result")
         result = subprocess.run(
             [sys.executable, str(SOURCE), "result", "--job-dir", str(result_job)],
             check=True, stdout=subprocess.PIPE,
         )
-        assert json.loads(result.stdout)["summary"] == "candidate-v9-standard-result"
+        assert json.loads(result.stdout)["summary"] == "candidate-current-standard-result"
 
-        continue_job, continue_state, continue_sha, _envelope, _repo = provider_changed_candidate("v9-standard-continue")
+        continue_job, continue_state, continue_sha, _envelope, _repo = provider_changed_candidate("current-standard-continue")
         queued, _queued_sha = MODULE.create_state(
             continue_job, "conversation-continue", resume=True,
-            approve_sha=continue_sha, verification=verification(continue_state, "v9-standard-continue"),
+            approve_sha=continue_sha, verification=verification(continue_state, "current-standard-continue"),
         )
         assert queued["attempt_origin"] == "conversation-continue"
 
         finalize_job, finalize_state, finalize_sha, _envelope, linked_repo = provider_changed_candidate(
-            "v9-linked-finalize", linked=True,
+            "current-linked-finalize", linked=True,
         )
         marker = finalize_state["worktree_root_identity"]["git_marker"]
         assert marker["kind"] == "file" and marker["content_sha256"] is not None
         finalized = subprocess.run(
             [sys.executable, str(SOURCE), "finalize", "--job-dir", str(finalize_job),
              "--approve-state-sha", finalize_sha, "--assurance", "partially_verified"],
-            input=json.dumps(verification(finalize_state, "v9-linked-finalize")).encode("utf-8"),
+            input=json.dumps(verification(finalize_state, "current-linked-finalize")).encode("utf-8"),
             check=True, stdout=subprocess.PIPE,
         )
         assert json.loads(finalized.stdout)["driver_disposition"] == "partially_verified"
 
         # HEAD/ref/object and index-cache activity is mutable repository state,
-        # not a V9 root boundary replacement, in both normal and linked roots.
-        for label, repo in (("standard", _repo), ("linked", linked_repo)):
+        # not a stable root boundary replacement. A plain-root snapshot is
+        # tested separately from current linked-worktree launch authority.
+        for label, repo in (("first-linked", _repo), ("second-linked", linked_repo)):
             before = MODULE._dispatch_root_identity(str(repo)); assert before is not None
             subprocess.run(["git", "-C", str(repo), "update-index", "--refresh"], check=True)
             subprocess.run([
@@ -5701,44 +5488,47 @@ with tempfile.TemporaryDirectory() as temporary:
         # Same-path roots, direct .git directories, linked marker contents and
         # the Git-dir/common-dir/synthetic-worktree boundaries all fail closed
         # without a provider launch or controller-state rewrite.
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-root-replacement")
-        displaced = root / "v9-root-replacement-displaced"; repo.rename(displaced)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-root-replacement")
+        displaced = root / "current-root-replacement-displaced"; repo.rename(displaced)
         repo.mkdir(); subprocess.run(["git", "init", "-q", str(repo)], check=True)
         reject_without_write(job, state, sha, "root replacement")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-git-dir-replacement")
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-git-dir-replacement")
         (repo / ".git").rename(repo / ".git-displaced")
         (repo / ".git").mkdir()
         reject_without_write(job, state, sha, "git dir replacement")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-linked-marker-replacement", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-linked-marker-replacement", linked=True)
         marker = repo / ".git"; original = marker.read_bytes(); replacement = repo / ".git.replacement"
         replacement.write_bytes(original); replacement.chmod(marker.stat().st_mode & 0o777)
         os.replace(replacement, marker)
         reject_without_write(job, state, sha, "linked marker replacement")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-linked-marker-retarget", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-linked-marker-retarget", linked=True)
         (repo / ".git").write_text("gitdir: /nonexistent\n", encoding="utf-8")
         reject_without_write(job, state, sha, "linked marker retarget")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-git-dir-symlink", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-git-dir-symlink", linked=True)
         git_dir = Path(state["worktree_root_identity"]["git_dir"]["realpath"])
         displaced = git_dir.with_name(git_dir.name + "-displaced")
         git_dir.rename(displaced); git_dir.symlink_to(displaced, target_is_directory=True)
         reject_without_write(job, state, sha, "git dir symlink")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-common-dir-symlink", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-common-dir-symlink", linked=True)
         common_dir = Path(state["worktree_root_identity"]["common_dir"]["realpath"])
         displaced = common_dir.with_name(common_dir.name + "-displaced")
         common_dir.rename(displaced); common_dir.symlink_to(displaced, target_is_directory=True)
         reject_without_write(job, state, sha, "common dir outward symlink")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-top-level-drift")
-        outside = root / "v9-top-level-outside"; outside.mkdir()
-        subprocess.run(["git", "-C", str(repo), "config", "core.worktree", str(outside)], check=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-top-level-drift")
+        outside = root / "current-top-level-outside"; outside.mkdir()
+        subprocess.run(["git", "-C", str(repo), "config", "extensions.worktreeConfig", "true"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "--worktree", "core.worktree", str(outside)], check=True)
+        observed = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"], check=True, stdout=subprocess.PIPE)
+        assert observed.stdout.decode().strip() == str(outside)
         reject_without_write(job, state, sha, "show-toplevel drift")
 
-    check("v9 stable Git boundary permits provider content while rejecting root and Git authority replacement", v9_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement)
+    check("current stable Git boundary permits provider content while rejecting root and Git authority replacement", current_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement)
 
     def candidate_snapshot_actions_reject(
         job: Path, state: dict, label: str, *,
@@ -5806,7 +5596,10 @@ with tempfile.TemporaryDirectory() as temporary:
         command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
         candidate_repo = Path(command["workdir"])
         candidate_outside = root / "redirected-candidate-outside"; candidate_outside.mkdir()
-        subprocess.run(["git", "-C", str(candidate_repo), "config", "core.worktree", str(candidate_outside)], check=True)
+        subprocess.run(["git", "-C", str(candidate_repo), "config", "extensions.worktreeConfig", "true"], check=True)
+        subprocess.run(["git", "-C", str(candidate_repo), "config", "--worktree", "core.worktree", str(candidate_outside)], check=True)
+        observed = subprocess.run(["git", "-C", str(candidate_repo), "rev-parse", "--show-toplevel"], check=True, stdout=subprocess.PIPE)
+        assert observed.stdout.decode().strip() == str(candidate_outside)
         candidate_snapshot_actions_reject(
             job, state, "core-worktree",
             continuation_error="dispatch worktree root binding changed",

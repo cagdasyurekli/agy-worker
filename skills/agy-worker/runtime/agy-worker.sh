@@ -18,6 +18,7 @@
 #   * Therefore: exit code 0 proves nothing. Empty stdout is a FAILURE. See classify().
 set -euo pipefail
 
+
 # Prompts, streams, stderr, and envelopes can contain private repository content.
 # Create dispatcher-owned artifacts under a private mask regardless of the caller's
 # umask. The local supervisor restores this exact mask only in the agy child, so
@@ -134,11 +135,11 @@ usage: agy-worker.sh [--workdir DIR] [--persona NAME] [--mode plan|accept-edits]
        agy-worker.sh status|result --job-id JOB [--format json|text]
        agy-worker.sh verification-copy --job-id JOB --destination NEW_DIRECTORY_IN_0700_PARENT [--format json|text]
        agy-worker.sh self-verify --job-id JOB --approve-state-sha SHA [--format json|text]
-       agy-worker.sh resume --job-id JOB --approve-state-sha SHA [--approve-migration-sha SHA] [--format json|text]
-       agy-worker.sh restart --job-id JOB --approve-state-sha SHA [--approve-migration-sha SHA] [--format json|text]
-       agy-worker.sh continue --job-id JOB --approve-state-sha SHA [--approve-migration-sha SHA] [--format json|text] < driver-verification-input
+       agy-worker.sh resume --job-id JOB --approve-state-sha SHA [--format json|text]
+       agy-worker.sh restart --job-id JOB --approve-state-sha SHA [--format json|text]
+       agy-worker.sh continue --job-id JOB --approve-state-sha SHA [--format json|text] < driver-verification-input
        agy-worker.sh continue --job-id JOB --approve-state-sha SHA --use-self-verification [--format json|text]
-       agy-worker.sh finalize --job-id JOB --approve-state-sha SHA [--approve-migration-sha SHA] \
+       agy-worker.sh finalize --job-id JOB --approve-state-sha SHA \
            --assurance verified|partially_verified|rejected|blocked [--format json|text] < driver-verification-input
        agy-worker.sh wait --job-id JOB --after-state-sha SHA [--timeout 60s] [--format json|text]
        agy-worker.sh cancel --job-id JOB --approve-state-sha SHA
@@ -166,9 +167,6 @@ Resume and restart use the current state approval before any provider call:
   agy-worker.sh resume --job-id JOB --approve-state-sha STATE_SHA
   agy-worker.sh restart --job-id JOB --approve-state-sha STATE_SHA
 
-For a V3/V4 legacy state, copy both approvals from status before the first
-lifecycle transition; the migration SHA binds the current root, artifacts, and
-dispatch inputs and is rejected if any of them changed.
 EOF
     exit "$usage_exit"
 }
@@ -177,7 +175,6 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
     control_job="$job_id"
     control_job_seen=0
     control_state_sha=""
-    control_migration_sha=""
     control_after_sha=""
     control_timeout="60s"
     control_format="json"
@@ -187,15 +184,15 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
     control_use_self_verification_seen=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --approve-migration-sha|--approve-migration-sha=*)
+                echo "agy-worker.sh: --approve-migration-sha was removed in this unreleased development version; finish or discard the old job with the release that created it." >&2
+                exit 64 ;;
             --job-id)
                 [[ $# -ge 2 && $control_job_seen -eq 0 ]] || usage
                 control_job="$2"; control_job_seen=1; shift 2 ;;
             --approve-state-sha)
                 [[ $# -ge 2 && -z "$control_state_sha" ]] || usage
                 control_state_sha="$2"; shift 2 ;;
-            --approve-migration-sha)
-                [[ $# -ge 2 && -z "$control_migration_sha" ]] || usage
-                control_migration_sha="$2"; shift 2 ;;
             --after-state-sha)
                 [[ $# -ge 2 && -z "$control_after_sha" ]] || usage
                 control_after_sha="$2"; shift 2 ;;
@@ -251,17 +248,16 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
         restart|continue)
             [[ -n "$control_state_sha" ]] || usage
             supervisor+=(--approve-state-sha "$control_state_sha")
-            [[ -z "$control_migration_sha" ]] || supervisor+=(--approve-migration-sha "$control_migration_sha")
             (( control_use_self_verification_seen == 0 )) || supervisor+=(--use-self-verification) ;;
         resume)
             # Let the controller read the current safe snapshot so an omitted
             # approval can return its exact actionable replacement, not usage.
             [[ -z "$control_state_sha" ]] || supervisor+=(--approve-state-sha "$control_state_sha")
-            [[ -z "$control_migration_sha" ]] || supervisor+=(--approve-migration-sha "$control_migration_sha") ;;
+            ;;
         finalize)
             [[ -n "$control_state_sha" && -n "$control_assurance" ]] || usage
             supervisor+=(--approve-state-sha "$control_state_sha" --assurance "$control_assurance")
-            [[ -z "$control_migration_sha" ]] || supervisor+=(--approve-migration-sha "$control_migration_sha") ;;
+            ;;
         verification-copy)
             [[ -n "$control_destination" ]] || usage
             supervisor+=(--destination "$control_destination") ;;
@@ -301,6 +297,9 @@ disable_slash=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --approve-migration-sha|--approve-migration-sha=*)
+            echo "agy-worker.sh: --approve-migration-sha was removed in this unreleased development version; finish or discard the old job with the release that created it." >&2
+            exit 64 ;;
         --workdir) [[ $# -ge 2 ]] || usage; workdir="$2"; shift 2 ;;
         # Persona by PROMPT INJECTION, not by --agent. Measured 2026-08-01: passing
         # --agent silently disables --json-schema enforcement (result.structured_output
