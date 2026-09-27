@@ -33,12 +33,6 @@ ignore = [
 python_version = "3.9"
 files = [
     "skills/agy-worker/runtime/scripts",
-    "scripts/benchmark.py",
-    "scripts/codex_usage_report.py",
-    "scripts/feedback-triage.py",
-    "scripts/model_evidence_campaign.py",
-    "scripts/model_intelligence.py",
-    "scripts/swebench_workflow_study.py",
 ]
 check_untyped_defs = true
 warn_unused_ignores = true

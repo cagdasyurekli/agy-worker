@@ -12,21 +12,14 @@ scope; reuse existing authority when it covers the work. This roadmap does not i
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
 
-## Unreleased — smaller standalone core package
+## Unreleased — smaller core surface
 
-This development candidate moves benchmark, SWE-bench study, Model Intelligence,
-model-evidence campaign, Codex usage, and feedback-triage tooling out of the skill
-bundle. The repository retains their root entrypoints, implementations, schemas,
-and assets; ordinary delegation, selection, gate, receipt, and lifecycle commands
-remain in the one portable core runtime. Folder-only skill copies do not acquire
-repository-only tools or fetch them on demand.
-
-Benchmark portable-source validation now applies to a copied repository layout with
-its required core files, rather than a skill-only bundle. Its exact source, mode,
-digest, and receipt checks remain required. This is an unreleased packaging change,
-not a version bump or publication claim. Skill size describes tracked source files
-or a fresh copy; it does not describe a full marketplace repository download or
-promise pruning of older installed files.
+This development candidate removes the unused research, measurement, reporting,
+benchmark, usage-report, and prompt-specialization tools. Ordinary delegation,
+selection, gate, receipt, lifecycle, native isolation, self-verification, updater,
+and notifier behavior remain in scope. This is an unreleased change, not a version
+bump or publication claim. Skill size describes tracked source files or a fresh copy;
+it does not describe a full marketplace download or promise pruning of older installs.
 
 ## Unreleased — retired job formats and approval aliases
 
@@ -34,12 +27,15 @@ This development candidate makes a breaking change for in-flight jobs written in
 retired dispatch or workflow formats: readers reject them without projection or
 migration. Finish or discard those jobs with the release that created them;
 v0.22.0 is the last documented release with legacy-schema support. Current formats
-are defined by the runtime constants linked from the
+include command V12: all V11 jobs are retired, including those that never used
+Boost or a persona. Old job artifacts remain untouched. Current formats are defined
+by the runtime constants linked from the
 [recovery guide](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
 The candidate removes the facade approval aliases `--approve-preview-sha`,
 `--legacy-preview-approval`, and `--approve-state-sha`, plus dispatcher
-`--approve-migration-sha`, with actionable errors. Canonical advanced state approvals,
+`--approve-migration-sha`, and the retired `--boost`, `--approve-boost-risk-sha`, and
+`--persona` options, with actionable errors. Canonical advanced state approvals,
 named tiers, raw dispatch, and independent evidence formats remain supported.
 These changes are unreleased; this entry does not change the package version or
 claim a publication.
@@ -74,7 +70,7 @@ policies for both effects. These changes have not been released.
 
 The v0.22.0 version manifest records AGY 1.2.11 as the current active compatibility binding. The exact unchanged 14-slug model matrix, its SHA-256, reviewed release revision, inventory binding, and bounded behavior limits live in `../compat/reviews/agy-1.2.11-activation.md`. The official 1.2.11 release page identifies commit `6dadd6227a49905f475d22b7f0afe59493229595`. 1.2.7 is now the previous historical binding.
 
-This release also exposes advisory delegation decisions through the ordinary workflow, fixes finalization through the public dispatcher wrapper, rejects repeated model/effort/tier options, and clarifies checkout freshness and ignored-cache diagnostics. Bounded live session editing and same-conversation refinement were verified; native, Boost/API-key, and effective accept-edits semantics remain unqualified for AGY 1.2.11.
+This release also exposes advisory delegation decisions through the ordinary workflow, fixes finalization through the public dispatcher wrapper, rejects repeated model/effort/tier options, and clarifies checkout freshness and ignored-cache diagnostics. Bounded live session editing and same-conversation refinement were verified; native and effective accept-edits semantics remain unqualified for AGY 1.2.11.
 
 ## v0.20.0 — AGY 1.2.7 compatibility
 
@@ -108,7 +104,7 @@ the exact public commit; marketplace visibility is a separate external state.
 
 v0.18.0 established the prior AGY 1.1.27 normal-session compatibility baseline.
 Its [historical activation record](../compat/reviews/agy-1.1.27-activation.md) retains
-the accepted cases and the limits of its Boost observations. Marketplace visibility
+the accepted cases and their qualification limits. Marketplace visibility
 is verified separately from the GitHub release.
 
 ## v0.17.0 — released
@@ -169,8 +165,6 @@ Use these terms consistently in code, tests, documentation, and reports:
   or reinterpret the underlying outcome.
 - **Provider-reported usage:** token, duration, or turn telemetry supplied by agy. It
   is not independent billing or quota evidence.
-- **Persona evidence status:** the documented level of offline and bounded real-job
-  evidence for a prompt-injected persona. It is not a general quality guarantee.
 
 ## Immutable cross-slice rules
 
@@ -180,7 +174,7 @@ Every roadmap slice must preserve all of these rules:
 2. Acceptance continues to require an immutable base, complete Git-visible scope,
    driver-owned verification, unchanged candidate state during verification, and
    human diff review.
-3. No receipt, report, persona, profile, benchmark, usage number, or CI rendering may
+3. No receipt, report, usage number, or CI rendering may
    become an alternative acceptance path.
 4. The caller selects the tier or explicit model/effort input. Recommendations remain
    visible and advisory, with `recommendation_only: true` and `applied: false`.
@@ -226,7 +220,7 @@ behavior into broader agy `1.2.2` promises:
   sandbox-correct inventory and bounded behavior tests. G1 may then expose the same
   vocabulary as a wrapper input; it must not infer effort, invent a thinking-level
   flag, or imply that both agy selectors are forwarded.
-- Do not add dynamic model/persona discovery from help text alone.
+- Do not add dynamic model discovery from help text alone.
 - Do not infer authentication from a single failure or invent `agy auth`. Probe only
   documented commands and validate their expected semantic output; neither an unknown
   subcommand's exit code nor generic usage text is compatibility evidence.
@@ -245,21 +239,11 @@ behavior into broader agy `1.2.2` promises:
 Each slice below is independently reviewable. A later slice must not be smuggled into
 an earlier implementation because it shares a schema or helper.
 
-### v0.16.0 agy 1.1.24 and bounded Boost compatibility
+### v0.16.0 agy 1.1.24 compatibility
 
-**Status:** Local candidate; not published. One explicitly approved scoped live check
-completed against a sealed agy `1.1.24` executable with exact
-`gemini-3.8-flash-low` selection. The provider reported `Boost` with
-`request-review`, used only file tools under the staged root, changed only the
-approved file, and completed one cycle; Codex independently verified and finalized
-that candidate. This bounded check does not establish broader model quality,
-provider isolation, or general Boost behavior.
-
-This candidate activates the independently reconciled agy `1.1.24` fourteen-model
-inventory, including Gemini 3.8 Flash low, medium, and high compound slugs. It also
-adds a one-cycle `task`-only Boost profile with a job-bound risk acknowledgement,
-selected-content provider scope, provider-observed identity checks, and no
-resume/restart/continue path. Provider execution, Git actions, publication, and
+**Status:** Local candidate; not published. This candidate activates the independently
+reconciled agy `1.1.24` fourteen-model inventory, including Gemini 3.8 Flash low,
+medium, and high compound slugs. Provider execution, Git actions, publication, and
 marketplace updates remain separate authority gates.
 
 ### v0.15.0 product simplification
@@ -267,11 +251,8 @@ marketplace updates remain separate authority gates.
 **Status:** Published. Publication is established by the annotated `v0.15.0` tag at
 `0878bd6019d31bf2659e7c95da560c3b9adf6ac9` and GitHub Release readback.
 
-This release retires the unused workload-profile and persona-evidence registries
-after their announced window. The direct `--persona` templates and their mode
-restrictions remain. Current controller state remains current-only; V1–V10 records
-stay readable and retain their existing approval-gated recovery/migration behavior.
-The release made no marketplace or SkillStore assessment claim.
+The release retired unused optional registries. It made no marketplace or SkillStore
+assessment claim. Its historical job-format handling does not define current support.
 
 ### v0.14.1 direct-dispatch transmission parity
 
@@ -315,17 +296,15 @@ grant provider execution, Git, acceptance, or publication authority.
 This release adds the ordinary `run`, `status`, and structured-argv
 `verify-finalize` lifecycle facade while retaining low-level recovery commands. It
 also adds provider-free transmission preview, Gitless allowlisted provider staging,
-manifest-derived CI stages and timing receipts, manifest-driven version compatibility,
-and privacy-bounded model-evidence campaign advisory/aggregate surfaces. Conformance
+manifest-derived CI stages and timing receipts, and manifest-driven version compatibility. Conformance
 cleanup is restricted to work-owned temporary roots, and the scoped-staging acceptance
 matrix directly covers denied or omitted paths, symlinks, special files, races, drift,
 unauthorized writes, exact binary bytes, and executable modes.
 
 The release preserves caller-owned provider/model selection, Codex-owned final
-acceptance, explicit local opt-in for aggregates, and fail-closed handling of stale or
+acceptance and fail-closed handling of stale or
 incompatible evidence. It does not establish provider isolation, general model
-superiority, guaranteed time or token savings, exhaustive correctness, or completion
-of the two-minor-release persona/profile retirement window.
+superiority, guaranteed time or token savings, or exhaustive correctness.
 
 ### v0.12.0 verified delegation and agy 1.1.22 compatibility
 
@@ -335,10 +314,9 @@ identities while preserving the release tree.
 
 This release collects the completed post-v0.11.0 goal without adding a new product
 slice. It activates the human-reconciled agy 1.1.22 baseline and unchanged 14-slug
-inventory; adds privacy-safe Codex usage observation, account-capture classification,
+inventory; adds account-capture classification,
 exact-head CI timing and four-way sharding; discloses every AGY dispatch model and
-effort; adds advisory SWE-bench workflow studies and evidence-bound model/delegation
-guidance plus the V10 sanitized outer-terminal diagnostic/state migration; and adds
+effort; adds evidence-bound model/delegation guidance plus the V10 sanitized outer-terminal diagnostic/state migration; and adds
 repository-scoped marketplace metadata/tutorial, progressive documentation, Pages
 source, and verification assets.
 
@@ -380,7 +358,7 @@ The release campaign also exercised the public worker surface against this repos
 
 These observations keep provider terminal state, structured output, physical diff,
 Receipt/gate state, and Codex disposition separate. They establish bounded workflow
-exercise, not a general model ranking, provider-quality guarantee, persona promotion,
+exercise, not a general model ranking or provider-quality guarantee,
 or proof that delegation reduces Codex allowance usage.
 
 ### Historical v0.2.0 release scope
@@ -396,7 +374,7 @@ behavior.
 ### G0 — Compatibility Reconciliation & Watch
 
 **Current status:** Daily hosted observation, the optional local notifier, privacy-
-limited 30/60/90 measurement tooling, Codex `0.148.0` reconciliation, bounded GitHub
+Codex `0.148.0` reconciliation, bounded GitHub
 transport hardening, the historical agy `1.1.12` reconciliation, gate-envelope intake, lifecycle
 Git stdout, Actions checkout credentials, and the progress-aware per-job lifecycle are
 implemented and offline-verified in the published v0.4.0 release. This remains an
@@ -422,24 +400,13 @@ P2-B/P2-C remain deferred. Ordinary agy-owned default
 dispatch and explicitly approved literal pass-through remain operational during
 future version drift; reviewed model/effort resolution stays fail-closed.
 
-### Feedback reporting and bounded maintainer review
-
-**Current status:** Implemented, offline-verified, and published in v0.5.0. The local
-report path creates sanitized bug or improvement
-drafts; public submission requires independent review plus matching exact digest and
-public-safety-digest confirmations. Security drafts remain private-route only. The
-weekly/manual watcher reads one fixed, metadata-only issue page and emits a bounded
-aggregate; raw issue prose never becomes an agent prompt or workflow log, while only
-the canonical aggregate is workflow output. It cannot write GitHub issues, comments,
-labels, or state.
-
 ### Usability-first project workflow
 
 **Current status:** Implemented, offline-verified, and published in v0.7.0.
 The product provides three explicit Codex
 workflows: read-only `explore`, implementation `task`, and repo-wide iterative
 `project`. Unknown final file lists, broad architecture work, missing initial test
-commands, and omission of a persona are not admission failures.
+commands are not admission failures.
 
 Project jobs bind a bounded local cycle count and let Codex provide strict,
 sanitized, driver-owned verification JSON to `continue` the exact conversation after
@@ -447,7 +414,7 @@ an observed check failure. `finalize` records only Codex's `verified`,
 `partially_verified`, or `blocked` assurance conclusion; it will not execute the JSON
 as a command or allow agy to self-assign quality. A useful unresolved candidate is
 preserved for review instead of being silently retried, discarded, or presented as
-complete. Personas remain optional prompt specializations.
+complete.
 
 ### Maintenance, version drift, and quota diagnostics
 
@@ -694,8 +661,7 @@ provenance, code-signing verification, or OS attestation.
   same-PR concurrency cancels superseded work. `scripts/ci-offline.sh` is the local
   fail-fast static/all-suite fallback when a private fork has no Actions quota. Its
   evidence is never a substitute for the required GitHub check; exact manual dispatch
-  remains required before publication after service availability returns. The weekly
-  read-only metadata feedback aggregate is Linux because it has no macOS contract.
+  remains required before publication after service availability returns.
 - **Local notifier contract:** An optional owner-private macOS LaunchAgent runs the
   same watch daily from hash-bound snapshots. It derives HOME from the account
   database, binds the complete transitive behavior source set, serializes lifecycle
@@ -704,11 +670,6 @@ provenance, code-signing verification, or OS attestation.
   resumable. It does not apply updates or gain independent network/Git/provider
   authority. A changed sanitized result fingerprint triggers one notification attempt;
   the same fingerprint is suppressed.
-- **Measurement contract:** The optional v2 ledger is explicit local input, not
-  telemetry. It accepts only closed 30/60/90 metrics, opaque observation IDs, exact
-  repository revisions, and allowlisted public GitHub evidence under a private
-  canonical `0600` one-link file. Stale records age out per window; missing and partial
-  metrics remain visible. Reports cannot gate, route, reconcile, or activate P2.
 - **Fixed primary sources:** agy reconciliation binds the official
   [Antigravity source](https://github.com/google-antigravity/antigravity-cli),
   [releases](https://github.com/google-antigravity/antigravity-cli/releases),
@@ -740,7 +701,7 @@ provenance, code-signing verification, or OS attestation.
   compatibility binding (with `1.2.7` previous/historical). Its capture, strict
   inventory, and bounded session edit and planned refinement were separately
   reconciled; the [activation record](../compat/reviews/agy-1.2.11-activation.md) states
-  the limits. Native, Boost/API-key, and effective accept-edits semantics remain
+  the limits. Native and effective accept-edits semantics remain
   unqualified for this version. Any later version
   or release movement returns the result to
   drift-review until another reconciliation is accepted.
@@ -779,7 +740,7 @@ provenance, code-signing verification, or OS attestation.
   they do not prove the agy CLI composition, relative quality, or effective
   subscription cost for this wrapper. A discoverable `flash-high` alias is a later
   isolated decision after G0/G1 compatibility tests; changing a default or
-  recommendation order additionally requires the pre-registered benchmark below.
+  recommendation order additionally requires reviewed comparative evidence.
 - **Dependencies:** Existing read-only `update.sh check`, fixed compatibility metadata,
   `ground-truth.sh`, Bash 3.2, Python 3 standard library, git, and GitHub-hosted macOS.
   No runtime dependency, provider credential, or paid quota is introduced.
@@ -926,7 +887,7 @@ provenance, code-signing verification, or OS attestation.
 - **Later alias/ranking gate:** A named `flash-high` alias can be proposed only after
   G0/G1 prove its exact agy composition. Mapping `bulk`/`hard`, recommending Flash-high
   over Pro-high, or changing a default additionally requires a pre-registered bounded
-  benchmark using fixed public fixtures, identical scope and verifier, pinned tool
+  comparison using fixed public fixtures, identical scope and verifier, pinned tool
   versions, equal attempts, captured latency/provider telemetry, and explicit live-use
   approval. Official model descriptions or a one-off result are not a ranking.
 
@@ -1233,71 +1194,6 @@ remains intentionally outside the Doctor contract.
   The claim is direct gate fixture compatibility only; it excludes Receipt/report,
   lifecycle, dispatch, provider, real-job quality, security, and human acceptance.
 
-#### P1-C — Reproducible offline benchmark harness (implemented)
-
-- **User job:** Compare releases, caller-selected model inputs, or personas on fixed
-  bounded tasks using gate observations rather than subjective worker summaries.
-- **Implemented surface:** `benchmark.sh prepare|run|report`, frozen
-  `benchmarks/v1/manifest.json`, an explicit external owner-`0700` result root, and
-  `docs/BENCHMARKING.md`. No live/provider path is implemented.
-- **Dependencies:** Receipt v1; lifecycle is useful but optional.
-- **Trust boundary:** Every result binds exact fixture/base, either a clean source
-  commit or the reviewed portable source revision/manifest, runner/schema/manifest/
-  gate/wrapper hashes, caller selection, one-attempt policy, and validated Receipt
-  v1 facts. No hidden retries or selector changes. The report is
-  completeness facts only; it has no leaderboard, score, winner, or route.
-- **Minimum accept tests:** The frozen offline fixture produces a deterministic report
-  and exact Receipt v1 through the canonical gate.
-- **Minimum reject tests:** Changed fixture hash, missing verifier, unpublished input,
-  partial task set described as complete, hidden retry/input/resolution change, or
-  result without exact version binding.
-- **Docs and AGENTS impact:** Add BENCHMARKING document and README evidence link;
-  update REPO_MAP. AGENTS updates only verified real/offline evidence boundaries, not
-  one-off results.
-- **Size:** L.
-- **Implemented evidence:** One hundred four provider-independent cases cover frozen assets,
-  clean-source/tool bindings, private no-overwrite publication, one attempt,
-  Receipt/result/report coherence, partial/tampered results, selectors, privacy,
-  lifecycle interruption, complete nested schema constraints, folder-only execution,
-  and source-policy mutations.
-- **Done/exit criteria:** Reproducible offline harness. Live execution remains an
-  unimplemented, separately reviewed and approved future slice requiring accepted agy
-  executable/version evidence plus explicit Google/Gemini data scope and cost.
-
-#### P1-D — Persona evidence registry (retired in the v0.15.0 local candidate)
-
-- **User job:** Distinguish offline persona contract coverage from honest escalation
-  and accepted real-candidate evidence.
-- **Historical surface:** Validated `compat/personas/<name>.json` records and a generated
-  documentation table. The registry was retired after its announced window because no
-  reproducible external use established product value. Direct runtime persona selection
-  remains an explicit hardcoded allowlist; target repositories cannot register
-  executable personas dynamically.
-- **Dependencies:** Receipt v1 and public benchmark fixtures.
-- **Trust boundary:** Persona text remains prompt guidance, never enforcement. One
-  accepted real candidate does not make a persona generally reliable. Use evidence
-  states such as `offline-only`, `real-escalation-observed`, and
-  `accepted-real-candidate`; do not label a persona simply “trusted.”
-- **Minimum accept tests:** Registered persona exists, has valid frontmatter and mode
-  restriction, and references exact reproducible evidence for its stated level.
-- **Minimum reject tests:** Unknown/path-alias persona, edit mode for a read-only
-  persona, self-authored acceptance claim, missing base/verifier/tool version, private
-  evidence described as public, or target-repository dynamic registration.
-- **Docs and AGENTS impact:** Update README persona matrix, limitations, REPO_MAP, and
-  current evidence boundaries. Keep one-off run history out of AGENTS.
-- **Size:** M for registry; real exercises are separate approved operational work.
-- **Implemented evidence:** Provider-independent cases cover the fixed
-  allowlist, canonical and folder-only records, public P1-C hash bindings, frontmatter
-  and dispatcher mode restrictions, deterministic reporting, all three state
-  contracts, semantic Receipt/dispatch/tool/version/verifier/diff coherence, strict
-  Git ancestry and blob/mode/allowlist rules, maintainer/human-review records, privacy,
-  schema structure, and weakening mutations. Protected-main ancestry proves ordering,
-  not reviewer identity or a signature. All
-  shipped records remain `offline-only`; no historical run has the public bindings
-  required for promotion.
-- **Done/exit criteria:** Every shipped persona has precise evidence status; no
-  stronger claim than its reproducible records support.
-
 #### P1-E — CI-safe JSON, Markdown, and GitHub Step Summary reporter
 
 **Status:** Implemented as an offline-only extension of the pure P0-B renderer; no
@@ -1335,37 +1231,6 @@ locations/rules. Do not add JUnit unless a concrete consumer first demonstrates 
 semantically honest mapping; “job rejected” is not automatically a test-case failure.
 
 ### P2 — optional local ergonomics and telemetry
-
-#### P2-A — Data-only workload profiles (retired in the v0.15.0 local candidate)
-
-**Status:** Retired after the announced compatibility window. It was implemented
-provider-independently as a fixed v1 data bundle and pure list/show command, but no
-reproducible external use established product value.
-
-- **User job:** Start common bounded jobs from a maintained skeleton without hiding
-  policy choices.
-- **Intended surface:** Bundled `profiles/*.json` plus `profile.sh list|show NAME`.
-  Profiles may suggest mode, maintained persona, and path-policy shape. The driver
-  supplies the selected tier, exact repository, verification commands, and approval.
-- **Dependencies:** Stable lifecycle input contract.
-- **Trust boundary:** No target-repository auto-loading. Profiles contain no model,
-  tier, effort/thinking value, executable verifier, external add-dir, authorization,
-  auto-dispatch, or Git action.
-- **Minimum accept tests:** Maintained profile renders a non-executable plan that still
-  requires caller tier and verifier.
-- **Minimum reject tests:** Embedded model/tier/effort, shell command, authorization,
-  outside-workdir root, dynamic repository profile, path alias, or implicit dispatch.
-- **Docs and AGENTS impact:** README/SKILL/REPO_MAP and durable profile restrictions
-  only after implementation.
-- **Size:** M.
-- **Done/exit criteria:** Profiles reduce typing without deciding cost, executing
-  policy, or expanding read scope.
-- **Implemented evidence:** Eighty-nine offline cases bind the exact three-profile
-  manifest, canonical list/show bytes, maintained mode/persona pairs, closed
-  repo-relative path-policy shapes, all caller-required fields, portable parity,
-  schema/inventory/hash/mode/symlink/bound enforcement, hidden-source non-discovery,
-  and weakened-policy mutations. No profile contains or obtains a selected value,
-  executable command, path, authorization, dispatch, route, acceptance, or Git action.
 
 #### P2-B — Provider-reported usage and latency
 
@@ -1437,38 +1302,9 @@ checks remain mandatory; age alone never authorizes deletion.
 - **Done/exit criteria:** Implement only after lifecycle usage supplies evidence that
   manual cleanup is a recurring problem.
 
-#### P2-D — Driver-side Codex usage observation
-
-**Status:** Implemented in first delivery slice (GitHub issue #69); paired with sidecar failure classifier (GitHub issue #72).
-
-- **User job:** Observe the Codex orchestration cost around an explicitly selected main
-  task and explicit subagent tasks, then run a separately approved directional A/B
-  protocol without claiming billing or quota savings.
-- **Intended surface:** `codex-usage-report.sh --task LABEL=THREAD_ID
-  [--session LABEL=ABS_FILE]... [--account-usage] [--format json|text]`.
-- **Primary source:** An explicitly approved, Codex-version-bound
-  `account/usage/read(threadId)` observation. If `threadUsage` is absent, report
-  `unavailable`; never derive credit, price, or remaining quota from token counters.
-- **Session boundary:** Read only explicitly named session files and allowlisted
-  `token_count`/lifecycle fields. Never scan `~/.codex`, emit raw session content,
-  prompts, tool arguments, repository text, account identity, paths, or thread IDs.
-- **Report semantics:** Keep input, cached input, net-new input, output, reasoning-output
-  subset, tool/wait counts, measurement window, main task, subagent tasks, agy usage,
-  Codex usage, and rate-limit observation distinct. Aggregate only when every task is
-  explicitly supplied.
-- **A/B boundary:** Use three matched fresh-task repetitions with frozen repository
-  base, prompt, Codex model/effort, acceptance checks, time budget, and agy model/effort.
-  No subagents or concurrent Codex work. Every provider/account-backed run requires
-  separate approval and is never auto-started.
-- **Acceptance:** Fail closed for unknown Codex protocol versions, counter reset or
-  regression, duplicates, malformed JSON, missing rate limits, `threadUsage: null`, and
-  directory-scan attempts. Negative tests reject money/quota inference, sensitive-field
-  leakage, automatic routing changes, and general model/delegation claims. Without
-  comparable credit data, label results `directional`.
-
 #### P2-E — Exact-head CI timing telemetry and fail-closed sharding
 
-**Status:** Implemented in delivery slices: timing telemetry (GitHub issue #73A) and exact-PR-head fail-closed CI sharding across four frozen shards (GitHub issue #73B); separate token efficiency benchmark follow-up remains deferred.
+**Status:** Implemented in delivery slices: timing telemetry (GitHub issue #73A) and exact-PR-head fail-closed CI sharding across four frozen shards (GitHub issue #73B).
 
 - **User job:** Observe monotonic per-stage gate timings and parallelize offline CI across four
   frozen shards (`dispatcher`, `dispatcher-remediation`, `other-a`, `other-b`) on the exact PR head
@@ -1518,18 +1354,6 @@ checks remain mandatory; age alone never authorizes deletion.
   untrusted-claim, or human-required outcomes — rejected.** More model spend cannot
   repair those boundaries.
 
-### SWE-bench Workflow Study v1
-
-**Status:** Implemented.
-**Goal:** Add a separate offline suite that lets users import explicit, sanitized, matched experiment results and learn which agy-worker usage method is most token/cost efficient per accepted solution.
-**Deliverable:** `swebench-workflow-study.sh` with exactly `prepare`, `import`, `report`, and `advise` commands. Its hash-linked artifacts use a strict matched all-cell Pareto rule against `codex-only`, closed bounded budgets and failure states, derived acceptance, and separate explicit-availability Codex/agy usage and billed/list-price observations. Advice requires one complete comparable cost basis and complete primary token observations; otherwise it emits a deterministic `no_recommendation`. The lifecycle performs no dispatch, evaluator execution, provider call, retry, routing, or authority change.
-
-### Model Intelligence v1
-
-**Status:** Implemented (GitHub issue #80).
-**Goal:** Provide offline evidence validation and deterministic Pareto frontier analysis across model/effort candidates for bounded task taxonomies.
-**Deliverable:** `model-intelligence.sh` with `validate` and `advise` subcommands, strict evidence schemas, dataset `dataset.v1.json`, distinct provenance types (`vendor`, `independent`, `local`), non-expired observations, and strict telemetry comparability (accounting, tokenizer, cost basis, currency). Expired, calibration-only, substituted, or incomparable telemetry fails closed to `no_recommendation`. Comparable candidates yield Pareto trade-off options with zero execution, dispatch, model-change, or git authority.
-
 ### Delegation-First Coordinator Policy
 
 **Status:** Implemented (GitHub issue #81).
@@ -1552,7 +1376,7 @@ Roadmap priority is not authorization. Apply these gates independently:
    watcher and changing a verified baseline each require explicit approval. A baseline
    change also requires the G0 reconciliation record; the watcher cannot approve it.
 3. **External data/live model:** name the repository and paths sent through agy and
-   obtain explicit approval before a live dispatch or benchmark.
+   obtain explicit approval before a live dispatch.
 4. **Destructive local lifecycle:** allow cleanup only for the exact hash-bound state
    recorded as rejected and disposable, then re-derive its digest and obtain explicit
    user approval for those exact job/worktree/branch targets. Refuse every other
@@ -1607,11 +1431,6 @@ reviews, or automated promotional submissions.
   reporter. A public repository reference is stronger than a raw star.
 - Require the full conformance kit to reject every deliberately trusting reference
   gate and accept the maintained implementation.
-- Publish benchmark claims only when every result binds exact public fixture, base,
-  selected input, matrix revision and resolved agy slug when applicable, attempts,
-  tool versions, policy, and driver verification.
-- Track accepted-real-candidate evidence per persona without converting one success
-  into a universal quality percentage.
 - Reassess P2 from observed friction. Do not build profiles, pruning, quota, or
   signing merely because they appear on this roadmap.
 

@@ -46,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 115
+EXPECTED_CHECKS = 117
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -56,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 68, "runtime": 1, "recovery": 46}
+GROUP_CHECKS = {"core": 68, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -129,7 +129,6 @@ def current_command_fixture(values: dict, *, bind_launch: bool = True) -> dict:
         "provider_scope_identity": None, "approved_transmission_sha256": None,
         "approved_whole_worktree_sha256": None, "whole_worktree_content_sha256": None,
         "provider_isolation": "session", "native_grant_profile": "baseline",
-        "boost": False, "boost_policy_sha256": None, "approved_boost_risk_sha256": None,
         "allow_scoped_repair": False, "repair_authority_sha256": None,
         "allow_self_verification": False, "self_verification_manifest_path": None,
         "self_verification_manifest_sha256": None, "self_verification_manifest_identity": None,
@@ -967,8 +966,6 @@ with tempfile.TemporaryDirectory() as temporary:
             "provider_scope_identity": list(MODULE._identity(manifest_info)),
             "approved_transmission_sha256": "1" * 64,
             "approved_whole_worktree_sha256": None,
-            "boost": False, "boost_policy_sha256": None,
-            "approved_boost_risk_sha256": None,
             "allow_self_verification": True,
             "self_verification_manifest_path": str(manifest),
             "self_verification_manifest_sha256": MODULE.digest(manifest_raw),

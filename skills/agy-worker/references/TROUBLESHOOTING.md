@@ -85,16 +85,6 @@ For a candidate-free failure, consult `available_actions`. A mechanically eligib
 `resume` keeps the exact stored conversation; a fresh `restart` requires explicit user
 direction. Both require the current state SHA and a new provider notice.
 
-## Boost preflight or contract failed
-
-The first `--boost` invocation without approval exits before provider launch and prints
-the exact job-bound `--approve-boost-risk-sha`. Review the warning and rerun only for
-that same intended job and transmission. An invalid or stale digest, broader workflow,
-more than one cycle, persona, plan mode, or enabled slash commands is rejected before
-launch. After launch, a missing or mismatched Boost agent or `request-review`
-permission mode produces `failure_stage=boost_contract`. Do not resume, restart, or
-continue that job; a further attempt requires a new job and fresh approvals.
-
 ## A provider error or cancellation still has a candidate
 
 A structurally valid `ERROR` candidate is reviewable. Retrieve `result`, inspect the
@@ -132,12 +122,16 @@ For facade finalization of a bound dispatch, use `dispatch.state_sha256` as
 The former facade `--approve-state-sha` alias is rejected; advanced dispatcher and
 job lifecycle commands still use their own `--approve-state-sha` flag.
 
-## Unsupported job schema or removed approval flag
+## Unsupported job schema or removed flag
 
 This agy-worker release accepts only current dispatch and workflow job
 formats. Finish or discard an older job using the release that created it; the last
 documented release with legacy-schema support is v0.22.0. Preserve its artifacts;
-do not rewrite a schema number to bypass rejection. There is no in-place migration.
+do not rewrite a schema number to bypass rejection. Command V12 rejects all V11 jobs,
+including jobs that used neither Boost nor a persona. Use the actual creating release;
+v0.22.0 is not a universal reader for later V11 jobs. There is no in-place migration.
+`--boost`, `--approve-boost-risk-sha`, and `--persona` were removed after v0.22.0;
+start new work through the ordinary workflow with task instructions in the prompt.
 Use current explicit transmission approvals instead of facade `--approve-preview-sha`
 and `--legacy-preview-approval`; use `--approve-dispatch-sha` for facade finalization.
 See [controller state and actions](PROJECT_LIFECYCLE_AND_VERIFICATION.md#controller-state-and-actions).

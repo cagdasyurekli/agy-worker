@@ -120,12 +120,9 @@ CURRENT_COMMAND_FIELDS = {
     'agy_version_observed',
     'allow_scoped_repair',
     'allow_self_verification',
-    'approved_boost_risk_sha256',
     'approved_transmission_sha256',
     'approved_whole_worktree_sha256',
     'argv',
-    'boost',
-    'boost_policy_sha256',
     'child_umask',
     'continue_prompt',
     'hard_seconds',
@@ -163,10 +160,6 @@ SCOPED_REPAIR_POLICY_TEXT = (
 SCOPED_REPAIR_POLICY_SHA256 = hashlib.sha256(
     SCOPED_REPAIR_POLICY_TEXT.encode("utf-8")
 ).hexdigest()
-BOOST_RISK_POLICY_TEXT = (
-    "Boost may invoke subagents and protected tools; this acknowledgement does not grant runtime permissions."
-)
-BOOST_RISK_POLICY_SHA256 = hashlib.sha256(BOOST_RISK_POLICY_TEXT.encode("utf-8")).hexdigest()
 CURRENT_STATE_FIELDS = {
     'agy_returncode',
     'allow_scoped_repair',
@@ -276,13 +269,13 @@ CURRENT_STATE_FIELDS = {
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
 CURRENT_STATE_SCHEMA = 14
-CURRENT_COMMAND_SCHEMA = 11
+CURRENT_COMMAND_SCHEMA = 12
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
 CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1
 FAILURE_STAGES = {
     "framing", "outer_status", "missing_structured_output", "schema_rejection",
-    "binding_failure", "selection_preflight", "boost_contract",
+    "binding_failure", "selection_preflight",
 }
 LIFECYCLE_PHASES = {
     "dispatching", "awaiting-verification", "repairing", "completed",
@@ -655,8 +648,7 @@ def _require_supported_schema(
     raise UnsupportedSchemaError(
         f"{label} schema {found} is not supported by this agy-worker release; "
         f"supported: {expected}. Finish or discard the job with the "
-        "release that created it. Last documented release with legacy-schema "
-        f"support: {LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}."
+        "release that created it."
     )
 
 
@@ -733,6 +725,16 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         raise DispatchError("dispatch argv is invalid")
     if value["argv"][0] != "agy" or value["argv"].count("--print") != 1:
         raise DispatchError("dispatch argv contract is invalid")
+    arguments = iter(value["argv"][1:])
+    for argument in arguments:
+        option = argument.partition("=")[0]
+        if option in {"--agent", "--boost", "--approve-boost-risk-sha", "--persona"}:
+            raise DispatchError("dispatch argv contains a retired feature")
+        if "=" not in argument and option in {
+            "--print", "--model", "--mode", "--json-schema", "--add-dir",
+            "--conversation", "--print-timeout", "--output-format",
+        }:
+            next(arguments, None)
     if not isinstance(value["workdir"], str) or not Path(value["workdir"]).is_absolute():
         raise DispatchError("dispatch workdir is invalid")
     for key in ("idle_seconds", "hard_seconds", "max_seconds", "notice_seconds"):
@@ -809,9 +811,9 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
     whole_content_sha = value["whole_worktree_content_sha256"]
     if scope_path is None:
         if not isinstance(whole_content_sha, str) or SHA_RE.fullmatch(whole_content_sha) is None:
-            raise DispatchError("dispatch V11 whole-worktree content binding is invalid")
+            raise DispatchError("dispatch whole-worktree content binding is invalid")
     elif whole_content_sha is not None:
-        raise DispatchError("scoped V11 dispatch cannot carry whole-worktree content")
+        raise DispatchError("scoped dispatch cannot carry whole-worktree content")
     sandbox_count = value["argv"].count("--sandbox")
     if provider_isolation == "session" and sandbox_count != 0:
         raise DispatchError("session dispatch cannot request AGY sandbox")
@@ -819,25 +821,6 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         scope_path is None or sandbox_count != 1
     ):
         raise DispatchError("native dispatch must be scoped and sandboxed")
-    boost = value["boost"]
-    boost_policy = value["boost_policy_sha256"]
-    boost_approval = value["approved_boost_risk_sha256"]
-    if type(boost) is not bool or (not boost and (boost_policy is not None or boost_approval is not None)):
-        raise DispatchError("dispatch Boost binding is invalid")
-    if boost:
-        expected_approval = hashlib.sha256(
-            f"{BOOST_RISK_POLICY_SHA256}\n{value['job_id']}\n".encode("ascii")
-        ).hexdigest()
-        argv = value["argv"]
-        valid_mode = argv.count("--mode") == 1 and argv[argv.index("--mode") + 1:argv.index("--mode") + 2] == ["accept-edits"]
-        if (
-            boost_policy != BOOST_RISK_POLICY_SHA256 or boost_approval != expected_approval
-            or value["workflow"] != "task" or value["max_cycles"] != 1
-            or argv.count("--agent") != 1 or argv[argv.index("--agent") + 1:argv.index("--agent") + 2] != ["Boost"]
-            or argv.count("--disable-slash-commands") != 1 or not valid_mode
-            or any(flag in argv for flag in ("--conversation", "--continue", "-c"))
-        ):
-            raise DispatchError("dispatch Boost contract is invalid")
     if scope_path is not None and "--add-dir" in value["argv"]:
         raise DispatchError("narrow provider scope cannot grant an additional directory")
     allow_self_verification = value["allow_self_verification"]
@@ -854,7 +837,7 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         if any(item is not None for item in self_verification_fields):
             raise DispatchError("disabled self-verification cannot carry a manifest")
     elif (
-        value["workflow"] not in {"task", "project"} or value["boost"]
+        value["workflow"] not in {"task", "project"}
         or not isinstance(self_verification_fields[0], str)
         or not Path(self_verification_fields[0]).is_absolute()
         or not isinstance(self_verification_fields[1], str)
@@ -875,7 +858,6 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         scope_path is None
         or value["workflow"] not in {"task", "project"}
         or value["max_cycles"] < 2
-        or value["boost"]
         or not isinstance(repair_authority, str)
         or SHA_RE.fullmatch(repair_authority) is None
         or repair_authority != _repair_authority_for_command(value)
@@ -2351,7 +2333,7 @@ def _attempt_paths(job: Path, attempt: int) -> tuple[Path, Path, Path]:
 
 
 def _bind_workspace_prompt(
-    argv: list[str], workspace_root: Path, *, scoped: bool, boost: bool,
+    argv: list[str], workspace_root: Path, *, scoped: bool,
     provider_isolation: str,
 ) -> None:
     """Bind every worker's file tools to the exact provider launch cwd."""
@@ -2368,7 +2350,6 @@ def _bind_workspace_prompt(
         "the complete approved Gitless selected-content stage"
         if scoped else "the complete explicitly approved whole worktree"
     )
-    profile = "BOOST " if boost else ""
     authority_note = (
         "This session has normal same-user filesystem and network authority; this prompt "
         "does not confine host access. Work only beneath the stated root."
@@ -2376,7 +2357,7 @@ def _bind_workspace_prompt(
         "Native scoped containment limits this provider to the stated root."
     )
     prefix = (
-        f"{profile}FILE-TOOL ROOT — non-negotiable:\n"
+        "FILE-TOOL ROOT — non-negotiable:\n"
         f"- The exact absolute workspace root for this attempt is the JSON string {encoded_root}.\n"
         "- File tools require absolute paths. Begin by listing that exact root. For each "
         "task-relative path, use an absolute child path beneath that root; never pass the "
@@ -2384,21 +2365,9 @@ def _bind_workspace_prompt(
         "- In the final schema envelope, report each files_changed[].path relative to this "
         "workspace (for example, candidate.py), never as an absolute stage path.\n"
         f"- This is {workspace_shape}. {authority_note} Do not inspect its parent, HOME, "
-        "`~/.gemini`, or any other directory. Do not call shell or terminal tools.\n"
-        + (
-            "- If you delegate, include this exact root and all these restrictions in every "
-            "subagent task. If file-tool access fails, return the schema-valid blocked envelope "
-            "without searching elsewhere.\n\n"
-            if boost else "\n"
-        )
+        "`~/.gemini`, or any other directory. Do not call shell or terminal tools.\n\n"
     )
-    bound_prompt = prefix + prompt
-    # The raw launcher already owns normal-worker prompt admission. Preserve
-    # its accepted range after adding this trusted root binding; Boost keeps
-    # its historical post-prefix inline limit.
-    if boost and len(bound_prompt.encode("utf-8")) > MAX_INLINE_PROMPT_BYTES:
-        raise DispatchError("workspace-root prompt exceeds inline byte limit")
-    argv[print_index + 1] = bound_prompt
+    argv[print_index + 1] = prefix + prompt
 
 
 def _init_cwd_matches_launch(init_value: dict[str, Any], launch_cwd: str) -> bool:
@@ -3361,7 +3330,7 @@ def _bound_lifecycle_inputs(
         != command.get("native_grant_profile", "baseline")
         or checked["whole_worktree_content_sha256"]
         != command.get("whole_worktree_content_sha256")):
-        raise DispatchError("dispatch V11 authority binding changed")
+        raise DispatchError("dispatch authority binding changed")
     root = Path(command["workdir"])
     try:
         root_info = root.lstat()
@@ -4027,24 +3996,11 @@ def parse_agy_error(raw: str | bytes) -> AgyErrorPayload | None:
     )
 
 
-def _boost_stream_is_bound(stream: Path) -> bool:
-    """Require provider-observed Boost identity before accepting a result."""
-    try:
-        first = stream.read_bytes().splitlines()[0]
-        frame = json.loads(first.decode("utf-8", "strict"), object_pairs_hook=_duplicates)
-    except (IndexError, OSError, UnicodeError, json.JSONDecodeError, DispatchError):
-        return False
-    init = frame.get("init") if isinstance(frame, dict) and frame.get("event") == "init" else None
-    return bool(isinstance(init, dict) and init.get("agent") == "Boost" and init.get("permission_mode") == "request-review")
-
-
 def _validate_terminal_envelope(
-    stream: Path, envelope: Path, provider_schema: Path, canonical_schema: Path, *, boost: bool = False,
+    stream: Path, envelope: Path, provider_schema: Path, canonical_schema: Path, *,
     stage_dir: Path | None = None,
 ) -> tuple[tuple[str, tuple[int, int, int, int, int]] | None, str | None, str | None]:
     """Keep framing, provider status, extraction, and canonical validation distinct."""
-    if boost and not _boost_stream_is_bound(stream):
-        return None, None, "boost_contract"
     result = _terminal_result(stream, strict=True)
     if result is None:
         return None, None, "framing"
@@ -4691,7 +4647,7 @@ def _launch_controller_provider(
             _confirm_whole_controller_approval(binding)
         _bind_workspace_prompt(
             launch.argv, Path(os.path.realpath(launch.launch_cwd)),
-            scoped=launch.scope is not None, boost=bool(binding.command["boost"]),
+            scoped=launch.scope is not None,
             provider_isolation=_provider_isolation_for_command(binding.command),
         )
         if launch.scoped_executable is not None and _provider_isolation_for_command(binding.command) == "native":
@@ -4798,13 +4754,6 @@ def _consume_controller_events(
                         if not isinstance(init_value, dict) or not _init_cwd_matches_launch(init_value, launch.launch_cwd):
                             outcome.reason = "status_unavailable"
                             outcome.failure_stage = "binding_failure"
-                            break
-                        if binding.command.get("boost") and (
-                            init_value.get("agent") != "Boost"
-                            or init_value.get("permission_mode") != "request-review"
-                        ):
-                            outcome.reason = "invalid_envelope"
-                            outcome.failure_stage = "boost_contract"
                             break
                         outcome.saw_init = True
                     elif event_kind == "result":
@@ -5024,7 +4973,7 @@ def _observe_controller_terminal(
                 binding.schema_paths = _bound_schemas(binding.command, binding.state)
                 outcome.result_binding, outcome.outer_status, outcome.failure_stage = _validate_terminal_envelope(
                     streams.stream_path, streams.envelope_path, binding.schema_paths[0], binding.schema_paths[1],
-                    boost=bool(binding.command.get("boost")), stage_dir=launch.stage_dir,
+                    stage_dir=launch.stage_dir,
                 )
                 if outcome.result_binding is None and outcome.reason is None:
                     if (
@@ -5429,7 +5378,6 @@ def _controller_terminal_updates(
     disposition: _CandidateDisposition,
     current: dict[str, Any],
     repair_lineage_updates: dict[str, Any],
-    is_boost: bool,
 ) -> dict[str, Any]:
     updates = {
         "status": outcome.final_status,
@@ -5463,7 +5411,7 @@ def _controller_terminal_updates(
             "blocked" if disposition.candidate_unavailable else "driver_review"
         ) if disposition.candidate_recognized else (
             "none" if outcome.reason in {"selection_preflight_failed", "permission_required"} else
-            "resume" if current["conversation_id"] and not is_boost else "blocked"
+            "resume" if current["conversation_id"] else "blocked"
         ),
         "next_action_command": None,
         **(
@@ -5477,7 +5425,7 @@ def _controller_terminal_updates(
         "resume_available": bool(
             current["conversation_id"] and not disposition.candidate_recognized
             and outcome.final_status == "failed"
-            and outcome.reason not in {"selection_preflight_failed", "permission_required"} and not is_boost
+            and outcome.reason not in {"selection_preflight_failed", "permission_required"}
         ),
         "continue_available": False,
         "remote_cancel_unverified": outcome.reason in {"cancelled", "interrupted"},
@@ -5513,7 +5461,7 @@ def _controller_terminal_updates(
                 outcome.final_status in {"succeeded", "failed"}
                 and outcome.reason not in {"selection_preflight_failed", "permission_required"}
                 and disposition.candidate_source != "provider_cancelled"
-                and current["conversation_id"] and not is_boost
+                and current["conversation_id"]
                 and current["attempt"] < current["max_cycles"]
                 and execution.elapsed < _provider_max_seconds(current)
                 and (
@@ -5573,9 +5521,8 @@ def _publish_controller_terminal(
             float(current["elapsed_seconds"]),
         )
         outcome, disposition = _classify_controller_candidate(outcome, candidate_data, current)
-        is_boost = bool(binding.command.get("boost"))
         repair_lineage_updates = _controller_repair_lineage(outcome, candidate_data, current)
-        updates = _controller_terminal_updates(execution, streams, outcome, candidate_data, disposition, current, repair_lineage_updates, is_boost)
+        updates = _controller_terminal_updates(execution, streams, outcome, candidate_data, disposition, current, repair_lineage_updates)
         binding.state, binding.prior_raw, _sha = _transition_locked(job, current, current_raw, updates)
     return outcome.exit_code
 
@@ -5742,8 +5689,6 @@ def create_state(
                 if origin == "conversation-resume" and not _resume_is_eligible(state, time.time()):
                     raise DispatchError("dispatch is not resume-eligible")
             command = _load_bound_command(job, state, stage_readonly=False)
-            if command.get("boost") and origin in {"conversation-resume", "fresh-restart", "conversation-continue"}:
-                raise DispatchError("Boost dispatches do not resume, restart, or continue")
             if _job_is_inside_worktree(job, command["workdir"]):
                 raise DispatchError("dispatch job directory cannot be inside the target workdir")
             command, state = _bound_lifecycle_inputs(job, state, command)

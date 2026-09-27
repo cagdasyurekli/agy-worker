@@ -22,9 +22,8 @@ tasks, and project-scale implementation. Optimize for a useful working result:
    Preserve Goal as an ordinary-use opt-in, not a prerequisite.
 
 Do not refuse a task merely because its final file list, architecture, or test command
-is not known before dispatch. Do not require a persona for broad exploration. Personas
-are optional prompt specializations, not capability or approval gates. A broad report
-is useful but is never an exhaustive-security or completeness claim.
+is not known before dispatch. A broad report is useful but is never an
+exhaustive-security or completeness claim.
 
 Start with this file and task-relevant source. Use `rg` to open only the relevant
 row in `docs/REPO_MAP.md` or heading in `docs/lessons_learned.md`; do not preload the
@@ -142,7 +141,7 @@ Codex runs repository commands.
 ## Repository ownership and verification
 
 The canonical portable core runtime is `skills/agy-worker/runtime/`; its root
-entrypoints are compatibility wrappers. Repository-only research and maintenance
+entrypoints are compatibility wrappers. Repository-only maintenance
 tools live under `scripts/` with root entrypoints and assets outside the skill.
 Keep explicitly mirrored core helpers and metadata byte-synchronized. `qa-gate.sh`
 and `verify-job.sh` remain the evidence primitives: do not weaken their checks merely

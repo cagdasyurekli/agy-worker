@@ -125,8 +125,8 @@ For a larger request:
 > the project, run the relevant checks, and repair failures in the same conversation.
 
 Codex creates an isolated worktree, dispatches the matching workflow, inspects the
-diff, and runs driver-owned checks. You do not need to supply a final file list, a
-persona, or every verification command before starting.
+diff, and runs driver-owned checks. You do not need to supply a final file list or
+every verification command before starting.
 
 ## Primary run, status, verify-finalize path
 
@@ -345,10 +345,7 @@ prove the worker's architecture prose or completeness.
 | `--provider-isolation session|native` | — | Default `session` uses existing account/session and normal host access; explicit `native` requires scoped mode on supported macOS. Bound for the job's lifetime. |
 | `--approve-transmission-sha SHA256` | — | Exact scoped policy/path/content and execution-mode binding; grants no downstream authority. |
 | `--approve-whole-worktree SHA256` | — | Broad-mode approval bound to current contents, kinds, permissions, symlink targets, and execution mode; use the preview's `launch_approval_sha256`. |
-| `--boost` | — | Advanced one-cycle `task` profile; may invoke provider-side subagents and protected tools and requires a job-bound risk acknowledgement. |
-| `--approve-boost-risk-sha SHA256` | — | Exact warning/job acknowledgement printed by the provider-free Boost preflight; grants no permission or wider transmission. |
 | `--provider-env NAME` | — | Repeatable exact-name opt-in for an additional caller variable passed to local `agy` probes and provider launches. |
-| `--persona NAME` | — | Optional bounded prompt specialization; never authorization or quality evidence. |
 | `--allow-slash-commands` | — | Expert-only opt-in for a fully caller-controlled prompt; disables the normal embedded slash-command protection. |
 | `--idle-timeout DURATION` | `AGY_WORKER_IDLE_TIMEOUT` | No valid progress deadline; default `10m`. |
 | `--hard-timeout DURATION` | `AGY_WORKER_HARD_TIMEOUT`; `AGY_WORKER_TIMEOUT` | Initial attempt deadline; default `2h`. |
@@ -359,24 +356,15 @@ The source-owned option contract is the bundled
 [`SKILL.md`](../skills/agy-worker/SKILL.md). Do not infer compatibility, provider
 availability, quality, cost, or routing from a label.
 
-Boost is limited to `task`, `accept-edits`, `--max-cycles 1`, no persona, and
-default slash protection. The controller also requires the provider init frame to
-report `agent=Boost` and `permission_mode=request-review`. A Boost job cannot resume,
-restart, or continue; any further attempt uses a new job plus fresh transmission and
-risk approvals.
-
 Leave slash expansion disabled when any prompt content comes from a repository or
 another model. `--allow-slash-commands` exists only for callers who fully control the
 entire prompt because it permits embedded `/skill` and slash-command text. The plan
 dispatcher is the narrow built-in exception: it privately stages content and enables
 expansion only for its fixed driver prompt.
 
-## Optional personas
-
-`--persona NAME` selects one shipped prompt template. Persona text is guidance only:
-it never grants capability or approval, chooses routing, verifies a result, or changes
-the driver’s acceptance decision. The direct selection and its read-only/edit-mode
-restrictions remain part of the dispatcher contract.
+The retired `--boost`, `--approve-boost-risk-sha`, and `--persona` flags report
+“removed after v0.22.0”. New work uses the ordinary workflows and task prompt.
+Existing jobs must satisfy the [current format policy](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
 ## Model and effort selection
 
@@ -465,7 +453,7 @@ Stop before dispatch, continuation, or external action when:
   its separately required approval.
 
 Ordinary uncertainty is not a hard stop. A broad codebase, unknown files, missing
-initial test commands, lack of a persona, a partial worker answer, or a failed first
+initial test commands, a partial worker answer, or a failed first
 check should normally lead to discovery, bounded same-conversation repair, or an
 honest partial result.
 

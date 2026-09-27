@@ -88,43 +88,12 @@ sanitized failure and may leave a private residual. The runner never scans for o
 chases a moved directory and makes no same-user tamper-resistance claim. The kit
 discards bounded gate output and reports no fixture paths or captured bytes.
 
-The offline benchmark harness likewise invokes no agy, provider, or network client.
-It uses only hash-bound checked-in synthetic candidates and the canonical local gate.
-Its explicit external owner-`0700` result root contains mode-`0600` plans, Evidence
-Receipts, and results: source/tool/fixture/selection hashes, immutable synthetic Git
-bases and candidate-state hashes, bounded gate facts, and unsigned integrity labels.
-It stores no provider prompt, response, usage, pricing, credential, or raw worker log.
-The report is a pure validated completeness view and uploads nothing. Live
-benchmark execution remains out of scope for this repository.
-
-The SWE-bench Workflow Study v1 tool is fully offline and uses no network,
-provider, telemetry collection, or analytics service. It only reads explicit, user-supplied
-caller-owned mode-`0600`, one-link regular plan and result files through bounded no-follow
-descriptors and writes deterministic sanitized,
-hash-linked canonical artifacts to a user-selected external owner-0700 result root.
-Every stored string is a bounded privacy-safe identifier. Artifacts omit source code, prompts,
-diffs, logs, task bodies, absolute paths, timestamps, identities, and credentials.
-
-Optional persona templates are checked-in prompt text. Selecting one does not read a
-registry, personal configuration, or target-repository persona source, and it never
-grants authorization, changes routing, verifies a result, or changes acceptance.
-
 ## Local artifacts and retention
 
 Each job can create local private artifacts under `logs/<job>/`, including the task,
 full prompt, agy stream, stderr, staged oversized prompt, and extracted envelope.
-Temporary worktrees and envelopes may also exist outside the repository. Sanitized
-bug-report and improvement drafts are local files with mode `0600` until a user
-explicitly confirms the exact SHA-256 and separately confirms that same digest is
-public-safe before submitting it. A `--kind security` draft is private-route only and
-cannot be submitted publicly. Conservative keyword detection is an additional barrier,
-not proof that another report is safe for public disclosure.
-
-The optional feedback triage command and weekly workflow read only a fixed bounded
-page of public issue metadata: issue number, canonical repository URL, and creation
-and update timestamps. They discard titles, bodies, comments, labels, usernames, and
-all other raw GitHub content before aggregation. The only output is a bounded
-aggregate; neither sends issue content to an agent nor modifies an issue.
+Temporary worktrees and envelopes may also exist outside the repository. Review and
+sanitize any information before sharing it through the routes in [SUPPORT.md](SUPPORT.md).
 
 When explicitly requested, `verify-job.sh` creates one local receipt at a new path the
 user chose in an owner-private directory outside the audited repository. It records
@@ -215,12 +184,6 @@ global/system configuration disabled. It never applies an update or invokes agy,
 Codex work, or a provider. Uninstall preserves replacement or ambiguous recovery
 state rather than deleting it. A displayed macOS notification cannot be retracted.
 
-The optional adoption ledger is explicit local input, not telemetry. It stores only
-closed aggregate values, denominators/sample sizes, opaque observation IDs, UTC dates,
-exact public repository revisions, and allowlisted public GitHub evidence URLs in an
-owner `0600`, one-link file. It never discovers a ledger, reads HOME, calls a process
-or network, or stores prompts, logs, accounts, tokens, provider usage, or user IDs.
-
 The explicit-account models capture runner is a separate, never-automatic action.
 Its checked-in tests use only disposable synthetic account roots and make no agy,
 provider, or network call. Every production invocation requires separate user
@@ -276,24 +239,6 @@ subprocess, network, Git, retry, capture, inventory acceptance, routing, or acti
 authority. Recovery validation is bounded to the explicitly supplied recovery root's
 fixed artifact and scratch allowlists; it does not expand into HOME discovery.
 Reprofiling does not authorize a capture or renew any prior one-call authorization.
-
-`codex-usage-report.sh` observes Codex orchestration usage locally via the live,
-bounded stdio JSONL protocol of the version-pinned Codex CLI 0.150.1 app-server. Before
-observation it checks the exact CLI version and the SHA-256 of the CLI-generated
-experimental combined schema; drift fails closed.
-It requires explicit `--task LABEL=THREAD_ID` arguments and optional owner-private
-(`0600`) `--session LABEL=ABS_FILE` inputs. The tool strictly redacts all sensitive
-data: prompts, message text, raw logs, thread IDs, account emails/identities, cwd, and
-file paths are never emitted. The tool never scans for sessions; it opens only the
-explicit path, validates its private metadata, and inspects allowlisted structural
-fields. Output reports categorize input, cached input,
-net-new input, cache-write, output, and reasoning separately; reasoning is a subset of
-output and is never double-counted. When the app-server supplies a per-thread estimated
-credit value, it is emitted only as integer micros labeled `provider_estimate`; absent
-values remain unavailable. Account-wide observation is limited to rate-limit fields and
-does not invent an aggregate credit value. Rate-limit observations remain separate, and the tool never
-infers USD/currency or remaining billing quota. All process groups are reaped on exit or
-timeout. Token comparisons are directional only.
 
 ## Support and changes
 

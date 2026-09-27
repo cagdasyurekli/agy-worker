@@ -74,11 +74,7 @@ for process lifetime, path bindings, and sandbox guidance.
 | Implement a feature, refactor, tests, or bounded repair | `task` | 2 | Inspect the diff and run relevant project checks. |
 | Build a project or perform broad audit-and-fix work | `project` | 5 | Review repo-wide changes and run applicable build, test, and lint checks. |
 
-`explore` and `task` accept `1..2` cycles; `project` accepts `1..5`. Personas are
-optional prompt specializations, not capability, approval, routing, verification, or
-quality gates. The raw `--boost` profile is an advanced, separately acknowledged
-one-cycle task path; read [Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md#boost-authority-boundary)
-before using it.
+`explore` and `task` accept `1..2` cycles; `project` accepts `1..5`.
 
 For material UX, lifecycle, trust-boundary, security, data-semantics, or other domain
 plans, use the co-planning policy in [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#material-planning-governance).
@@ -118,7 +114,7 @@ boundary; with dangerous permission or approval-bypass flags; or when a Git acti
 publication, installation, account action, or other external write lacks its own
 authorization.
 
-Unknown architecture, an unknown first test command, lack of a persona, or a failed
+Unknown architecture, an unknown first test command, or a failed
 first check are not hard stops. Existing self-verification is optional advisory feedback
 when a focused command is known; an unknown first command or architecture does not
 prohibit useful delegation. Discover what is needed, preserve the candidate, and

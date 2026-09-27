@@ -700,7 +700,7 @@ def _delegation_from_dispatch(
     elif status == "failed" and (
         reason in {"empty_output", "invalid_envelope", "output_oversized", "permission_required"}
         or facts.get("failure_stage") in {
-            "framing", "missing_structured_output", "boost_contract",
+            "framing", "missing_structured_output",
         }
     ):
         preflight_passed, provider_state = True, "available"
@@ -1967,20 +1967,33 @@ def command_verify_finalize(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    value_options = {
+        option
+        for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        for subparser in action.choices.values()
+        for argument in subparser._actions if argument.nargs != 0
+        for option in argument.option_strings
+    }
     removed = {
         "--approve-preview-sha": "--approve-whole-worktree",
         "--legacy-preview-approval": "--approve-whole-worktree",
         "--approve-state-sha": "--approve-dispatch-sha",
     }
-    for argument in arguments:
+    remaining = iter(arguments)
+    for argument in remaining:
         option = argument.partition("=")[0]
+        if option in {"--boost", "--approve-boost-risk-sha", "--persona"}:
+            sys.stderr.write(f"workflow: {option} was removed after v0.22.0; use the ordinary task workflow.\n")
+            return 64
         if option in removed:
             sys.stderr.write(
                 f"workflow: {option} was removed after {DISPATCH.LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}; "
                 f"use {removed[option]}.\n"
             )
             return 64
-    parser = build_parser()
+        if option in value_options and "=" not in argument:
+            next(remaining, None)
     args = parser.parse_args(arguments)
     try:
         if args.command == "run":

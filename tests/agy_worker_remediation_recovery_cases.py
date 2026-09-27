@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     import subprocess
     import sys
     import threading
+    import tempfile
     import time
 
 
@@ -82,6 +83,7 @@ def run(context: dict[str, object]) -> None:
                                  ("command", MODULE.CURRENT_COMMAND_SCHEMA)):
             cases.extend((surface, f"retired-{version}", version) for version in range(1, current))
             cases.extend((surface, label, version) for label, version in invalid)
+        cases.extend(("command", "retired-11-" + feature, 11) for feature in ("boost", "persona"))
 
         def manifest() -> dict:
             paths = [job, *job.rglob("*"), Path(command["workdir"]),
@@ -101,6 +103,19 @@ def run(context: dict[str, object]) -> None:
                 value.pop("schema_version")
             else:
                 value["schema_version"] = version
+            if surface == "command" and version == 11:
+                value.update({"boost": False, "boost_policy_sha256": None,
+                              "approved_boost_risk_sha256": None})
+            if label == "retired-11-boost":
+                value.update({"boost": True, "boost_policy_sha256": "a" * 64,
+                              "approved_boost_risk_sha256": "b" * 64})
+                value["argv"][1:1] = ["--agent", "Boost"]
+            elif label == "retired-11-persona":
+                value["argv"][-1] = "Read-only repository surveyor persona. " + value["argv"][-1]
+            if label in {"retired-11-boost", "retired-11-persona"}:
+                for lock_name in (MODULE.LOCK_NAME, MODULE.STATE_LOCK_NAME):
+                    (job / lock_name).write_text("lock sentinel\n")
+                    (job / lock_name).chmod(0o644)
             filename = MODULE.STATE_NAME if surface == "state" else MODULE.COMMAND_NAME
             MODULE.write_atomic(job, filename, value)
             if surface == "command":
@@ -130,7 +145,7 @@ def run(context: dict[str, object]) -> None:
                 assert f"dispatch {surface} schema" in diagnostic, context
                 assert f"supported: v{MODULE.CURRENT_STATE_SCHEMA if surface == 'state' else MODULE.CURRENT_COMMAND_SCHEMA}" in diagnostic, context
                 assert "Finish or discard the job with the release that created it" in diagnostic, context
-                assert "v0.22.0" in diagnostic and "Traceback" not in diagnostic, context
+                assert "v0.22.0" not in diagnostic and "Traceback" not in diagnostic, context
                 assert "PRIVATE-VERSION-SENTINEL" not in diagnostic and "999999999" not in diagnostic, context
                 if label.startswith("retired-"):
                     assert f"schema v{version} is not supported" in diagnostic, context
@@ -166,6 +181,68 @@ def run(context: dict[str, object]) -> None:
         assert b"was removed" not in help_result.stderr
 
     check("removed migration flags fail before artifacts while option-looking values retain parsing", removed_migration_flag_rejects_before_effects)
+
+    def retired_feature_flags_reject_before_effects() -> None:
+        fixture = root / "retired-feature-flags"; fixture.mkdir()
+        fake_bin = fixture / "bin"; fake_bin.mkdir()
+        marker = fixture / "provider-called"
+        fake = fake_bin / "agy"
+        fake.write_text("#!/bin/sh\nprintf called > " + shlex.quote(str(marker)) + "\nexit 99\n")
+        fake.chmod(0o700)
+        environment = {**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                       "AGY_WORKER_LOG_DIR": str(fixture / "logs")}
+        for entrypoint in (ROOT / "agy-worker.sh", ROOT / "skills/agy-worker/runtime/agy-worker.sh",
+                           ROOT / "workflow.sh", ROOT / "skills/agy-worker/runtime/workflow.sh"):
+            for flag in ("--boost", "--approve-boost-risk-sha", "--persona"):
+                for arguments in ([flag], [flag, "PRIVATE-VALUE"], [flag + "=PRIVATE-VALUE"], [flag, flag]):
+                    with tempfile.TemporaryFile() as task:
+                        task.write(b"PRIVATE-TASK\n"); task.seek(0)
+                        result = subprocess.run(
+                            [str(entrypoint), "run", *arguments], stdin=task, env=environment,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                        )
+                        assert result.returncode == 64 and not result.stdout, result
+                        assert (flag + " was removed after v0.22.0").encode() in result.stderr, result
+                        assert b"PRIVATE" not in result.stderr and b"Traceback" not in result.stderr, result
+                        assert task.tell() == 0
+                    assert not marker.exists() and not (fixture / "logs").exists()
+        for flag in ("--boost", "--approve-boost-risk-sha", "--persona"):
+            for entrypoint in (ROOT / "workflow.sh", ROOT / "skills/agy-worker/runtime/workflow.sh"):
+                for arguments in (["--task", "describe " + flag], ["--task=" + flag]):
+                    result = subprocess.run([str(entrypoint), "run", *arguments, "--help"],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+                    assert result.returncode == 0 and b"was removed" not in result.stderr, result
+
+    check("retired feature flags reject before effects and preserve prompt values", retired_feature_flags_reject_before_effects)
+
+    def current_commands_reject_retired_feature_authority() -> None:
+        job, _state, _sha, _envelope = current_candidate_fixture("retired-authority")
+        original = json.loads((job / MODULE.COMMAND_NAME).read_bytes())
+        for flag in ("--agent", "--boost", "--approve-boost-risk-sha", "--persona"):
+            for spelling in ([flag, "Boost"], [flag + "=Boost"]):
+                command = {**original, "argv": [original["argv"][0], *spelling, *original["argv"][1:]]}
+                MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+                try:
+                    MODULE.load_command(job)
+                except MODULE.DispatchError as exc:
+                    assert str(exc) == "dispatch argv contains a retired feature", exc
+                else:
+                    raise AssertionError("current command accepted a retired feature argument")
+        for field, value in (("boost", False), ("boost_policy_sha256", None),
+                             ("approved_boost_risk_sha256", None)):
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, {**original, field: value})
+            try:
+                MODULE.load_command(job)
+            except MODULE.DispatchError as exc:
+                assert str(exc) == "dispatch command fields are invalid", exc
+            else:
+                raise AssertionError("current command accepted a retired feature field")
+        command = {**original, "argv": list(original["argv"])}
+        command["argv"][command["argv"].index("--print") + 1] = "--agent"
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.load_command(job)
+
+    check("current commands reject retired feature authority and preserve prompt text", current_commands_reject_retired_feature_authority)
 
     def linked_preview_authorizes_v11_initial_and_prelaunch_binding() -> None:
         """The public preview digest is the exact V11 launch authorization."""
@@ -683,8 +760,6 @@ def run(context: dict[str, object]) -> None:
             "provider_scope_identity": list(MODULE._identity(scope_info)),
             "approved_transmission_sha256": approved,
             "approved_whole_worktree_sha256": None,
-            "boost": False, "boost_policy_sha256": None,
-            "approved_boost_risk_sha256": None,
             "allow_scoped_repair": allow_scoped_repair,
             "repair_authority_sha256": None,
             "allow_self_verification": False,

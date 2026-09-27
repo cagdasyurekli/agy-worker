@@ -267,11 +267,6 @@ EXPECTED_BLOCKS = {
         "        with:\n"
         "          persist-credentials: false\n"
     ),
-    "feedback-watch.yml": (
-        f"      - uses: {PINNED}\n"
-        "        with:\n"
-        "          persist-credentials: false\n"
-    ),
     "test.yml": (
         f"      - uses: {PINNED}\n"
         "        with:\n"
@@ -282,7 +277,6 @@ EXPECTED_BLOCKS = {
 }
 EXPECTED_COUNTS = {
     "compatibility-watch.yml": 1,
-    "feedback-watch.yml": 1,
     "test.yml": 4,
 }
 
@@ -366,23 +360,22 @@ assert not any(token in offline_text for token in ("curl ", "wget ", "git fetch"
 sys.path.insert(0, str(stages_file.parent))
 import ci_stages
 
-assert len(ci_stages.STAGES) == 44
-assert len({s.id for s in ci_stages.STAGES}) == 44
+assert len(ci_stages.STAGES) == 36
+assert len({s.id for s in ci_stages.STAGES}) == 36
 assert set(ci_stages.SHARDS) == {"dispatcher", "dispatcher-remediation", "other-a", "other-b"}
 
 required_stage_ids = (
     "diff-hygiene", "shell-syntax", "python-syntax", "qa-gate", "evidence-receipt",
-    "evidence-report", "offline-benchmark", "swebench-workflow-study", "job-lifecycle",
+    "evidence-report", "job-lifecycle",
     "dispatcher", "dispatcher-remediation", "provider-containment", "self-verification", "self-verification-lifecycle",
-    "updater", "adoption-measurement", "update-notifier", "version-attestation-runner",
+    "updater", "update-notifier", "version-attestation-runner",
     "version-bootstrap-preflight", "version-bootstrap-runner",
     "version-initial-bootstrap-runner",
     "version-attestation-harness", "models-attestation-runner", "models-capture-runner",
     "models-capture-profile", "models-capture-1-1-22-version-evidence",
     "models-capture-1-1-22-profile", "models-capture-1-1-22-runner",
     "models-capture-1-1-22-reprofile", "models-capture-1-1-22-classifier",
-    "agy-1-1-22-activation", "reporting", "feedback-triage",
-    "model-intelligence", "model-evidence-campaign", "codex-usage-report",
+    "agy-1-1-22-activation",
     "delegation-policy", "workflow", "workflow-integration", "packaging",
     "doctor", "conformance", "proof-demo", "bytecode-hygiene",
 )
@@ -659,7 +652,7 @@ else
 fi
 cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
 
-python3 - "$TMP/workflow-policy-mutations/feedback-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
@@ -671,7 +664,7 @@ if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/n
 else
     bad "workflow checkout policy rejects different checkout SHA in any workflow"
 fi
-cp "$ROOT/.github/workflows/feedback-watch.yml" "$TMP/workflow-policy-mutations/feedback-watch.yml"
+cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
 
 python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
 from pathlib import Path
@@ -690,7 +683,7 @@ else
 fi
 cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
 
-python3 - "$TMP/workflow-policy-mutations/feedback-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
@@ -708,14 +701,14 @@ if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/n
 else
     bad "workflow checkout policy rejects credentials mis-scoped under env"
 fi
-cp "$ROOT/.github/workflows/feedback-watch.yml" "$TMP/workflow-policy-mutations/feedback-watch.yml"
+cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
 
-python3 - "$TMP/workflow-policy-mutations/feedback-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 t = p.read_text(encoding="utf-8")
-p.write_text(t.replace("      - name: Summarize", "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n      - name: Summarize"), encoding="utf-8")
+p.write_text(t.replace("      - name: Check fixed official compatibility evidence", "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n      - name: Check fixed official compatibility evidence"), encoding="utf-8")
 PY
 if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/null; then
     ok "workflow checkout policy rejects extra unprotected checkout step in any workflow"
@@ -1481,7 +1474,7 @@ reference_text = security_reference.read_text(encoding="utf-8")
 assert 'experimental: pending live verification' in reference_text
 assert '`verify-job.sh --verify-env NAME`' in reference_text
 assert 'dispatch-time `agy` version, help, and model-selection' in reference_text
-assert 'diagnostics and feedback-draft generation' in reference_text
+assert 'including diagnostics, are not provider dispatch' in reference_text
 assert 'Provider children and local `agy` interface probes' not in reference_text
 assert not (package_root / "assets").exists()
 for package_doc in (
@@ -1738,15 +1731,6 @@ else
     bad "root and portable ground-truth phases preserve their read-only boundary"
 fi
 
-if [[ -x "$ROOT/feedback-triage.sh" ]] \
-        && [[ -x "$ROOT/scripts/feedback-triage.py" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/feedback-triage.sh" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/scripts/feedback-triage.py" ]]; then
-    ok "repository-only feedback triage keeps its canonical root implementation"
-else
-    bad "repository-only feedback triage keeps its canonical root implementation"
-fi
-
 if [[ -x "$ROOT/model-selection.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/model-selection.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" ]]; then
@@ -1781,34 +1765,6 @@ if [[ -x "$ROOT/job.sh" ]] \
     ok "root and portable packages include the safe local job lifecycle"
 else
     bad "root and portable packages include the safe local job lifecycle"
-fi
-
-if [[ -x "$ROOT/model-intelligence.sh" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/model-intelligence.sh" ]] \
-        && [[ -x "$ROOT/scripts/model_intelligence.py" ]] \
-        && [[ -f "$ROOT/schemas/model-intelligence-evidence.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-intelligence-advisory.schema.json" ]] \
-        && [[ -f "$ROOT/compat/model-intelligence/dataset.v1.json" ]]; then
-    ok "repository-only tools include Model Intelligence v1"
-else
-    bad "repository-only tools include Model Intelligence v1"
-fi
-
-if [[ -x "$ROOT/model-evidence-campaign.sh" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/model-evidence-campaign.sh" ]] \
-        && [[ -x "$ROOT/scripts/model_evidence_campaign.py" ]] \
-        && ! grep -Fq 'model-evidence-campaign.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
-        && ! grep -Fq 'scripts/model_evidence_campaign.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-plan.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-record.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-evaluation.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-aggregate.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-aggregate-preview.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-advisory-summary.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-evidence-campaign-advisory-preview.schema.json" ]]; then
-    ok "repository-only tools include Model Evidence Campaign"
-else
-    bad "repository-only tools include Model Evidence Campaign"
 fi
 
 if [[ -x "$ROOT/delegation-policy.sh" ]] \
@@ -1848,46 +1804,8 @@ else
     bad "root and portable packages include the progress-aware local dispatcher"
 fi
 
-if [[ -x "$ROOT/benchmark.sh" ]] \
-        && [[ -x "$ROOT/scripts/benchmark.py" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/benchmark.sh" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/scripts/benchmark.py" ]] \
-        && [[ -f "$ROOT/benchmarks/v1/manifest.json" ]] \
-        && [[ -f "$ROOT/benchmarks/v1/portable-source.json" ]] \
-        && [[ -f "$ROOT/schemas/benchmark-plan.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/benchmark-result.schema.json" ]]; then
-    ok "repository-only Benchmark retains its assets and source authority"
-else
-    bad "repository-only Benchmark retains its assets and source authority"
-fi
 
-if [[ -x "$ROOT/swebench-workflow-study.sh" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/swebench-workflow-study.sh" ]] \
-        && [[ -x "$ROOT/scripts/swebench_workflow_study.py" ]] \
-        && ! grep -Fq 'swebench-workflow-study.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
-        && ! grep -Fq 'scripts/swebench_workflow_study.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        && [[ -f "$ROOT/schemas/swebench-workflow-study-plan.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/swebench-workflow-study-report.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/swebench-workflow-study-advisory.schema.json" ]] \
-        && grep -Fq '"additionalProperties":false' "$ROOT/schemas/swebench-workflow-study-plan.schema.json" \
-        && grep -Fq '"exact_bindings_verified"' "$ROOT/schemas/swebench-workflow-study-report.schema.json"; then
-    ok "repository-only tools include SWE-bench Workflow Study v1"
-else
-    bad "repository-only tools include SWE-bench Workflow Study v1"
-fi
 
-if [[ -x "$ROOT/model-intelligence.sh" ]] \
-        && [[ ! -e "$ROOT/skills/agy-worker/runtime/model-intelligence.sh" ]] \
-        && [[ -x "$ROOT/scripts/model_intelligence.py" ]] \
-        && ! grep -Fq 'model-intelligence.sh' "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" \
-        && ! grep -Fq 'scripts/model_intelligence.py' "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        && [[ -f "$ROOT/schemas/model-intelligence-evidence.schema.json" ]] \
-        && [[ -f "$ROOT/schemas/model-intelligence-advisory.schema.json" ]] \
-        && [[ -f "$ROOT/compat/model-intelligence/dataset.v1.json" ]]; then
-    ok "repository-only tools include Model Intelligence v1"
-else
-    bad "repository-only tools include Model Intelligence v1"
-fi
 
 if [[ -x "$ROOT/delegation-policy.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/delegation-policy.sh" ]] \
@@ -1900,100 +1818,6 @@ else
     bad "root and portable packages include Delegation-First Coordinator Policy"
 fi
 
-if python3 - "$ROOT" "$TMP" <<'PY'
-import copy
-import hashlib
-import json
-import os
-from pathlib import Path, PurePosixPath
-import shutil
-import stat
-import sys
-
-root = Path(sys.argv[1])
-temporary = Path(sys.argv[2])
-runtime = root / "skills/agy-worker/runtime"
-root_manifest = root / "benchmarks/v1/portable-source.json"
-raw = root_manifest.read_bytes()
-assert not (runtime / "benchmarks/v1/portable-source.json").exists()
-payload = json.loads(raw)
-expected = {
-    "benchmark.sh", "skills/agy-worker/runtime/qa-gate.sh", "skills/agy-worker/runtime/verify-job.sh",
-    "scripts/benchmark.py", "skills/agy-worker/runtime/scripts/candidate_state.py",
-    "skills/agy-worker/runtime/scripts/compatibility.py", "skills/agy-worker/runtime/scripts/evidence_receipt.py",
-    "skills/agy-worker/runtime/scripts/model_selection.py", "skills/agy-worker/runtime/scripts/recommendation_record.py",
-    "skills/agy-worker/runtime/scripts/validate-envelope.py", "schemas/benchmark-plan.schema.json",
-    "schemas/benchmark-result.schema.json", "skills/agy-worker/runtime/schemas/evidence-receipt.schema.json",
-    "skills/agy-worker/runtime/schemas/worker-result.schema.json", "skills/agy-worker/runtime/schemas/worker-result.provider.schema.json",
-}
-
-def valid(value, source):
-    try:
-        if set(value) != {"files", "kind", "schema_version", "source_revision"}:
-            return False
-        if value["kind"] != "agy-worker-benchmark-portable-source" or value["schema_version"] != 1:
-            return False
-        files = value["files"]
-        if not isinstance(files, list) or len(files) != len(expected):
-            return False
-        names = []
-        for item in files:
-            if set(item) != {"path", "mode", "sha256"}:
-                return False
-            name, mode, digest = item["path"], item["mode"], item["sha256"]
-            if not isinstance(name, str) or "\\" in name:
-                return False
-            pure = PurePosixPath(name)
-            if pure.is_absolute() or ".." in pure.parts or str(pure) != name:
-                return False
-            names.append(name)
-            if mode not in {"100644", "100755"} or not isinstance(digest, str) or len(digest) != 64:
-                return False
-            path = source.joinpath(*pure.parts)
-            info = os.lstat(path)
-            if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
-                return False
-            if "100" + format(stat.S_IMODE(info.st_mode), "03o") != mode:
-                return False
-            if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-                return False
-        return len(set(names)) == len(names) and set(names) == expected
-    except (OSError, TypeError, ValueError):
-        return False
-
-assert valid(payload, root)
-mutant = copy.deepcopy(payload); mutant["files"][0]["path"] = "../benchmark.sh"
-assert not valid(mutant, root)
-mutant = copy.deepcopy(payload); mutant["files"].pop()
-assert not valid(mutant, root)
-mutant = copy.deepcopy(payload); mutant["files"].append(copy.deepcopy(mutant["files"][0]))
-assert not valid(mutant, root)
-mutant = copy.deepcopy(payload); mutant["files"][0]["mode"] = "100600"
-assert not valid(mutant, root)
-mutant = copy.deepcopy(payload); mutant["files"][0]["sha256"] = "0" * 64
-assert not valid(mutant, root)
-
-fixture = temporary / "portable-source-fixture"
-shutil.copytree(root, fixture, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-missing = fixture / "skills/agy-worker/runtime/scripts/model_selection.py"
-missing.unlink()
-assert not valid(payload, fixture)
-shutil.copytree(root, fixture, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-link = fixture / "skills/agy-worker/runtime/scripts/model_selection.py"
-link.unlink()
-os.symlink("benchmark.py", link)
-assert not valid(payload, fixture)
-link.unlink()
-shutil.copy2(runtime / "scripts/model_selection.py", link)
-with link.open("ab") as handle:
-    handle.write(b"# bounded packaging tamper\n")
-assert not valid(payload, fixture)
-PY
-then
-    ok "portable source manifest binds every exact runtime file and rejects bounded drift"
-else
-    bad "portable source manifest binds every exact runtime file and rejects bounded drift"
-fi
 
 if grep -Fq 'is process-owning: it keeps signal rollback authority' \
         "$ROOT/skills/agy-worker/runtime/scripts/evidence_report.py" \
@@ -2040,9 +1864,9 @@ runtime = root / "skills/agy-worker/runtime"
 tooling = ['benchmark.sh', 'benchmarks/v1/manifest.json', 'benchmarks/v1/portable-source.json', 'benchmarks/v1/tasks/exact-edit/candidate.txt', 'benchmarks/v1/tasks/exact-edit/envelope.json', 'benchmarks/v1/tasks/exact-edit/initial.txt', 'benchmarks/v1/variants/bulk.json', 'codex-usage-report.sh', 'compat/model-intelligence/dataset.v1.json', 'feedback-triage.sh', 'model-evidence-campaign.sh', 'model-intelligence.sh', 'schemas/benchmark-plan.schema.json', 'schemas/benchmark-result.schema.json', 'schemas/model-evidence-campaign-advisory-preview.schema.json', 'schemas/model-evidence-campaign-advisory-summary.schema.json', 'schemas/model-evidence-campaign-aggregate-preview.schema.json', 'schemas/model-evidence-campaign-aggregate.schema.json', 'schemas/model-evidence-campaign-evaluation.schema.json', 'schemas/model-evidence-campaign-plan.schema.json', 'schemas/model-evidence-campaign-record.schema.json', 'schemas/model-intelligence-advisory.schema.json', 'schemas/model-intelligence-evidence.schema.json', 'schemas/swebench-workflow-study-advisory.schema.json', 'schemas/swebench-workflow-study-plan.schema.json', 'schemas/swebench-workflow-study-report.schema.json', 'scripts/benchmark.py', 'scripts/codex_usage_report.py', 'scripts/feedback-triage.py', 'scripts/model_evidence_campaign.py', 'scripts/model_intelligence.py', 'scripts/swebench_workflow_study.py', 'swebench-workflow-study.sh']
 for relative in tooling:
     assert not (runtime / relative).exists(), relative
-    assert (root / relative).is_file(), relative
+    assert not (root / relative).exists(), relative
 PYCODE
-then ok "research and maintenance tools remain repository-only"; else bad "research and maintenance tools remain repository-only"; fi
+then ok "retired tools are absent from the repository and package"; else bad "retired tools are absent from the repository and package"; fi
 
 required_runtime_dependencies=(
     workflow.sh
@@ -2081,9 +1905,6 @@ required_runtime_dependencies=(
     schemas/model-recommendation.schema.json
     schemas/job-state.schema.json
     schemas/delegation-policy.schema.json
-    agents/bulk-test-writer.md
-    agents/repo-inventory.md
-    agents/diff-reviewer.md
     compat/agy-verified-version.txt
     compat/agy-upstream-head.txt
     compat/agy-last-reviewed.txt
@@ -2203,7 +2024,6 @@ for specification in \
     'schemas/evidence-receipt.schema.json:data' \
     'schemas/job-state.schema.json:data' \
     'schemas/delegation-policy.schema.json:data' \
-    'agents/repo-inventory.md:data' \
     'compat/agy-verified-version.txt:data' \
     'compat/agy-model-effort-matrix.json:data'; do
     dependency="${specification%:*}"
@@ -2272,52 +2092,8 @@ else
     bad "macOS CI runs the dedicated offline doctor suite"
 fi
 
-if python3 - "$ROOT/.github/workflows/feedback-watch.yml" <<'PY'
-from pathlib import Path
-import sys
 
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-required = (
-    'name: feedback-watch\n',
-    '    - cron: "23 8 * * 1"\n',
-    '  workflow_dispatch:\n',
-    '    runs-on: ubuntu-latest\n',
-    '  contents: read\n',
-    '  issues: read\n',
-    '      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n',
-    '          persist-credentials: false\n',
-    '          GH_TOKEN: ${{ github.token }}\n',
-    '          GH_PROMPT_DISABLED: "1"\n',
-    'summary="$(./feedback-triage.sh fetch)"\n',
-    'Read-only aggregate: no issue writes, comments, labels, closes, creates, dispatches, or agent input."\n',
-)
-forbidden = ('--paginate', 'issue create', 'issue comment', 'issue edit', 'issue close', 'gh api repos', 'actions/checkout@v4')
-assert all(text.count(item) == 1 for item in required)
-assert not any(item in text for item in forbidden)
-PY
-then
-    ok "weekly feedback watch is fixed, read-only, and metadata-only"
-else
-    bad "weekly feedback watch is fixed, read-only, and metadata-only"
-fi
 
-if ci_stage_registered '/usr/bin/python3 -I -S -B tests/test-benchmark.py' \
-        && grep -Fq '[Benchmarking](docs/BENCHMARKING.md)' "$ROOT/README.md" \
-        && grep -Fq 'Live benchmarking is not implemented' "$ROOT/docs/BENCHMARKING.md" \
-        && grep -Fq 'no live provider mode' "$ROOT/docs/index.md"; then
-    ok "CI and public docs expose only provider-independent Benchmark v1"
-else
-    bad "CI and public docs expose only provider-independent Benchmark v1"
-fi
-
-if ci_stage_registered '/usr/bin/python3 -I -S -B tests/test-swebench-workflow-study.py' \
-        && grep -Fq '## SWE-bench Workflow Study v1' "$ROOT/docs/BENCHMARKING.md" \
-        && grep -Fq 'authority false and never' "$ROOT/docs/BENCHMARKING.md" \
-        && grep -Fq 'influences `qa-gate` acceptance.' "$ROOT/docs/BENCHMARKING.md" ; then
-    ok "CI and public docs expose SWE-bench Workflow Study v1"
-else
-    bad "CI and public docs expose SWE-bench Workflow Study v1"
-fi
 
 if ci_stage_registered './tests/test-evidence-report.sh' \
         && grep -Fq 'runs-on: macos-latest' "$ROOT/.github/workflows/test.yml"; then
@@ -3578,7 +3354,7 @@ suite_commands = [
 ]
 
 valid = (
-    len(suite_commands) == len(set(suite_commands)) == 39
+    len(suite_commands) == len(set(suite_commands)) == 31
     and "/usr/bin/python3 -I -S -B scripts/ci_stages.py --list" in contributing
     and {command for command in suite_commands if command in contributing}
     == {"/usr/bin/python3 -I -S -B tests/test-agy-worker-remediation.py"}
@@ -3602,9 +3378,7 @@ PY
 if governance_docs_contract \
         && grep -Fq 'The canonical offline stages' "$ROOT/docs/OPERATIONS.md" \
         && grep -Fq 'all registered offline stages' "$ROOT/CONTRIBUTING.md" \
-        && grep -Fq '`tests/test-adoption-measurement.py` (41 offline cases)' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq '`tests/test-update-notifier.py` (89 offline fake-control cases)' "$ROOT/docs/REPO_MAP.md" \
-        && [[ -f "$ROOT/docs/MEASUREMENT.md" ]] \
         && [[ -x "$ROOT/update-notifier.sh" ]] \
         && grep -Fq 'Google/Gemini' "$ROOT/PRIVACY.md" \
         && grep -Fq 'logs/' "$ROOT/PRIVACY.md" \
@@ -3655,10 +3429,10 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
             "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (302 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
-        && grep -Fq 'EXPECTED_CHECKS = 115' "$ROOT/tests/test-agy-worker-remediation.py" \
-        && grep -Fq '`tests/test-agy-worker-remediation.py` (115 focused cases)' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-doctor.sh` (214 cases)' "$ROOT/docs/REPO_MAP.md" \
+        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (291 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
+        && grep -Fq 'EXPECTED_CHECKS = 117' "$ROOT/tests/test-agy-worker-remediation.py" \
+        && grep -Fq '`tests/test-agy-worker-remediation.py` (117 focused cases)' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-doctor.sh` (208 cases)' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Do not pin exact suite counts in this instruction file' "$ROOT/AGENTS.md" \
         && grep -Fq '`docs/REPO_MAP.md` owns focused-suite inventory' "$ROOT/AGENTS.md" \
         && grep -Fq '`scripts/ci_stages.py` owns the' "$ROOT/AGENTS.md" \
@@ -4191,10 +3965,6 @@ if [[ "$docs_valid_rc" == "0" ]] \
         && grep -Fxq '/docs/agy-worker-campaign-quality-report-*.md' "$ROOT/.gitignore" \
         && grep -Fxq '/docs/*campaign-report-20??-??-??*.md' "$ROOT/.gitignore" \
         && [[ -z "$tracked_evidence" ]] \
-        && ! grep -Fq '0123456789abcdef0123456789abcdef01234567' "$ROOT/docs/MEASUREMENT.md" \
-        && ! grep -Fq 'actions/runs/123456789' "$ROOT/docs/MEASUREMENT.md" \
-        && grep -Fq ': "${REPO_SHA:?set REPO_SHA' "$ROOT/docs/MEASUREMENT.md" \
-        && grep -Fq -- '--evidence-url "$WATCHER_EVIDENCE_URL"' "$ROOT/docs/MEASUREMENT.md" \
         && [[ ! -e "$ROOT/docs/agy-worker-campaign-quality-report-2026-08-27.md" ]]; then
     ok "documentation policy, public inventory, ordered onboarding, budget, links, anchors, and Pages mapping stay valid"
 else

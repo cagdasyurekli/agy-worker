@@ -43,8 +43,8 @@ through the filtered environment. Explicit `--provider-isolation native` replace
 HOME/TMP/XDG with private directories for scoped launches. Version/help probes are
 separate local preflight processes.
 
-Other local utilities, including diagnostics and feedback-draft generation, are not
-provider dispatch and are outside this environment-isolation guarantee.
+Other local utilities, including diagnostics, are not provider dispatch and are
+outside this environment-isolation guarantee.
 
 Driver-owned verification uses a stricter closed baseline that excludes `HOME`.
 Use repeatable canonical JSON arrays with `--verify-argv`; they execute from the
@@ -163,19 +163,6 @@ Environment filtering is not filesystem, network, `PATH`, `HOME`, or same-user
 process isolation. Candidate code may still read accessible files or use available
 network paths; a green gate never replaces human diff review.
 
-### Boost authority boundary
-
-`--boost` is an explicit advanced raw-dispatch profile, not a performance-only switch.
-The provider may invoke subagents and protected tools. The wrapper therefore binds the
-reviewed warning to the exact job ID, requires `task`/`accept-edits`, one cycle, no
-persona, and slash-command protection, and records the approval in command V8. This
-acknowledgement does not grant a provider permission, expand selected-content or
-whole-worktree scope, or authorize acceptance, Git, or publication. The controller
-requires the first init frame to report `agent=Boost` and
-`permission_mode=request-review`; mismatch is a terminal `boost_contract` failure.
-Boost dispatches have no resume, restart, or continuation path, so a new attempt needs
-a new job ID, a new transmission decision, and a fresh risk acknowledgement.
-
 Gate scope reads and candidate snapshots ignore inherited Git variables and
 system/global Git configuration, neutralize fsmonitor/hooks and external
 diff/textconv, and reject effective repository clean/process/required filter
@@ -215,8 +202,8 @@ user configuration are never modified.
 ## Supported distribution
 
 The canonical portable core runtime lives in `skills/agy-worker/runtime/`. Its
-repository-root entrypoints are compatibility wrappers. Research and maintenance
-tools are repository-only and are not required by the folder-only core runtime.
+repository-root entrypoints are compatibility wrappers. Maintenance tools are
+repository-only and are not required by the folder-only core runtime.
 The host marketplace packages and GitHub installation path refer to that one core
 bundle; they do not create a second runtime or authorize a provider dispatch.
 
@@ -229,9 +216,7 @@ independently.
 ## Host-specific compatibility surfaces
 
 The stable policy value `direct-codex` means direct driver implementation on either
-host; its spelling and JSON fields are compatibility identifiers. Codex usage reports
-(`codex-usage-report.sh` / `scripts/codex_usage_report.py`) are available from a
-repository checkout, not a standalone skill copy. They and Codex sandbox configuration
-remain Codex-only. The normal workflow and offline doctor do not require a Codex
+host; its spelling and JSON fields are compatibility identifiers. Codex sandbox
+configuration remains Codex-only. The normal workflow and offline doctor do not require a Codex
 binary when Claude Code is the driver. Checkout update/notifier tools retain their
 Codex maintenance scope and do not look up installed plugins by their old identity.

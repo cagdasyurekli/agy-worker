@@ -4,7 +4,7 @@
 implementation to Google Antigravity CLI (`agy`) while keeping acceptance with
 the driver. The package includes its complete portable core runtime, so an installed
 skill does not need a repository checkout or a network fetch for ordinary workflows.
-Research and maintenance tools require a repository checkout.
+Maintenance tools require a repository checkout.
 
 Use it when a repository task benefits from delegated discovery or edits and the driver
 can independently inspect the candidate and run the relevant project checks. It is
@@ -38,14 +38,6 @@ Installation alone grants none of those permissions.
 Prefer selected-content `--provider-scope` for bounded jobs. Whole-worktree dispatch
 remains an explicit content-bound exception, and neither the ordinary facade nor the
 advanced raw initial launch has an implicit transmission mode.
-
-For an explicitly accepted higher-authority experiment, the advanced raw dispatcher
-supports one-cycle `--boost` task mode. Its first provider-free invocation prints the
-job-bound risk digest required by `--approve-boost-risk-sha`; review the warning before
-rerunning. Boost may invoke provider-side subagents and protected tools, but the digest
-does not grant permissions, widen the approved transmission, or authorize Git or
-publication. Boost results require a matching provider init identity and are never
-eligible for resume, restart, or continuation.
 
 ## Resolve the bundled runtime
 

@@ -669,7 +669,6 @@ for specification in \
     'schemas/worker-result.schema.json:data' \
     'schemas/worker-result.provider.schema.json:data' \
     'schemas/evidence-receipt.schema.json:data' \
-    'agents/repo-inventory.md:data' \
     'compat/agy-verified-version.txt:data' \
     'compat/agy-model-effort-matrix.json:data' \
     'compat/agy-models-inventory-binding.json:data'; do
@@ -794,7 +793,6 @@ for dependency in \
     'schemas/evidence-receipt.schema.json:receipt-schema' \
     'schemas/job-state.schema.json:lifecycle-schema' \
     'schemas/model-selection.schema.json:selection-schema' \
-    'agents/repo-inventory.md:persona' \
     'compat/agy-upstream-head.txt:source-record' \
     'compat/agy-verified-version.txt:compat-record' \
     'compat/agy-model-effort-matrix.json:model-matrix' \

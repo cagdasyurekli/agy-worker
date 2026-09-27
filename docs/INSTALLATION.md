@@ -118,10 +118,7 @@ before running `./install.sh`; do not substitute an unverified tag.
 
 `skills/agy-worker/` is the one canonical, self-contained Agent Skill. A folder-only
 copy contains its Bash/Python/git core runtime and downloads no code when invoked.
-Benchmark, SWE-bench study, Model Intelligence, model-evidence campaign, Codex usage,
-and feedback-triage tools require the repository checkout and are not part of this
-copy. Run those tools through their repository-root entrypoints. Resolve the installed
-core runtime as documented in
+Resolve the installed core runtime as documented in
 [`skills/agy-worker/SKILL.md`](../skills/agy-worker/SKILL.md), then run:
 
 ```bash
@@ -211,7 +208,7 @@ and 44-stage offline CI; explicitly no live 1.2.7 warning sample or exit-3 sampl
 AGY 1.2.11 is the current local compatibility binding, supported by the
 [bounded activation evidence](../compat/reviews/agy-1.2.11-activation.md). Its live
 qualification covers a session edit and planned same-conversation refinement.
-Native, Boost/API-key, and effective accept-edits semantics remain unqualified
+Native and effective accept-edits semantics remain unqualified
 for 1.2.11; earlier native results apply only to their recorded versions.
 
 File tools use absolute workspace paths. Final `files_changed` reports should use
@@ -270,8 +267,6 @@ account-owned agy state such as models, agents, plugins, and local permissions.
 - Build `--print` last: its next argument is the prompt, and print mode ignores stdin.
 - Exit 0 plus empty output is not success. The worker accepts a terminal result only
   through its bounded structured envelope.
-- agy's `--agent` disables `--json-schema`; personas are therefore injected as
-  bounded prompt text instead of using that flag.
 - In explicit native mode, agy's sandbox shell tools run in its scratch directory rather than the target
   repository. Worker prompts use file tools; the driver owns repository commands.
 - Classify authentication, quota, timeout, or provider failures only from reviewed

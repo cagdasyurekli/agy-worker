@@ -162,9 +162,6 @@ retains an authenticated inert ledger/tombstone, prior result, and lock for resu
 recovery and deduplication; additional private residuals may remain after drift or
 failure. A notification is an irreversible UI side effect and cannot be retracted.
 
-The separate [measurement ledger](MEASUREMENT.md) records only explicit sanitized
-public evidence. Neither the hosted watcher nor the notifier writes it automatically.
-
 ## Render bounded evidence in automation
 
 Evidence Receipt v1 creation, validation, report commands, GitHub Step Summary
@@ -173,58 +170,16 @@ authoritative owner: [Project workflow](PROJECT_WORKFLOW.md#preserve-a-local-evi
 Use that reviewed recipe in automation; this operations guide does not maintain a
 second copy.
 
-## Draft sanitized feedback
+## Report a problem or request an improvement
 
-Drafting and public submission are separate user decisions. Create and review a
-private mode-`0600` draft first:
-
-```bash
-./bug-report.sh draft --output /tmp/agy-worker-bug.md \
-  --title "QA gate rejects an accurate created-file claim" \
-  --component qa-gate \
-  --summary "A synthetic fixture is rejected." \
-  --steps "Create a fresh fixture and run the offline gate case." \
-  --expected "The accurate claim is accepted." \
-  --actual "The gate exits 10."
-
-./bug-report.sh preview /tmp/agy-worker-bug.md
-```
-
-The generator reads no prompts, source files, envelopes, or logs. It conservatively
-redacts credential-bearing lines, common authorization tokens, complete private-key
-blocks, absolute paths, worker artifact names, and fenced or indented code. The
-printed SHA-256 review token binds the exact draft bytes.
-
-Public bug or improvement submission requires both exact confirmations and an
-authenticated GitHub CLI:
-
-```bash
-./bug-report.sh submit /tmp/agy-worker-bug.md --confirm-sha <SHA256-FROM-PREVIEW> \
-  --confirm-public-safe-sha <SAME-SHA256-FROM-PREVIEW>
-```
-
-Immediately before `gh issue create`, the command validates and prints the exact body
-again, then sends those in-memory bytes over stdin to the fixed
-`github.com/cagdasyurekli/codex-agy-worker` destination. A changed draft invalidates
-the hash. Without `gh`, or when `gh` fails, the local draft remains and nothing else
-is attempted.
-
-Security drafts are private-only and ineligible for public submission. Use the
-[private vulnerability reporting form](https://github.com/cagdasyurekli/codex-agy-worker/security/advisories/new)
-instead. The conservative keyword barrier is not proof that a report is safe. See
-[SUPPORT.md](../SUPPORT.md) for the maintained support routes.
-
-Maintainers may deliberately run `./feedback-triage.sh fetch`, or inspect its weekly
-read-only workflow summary. Fetch requests at most one metadata-only page of open
-issues and emits canonical URLs/numbers, month counts, and burst/overflow flags. It
-does not fetch titles, bodies, comments, labels, usernames, or raw issue content; it
-does not write to GitHub or feed issue prose to an agent.
+Open the appropriate issue form with a minimal synthetic reproduction and sanitized
+version, expected-result, and actual-result details. [SUPPORT.md](../SUPPORT.md) owns
+the required information, privacy precautions, and private security-report route.
 
 ## Related references
 
 - [Installation and compatibility](INSTALLATION.md)
 - [Using agy-worker](USAGE.md)
 - [Project workflow and Verification v2](PROJECT_WORKFLOW.md)
-- [Adoption measurement](MEASUREMENT.md)
 - [Repository ownership and verification commands](REPO_MAP.md)
 - [Architectural lessons](lessons_learned.md)

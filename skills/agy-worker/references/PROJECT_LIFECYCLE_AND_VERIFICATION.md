@@ -177,7 +177,14 @@ identified by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
 `BOUND_FACADE_SCHEMA_VERSION` in `runtime/scripts/workflow.py`; workflow status output
 has its own version. Finish or discard an older job using the release that created
 it. The last documented release with legacy-schema support is v0.22.0.
-`--approve-migration-sha` is removed: no in-place migration or new approval is implied.
+Command V12 retires every V11 command, including jobs that used neither Boost nor a
+persona, because persona selection was not recorded separately from prompt text.
+State and workflow record formats are unchanged by this command change. All actions,
+including status, result, and finalization, reject the old command before mutation.
+Keep its artifacts untouched and use its actual creating release; v0.22.0 is not a
+universal reader for later V11 jobs. `--boost`, `--approve-boost-risk-sha`, `--persona`,
+and `--approve-migration-sha` are removed after v0.22.0. No in-place migration or new
+authority is implied; use ordinary workflows for new work.
 
 The current state (defined by `CURRENT_STATE_SCHEMA` in
 `runtime/scripts/agy_dispatch.py`) uses `dispatching` for an active initial, resume, or restart attempt;
@@ -229,7 +236,7 @@ extend the original grant.
 
 For optional local checks, the driver prepares an owner-private manifest and supplies
 `--self-verification-manifest PATH` at initial task/project dispatch. Both options
-are available through `workflow.sh run`. Checks default off; explore and Boost do
+are available through `workflow.sh run`. Checks default off; explore does
 not support them. The driver chooses exact commands, required checks, optional IDs,
 and limits. The worker may request only approved optional IDs; required checks always
 run. Users need not prepare JSON or create a Goal.

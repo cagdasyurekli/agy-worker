@@ -79,7 +79,6 @@ class SelfVerificationLifecycle(unittest.TestCase):
             "provider_scope_identity": None if scope is None else list(DISPATCH._identity(scope_info)),
             "approved_transmission_sha256": None if scope is None else approved_transmission,
             "approved_whole_worktree_sha256": readable_digest if scope is None else None,
-            "boost": False, "boost_policy_sha256": None, "approved_boost_risk_sha256": None,
             "allow_self_verification": allow, "self_verification_manifest_path": str(manifest) if allow else None,
             "self_verification_manifest_sha256": DISPATCH.digest(raw_manifest) if allow else None,
             "self_verification_manifest_identity": list(DISPATCH._identity(info)) if allow else None,

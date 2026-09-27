@@ -13,8 +13,7 @@ claims elsewhere in the repository.
 - `docs/index.md` is the public Pages landing page. It introduces the product and
   routes readers to the tutorial and repository without copying the full README.
 - Task guides under `docs/` own detailed installation, usage, project workflow,
-  operations, verification, marketplace, benchmark, measurement,
-  and policy material. README summarizes those surfaces and routes readers to the
+  operations, verification, marketplace, and policy material. README summarizes those surfaces and routes readers to the
   one task guide that owns the detail.
 - `docs/REPO_MAP.md` owns maintainer-oriented paths, responsibilities, trust
   boundaries, and verification commands.
@@ -36,7 +35,7 @@ Keep the README useful without requiring a visitor to read it end to end:
    excluded use cases, a task-oriented documentation table, a compatibility summary,
    limitations, contributing/support entry points, and the license.
 3. Put detailed commands, option catalogs, lifecycle recipes, compatibility evidence,
-   CI operations, benchmarks, inventories, and release narratives in their owning
+   CI operations, inventories, and release narratives in their owning
    task guide. Summarize and link from README instead of copying them.
 4. Prefer a few coherent task guides over one file per small topic. A reader should
    choose a page by intent, not by knowing the source-tree layout.
@@ -53,14 +52,13 @@ a short context sentence and a link, but must not maintain a second full copy.
 |---|---|
 | First task and product overview | `README.md` |
 | Installation, compatibility, doctor, sandbox, and agy troubleshooting | `docs/INSTALLATION.md` |
-| Workflows, examples, options, persona selection, and model selection | `docs/USAGE.md` |
+| Workflows, examples, options, and model selection | `docs/USAGE.md` |
 | Project lifecycle, Verification v2, recovery, and Evidence Receipt v1 | `docs/PROJECT_WORKFLOW.md` |
 | CI fallback, updates, notifier maintenance, and sanitized reporting | `docs/OPERATIONS.md` |
 | Marketplace packaging and detailed install contract | `docs/MARKETPLACE.md`; README repeats only the minimal first-task commands and authorization boundary |
 | Verification workflow tutorial | `docs/VERIFYING_AGENT_OUTPUT.md` |
 | Public gate fixture contract | `docs/CONFORMANCE.md` |
 | Repository architecture and owning checks | `docs/REPO_MAP.md` |
-| Benchmarks and measurement | `docs/BENCHMARKING.md`, `docs/MEASUREMENT.md` |
 | Product/release state | `docs/ROADMAP.md` and release notes |
 | Privacy, support, and terms | `PRIVACY.md`, `SUPPORT.md`, `TERMS.md` |
 

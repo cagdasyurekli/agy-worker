@@ -105,12 +105,10 @@ models as a substitute for diagnosing the failure. Reuse passing evidence while 
 candidate bytes and relevant environment remain unchanged; after an edit, rerun the
 owning checks and apply the stable-candidate full-gate rule above.
 
-When a release is also claimed to be installed or collecting local measurements,
-verify those machine states separately after publication. A clean tagged checkout is
-not proof that the global Codex skill was recopied, that the LaunchAgent snapshot was
-rebound, or that an explicit measurement ledger and its daily append path exist. Read
-back installed-bundle parity, notifier status, the ledger header/report, and at least
-one real observation before making those claims.
+When a release is also claimed to be installed, verify that machine state separately
+after publication. A clean tagged checkout does not establish that the global Codex
+skill was recopied or that the LaunchAgent snapshot was rebound. Read back
+installed-bundle parity and notifier status before making those claims.
 
 ## Pull requests
 

@@ -104,9 +104,6 @@ pipeline_runtime_complete() {
         schemas/model-recommendation.schema.json \
         schemas/job-state.schema.json \
         schemas/delegation-policy.schema.json \
-        agents/bulk-test-writer.md \
-        agents/repo-inventory.md \
-        agents/diff-reviewer.md \
         compat/agy-verified-version.txt \
         compat/agy-upstream-head.txt \
         compat/agy-last-reviewed.txt \

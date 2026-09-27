@@ -112,7 +112,7 @@ PY
 usage() {
     local usage_exit="${1:-64}"
     cat >&2 <<'EOF'
-usage: agy-worker.sh [--workdir DIR] [--persona NAME] [--mode plan|accept-edits]
+usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
                      [--workflow explore|task|project] [--max-cycles N]
                      [--tier bulk|cheap|hard|hardest|default|MODEL]
                      [--model REVIEWED_MODEL [--effort low|medium|high]]
@@ -126,7 +126,6 @@ usage: agy-worker.sh [--workdir DIR] [--persona NAME] [--mode plan|accept-edits]
                      [--allow-scoped-repair]
                      [--self-verification-manifest ABSOLUTE_PRIVATE_FILE]
                      [--approve-whole-worktree LAUNCH_APPROVAL_SHA256]
-                     [--boost --approve-boost-risk-sha SHA256]
                      [--add-dir DIR]... [--allow-slash-commands]
        ... task prompt on stdin ...
 
@@ -269,7 +268,6 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
 fi
 
 workdir="$PWD"
-persona=""
 workflow=""
 max_cycles=""
 workflow_cli_seen=0; max_cycles_cli_seen=0; mode_cli_seen=0
@@ -285,7 +283,6 @@ job_cli_seen=0
 provider_scope_seen=0; provider_scope=""
 approve_transmission_sha_seen=0; approve_transmission_sha=""
 approve_whole_worktree_seen=0; approve_whole_worktree=""
-boost_seen=0; approve_boost_risk_sha_seen=0; approve_boost_risk_sha=""; boost_policy_sha=""
 allow_scoped_repair_seen=0
 self_verification_manifest_seen=0; self_verification_manifest=""
 provider_isolation_seen=0; provider_isolation="session"
@@ -301,13 +298,9 @@ while [[ $# -gt 0 ]]; do
             echo "agy-worker.sh: --approve-migration-sha was removed after v0.22.0; finish or discard the old job with the release that created it." >&2
             exit 64 ;;
         --workdir) [[ $# -ge 2 ]] || usage; workdir="$2"; shift 2 ;;
-        # Persona by PROMPT INJECTION, not by --agent. Measured 2026-08-01: passing
-        # --agent silently disables --json-schema enforcement (result.structured_output
-        # comes back null and the worker answers in prose), which breaks the entire
-        # driver contract. agy also accepts any --agent name without error, so a typo
-        # yields a default worker that believes it is a specialist. Inlining the
-        # persona body keeps structured output working.
-        --persona) [[ $# -ge 2 ]] || usage; persona="$2"; shift 2 ;;
+        --boost|--boost=*|--approve-boost-risk-sha|--approve-boost-risk-sha=*|--persona|--persona=*)
+            echo "agy-worker.sh: ${1%%=*} was removed after v0.22.0; use the ordinary task workflow." >&2
+            exit 64 ;;
         --mode) [[ $# -ge 2 && $mode_cli_seen -eq 0 ]] || usage; mode_cli_seen=1; mode="$2"; shift 2 ;;
         --workflow)
             [[ $# -ge 2 && $workflow_cli_seen -eq 0 ]] || usage
@@ -380,11 +373,6 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || usage
             (( approve_whole_worktree_seen == 0 )) || { echo "agy-worker.sh: repeated --approve-whole-worktree" >&2; exit 64; }
             approve_whole_worktree_seen=1; approve_whole_worktree="$2"; shift 2 ;;
-        --boost) (( boost_seen == 0 )) || { echo "agy-worker.sh: repeated --boost" >&2; exit 64; }; boost_seen=1; shift ;;
-        --approve-boost-risk-sha)
-            [[ $# -ge 2 ]] || usage
-            (( approve_boost_risk_sha_seen == 0 )) || { echo "agy-worker.sh: repeated --approve-boost-risk-sha" >&2; exit 64; }
-            approve_boost_risk_sha_seen=1; approve_boost_risk_sha="$2"; shift 2 ;;
         --add-dir) [[ $# -ge 2 ]] || usage; extra_dirs+=("$2"); shift 2 ;;
         --allow-slash-commands) disable_slash=0; shift ;;
         -h|--help) usage 0 ;;
@@ -437,10 +425,6 @@ if (( allow_scoped_repair_seen && provider_scope_seen == 0 )); then
 fi
 if (( self_verification_manifest_seen )) && [[ "$self_verification_manifest" != /* ]]; then
     echo "agy-worker.sh: --self-verification-manifest requires a canonical absolute path" >&2
-    exit 64
-fi
-if (( boost_seen == 0 && approve_boost_risk_sha_seen )); then
-    echo "agy-worker.sh: --approve-boost-risk-sha requires --boost" >&2
     exit 64
 fi
 
@@ -574,10 +558,6 @@ case "$workflow" in
         max_cycles=1 ;;
 esac
 
-case "$persona" in
-    ''|bulk-test-writer|repo-inventory|diff-reviewer) ;;
-    *) echo "agy-worker.sh: invalid persona: $persona" >&2; exit 64 ;;
-esac
 case "$mode" in
     plan|accept-edits) ;;
     *) echo "agy-worker.sh: invalid mode: $mode" >&2; exit 64 ;;
@@ -589,44 +569,19 @@ fi
 case "$job_id" in
     ''|.|..|*[!A-Za-z0-9._-]*) echo "agy-worker.sh: invalid AGY_WORKER_JOB_ID: $job_id" >&2; exit 64 ;;
 esac
-if [[ "$mode" != "plan" && ( "$persona" == "repo-inventory" || "$persona" == "diff-reviewer" ) ]]; then
-    echo "agy-worker.sh: persona '$persona' is read-only and requires --mode plan" >&2
-    exit 64
-fi
-if (( boost_seen )); then
-    if [[ "$workflow" != "task" || "$mode" != "accept-edits" || "$max_cycles" != "1" || -n "$persona" || "$disable_slash" != 1 ]]; then
-        echo "agy-worker.sh: --boost requires task, accept-edits, one cycle, no persona, and slash protection" >&2
-        exit 64
-    fi
-    boost_policy_text="Boost may invoke subagents and protected tools; this acknowledgement does not grant runtime permissions."
-    boost_policy_sha="$(printf '%s' "$boost_policy_text" | shasum -a 256 | awk '{print $1}')"
-    expected_boost_risk_sha="$(printf '%s\n%s\n' "$boost_policy_sha" "$job_id" | shasum -a 256 | awk '{print $1}')"
-    if (( approve_boost_risk_sha_seen == 0 )); then
-        printf '%s\n' "agy-worker.sh: $boost_policy_text Review and rerun: --boost --approve-boost-risk-sha $expected_boost_risk_sha" >&2
-        exit 6
-    fi
-    if [[ "$approve_boost_risk_sha" != "$expected_boost_risk_sha" ]]; then
-        echo "agy-worker.sh: Boost risk acknowledgement is invalid or stale" >&2
-        exit 6
-    fi
-fi
 if (( allow_scoped_repair_seen )); then
     if [[ "$workflow" != "task" && "$workflow" != "project" ]]; then
         echo "agy-worker.sh: --allow-scoped-repair requires task or project workflow" >&2
         exit 64
     fi
-    if (( max_cycles < 2 || boost_seen )); then
-        echo "agy-worker.sh: --allow-scoped-repair requires at least two non-Boost cycles" >&2
+    if (( max_cycles < 2 )); then
+        echo "agy-worker.sh: --allow-scoped-repair requires at least two cycles" >&2
         exit 64
     fi
 fi
 if (( self_verification_manifest_seen )); then
     if [[ "$workflow" != "task" && "$workflow" != "project" ]]; then
         echo "agy-worker.sh: --self-verification-manifest requires task or project workflow" >&2
-        exit 64
-    fi
-    if (( boost_seen )); then
-        echo "agy-worker.sh: --self-verification-manifest is unavailable with Boost" >&2
         exit 64
     fi
 fi
@@ -1243,37 +1198,10 @@ if [[ "$provider_isolation" == "session" ]]; then
 else
     provider_execution_note="Under native isolation, shell tools run in a separate scratch area; their output is not evidence about the approved workspace."
 fi
-boost_workspace_contract=""
-if (( boost_seen )); then
-    if (( provider_scope_seen )); then
-        boost_workspace_shape="It is intentionally Gitless and may contain only selected files."
-    else
-        boost_workspace_shape="It is the explicitly approved whole worktree."
-    fi
-    read -r -d '' boost_workspace_contract <<'EOF' || true
-BOOST WORKSPACE CONTRACT — non-negotiable:
-- The initial working directory exposed by file tools is the complete approved task
-  workspace. __BOOST_WORKSPACE_SHAPE__ Do not search for another repository or
-  "active workspace".
-- Use built-in file listing, reading, and editing tools. The controller supplies the
-  exact absolute workspace root immediately before launch; use absolute child paths
-  beneath that root and never pass a task-relative path alone. Do not inspect HOME,
-  `~/.gemini`, parent directories, or other user directories.
-- Never call shell or terminal tools, including `pwd`, `ls`, `find`, or `git`.
-  __PROVIDER_EXECUTION_NOTE__
-- If you delegate, include this entire contract in every subagent task. If a subagent
-  cannot comply, perform the task directly with file tools. If file-tool access is
-  denied or unavailable, return the schema-valid blocked envelope.
-
-EOF
-    boost_workspace_contract="${boost_workspace_contract/__BOOST_WORKSPACE_SHAPE__/$boost_workspace_shape}"
-    boost_workspace_contract="${boost_workspace_contract/__PROVIDER_EXECUTION_NOTE__/$provider_execution_note}"
-fi
 read -r -d '' PREAMBLE <<'EOF' || true
 You are a bounded worker. Another agent (the driver) will independently verify
 everything you claim, so inaccurate self-reporting is worse than admitting failure.
 
-__BOOST_WORKSPACE_CONTRACT__
 __SELF_VERIFICATION_CHECK_REQUESTS__
 OUTPUT CONTRACT — non-negotiable:
 - Your FINAL response must be a single JSON object matching the enforced schema.
@@ -1290,24 +1218,11 @@ OUTPUT CONTRACT — non-negotiable:
 
 TASK FOLLOWS:
 EOF
-PREAMBLE="${PREAMBLE/__BOOST_WORKSPACE_CONTRACT__/$boost_workspace_contract}"
 PREAMBLE="${PREAMBLE/__SELF_VERIFICATION_CHECK_REQUESTS__/$self_verification_prompt_block}"
 PREAMBLE="${PREAMBLE/__WORKSPACE_DIRECTIVE__/$workspace_directive}"
 PREAMBLE="${PREAMBLE/__PROVIDER_EXECUTION_NOTE__/$provider_execution_note}"
 
-# Persona is prepended as text (see --persona note above). Strip YAML frontmatter:
-# the `tools:` list is meaningless here — tool access is governed by agy's own
-# permissions, not by anything we can assert in a prompt.
-persona_text=""
-if [[ -n "$persona" ]]; then
-    persona_file="$SCRIPT_DIR/agents/$persona.md"
-    [[ -f "$persona_file" ]] || { echo "agy-worker.sh: no such persona: $persona_file" >&2; exit 64; }
-    persona_text="$(awk 'BEGIN{fm=0} /^---$/{fm++; next} fm>=2' "$persona_file")
-"
-fi
-
 full_prompt="$PREAMBLE
-$persona_text
 $task"
 printf '%s' "$full_prompt" > "$full_prompt_file"
 
@@ -1317,7 +1232,6 @@ build_cmd() {
     [[ "$provider_isolation" != "native" ]] || cmd+=(--sandbox)
     cmd+=(--mode "$mode" --print-timeout "${max_seconds}s")
     cmd+=(--output-format stream-json --json-schema "$SCHEMA")
-    (( boost_seen == 0 )) || cmd+=(--agent Boost)
     [[ -n "$model" ]] && cmd+=(--model "$model")
     if (( disable_slash )) && [[ "$mode" != "plan" ]]; then
         cmd+=(--disable-slash-commands)
@@ -1342,7 +1256,7 @@ build_cmd() {
         stage_used=1
         cmd+=(--add-dir "$staged_dir")
         cmd+=(--print "Read '$staged_prompt_file' as the complete prompt, including its
-output contract, persona, and task. Follow it exactly. The staged job directory is
+output contract and task. Follow it exactly. The staged job directory is
 read-only context; target files named in that prompt remain readable and editable
 according to --mode and --add-dir. Return the JSON envelope inline.")
     else
@@ -1362,7 +1276,7 @@ python3 -I -S -B - "$SCRIPT_DIR/scripts/agy_dispatch.py" "$command_file" "$job_i
     "$idle_seconds" "$hard_seconds" "$max_seconds" "$notice_seconds" \
     "$stage_dir_arg" "$stage_file_arg" "$CALLER_UMASK" "$command_workflow" "$max_cycles" \
     "${#provider_env[@]}" ${provider_env+"${provider_env[@]}"} "$selection_file" \
-    "$provider_scope" "$approve_transmission_sha" "$approve_whole_worktree" "$boost_seen" "$boost_policy_sha" "$approve_boost_risk_sha" "$allow_scoped_repair_seen" "$self_verification_manifest_file" "$provider_isolation" "${cmd[@]}" <<'PY'
+    "$provider_scope" "$approve_transmission_sha" "$approve_whole_worktree" "$allow_scoped_repair_seen" "$self_verification_manifest_file" "$provider_isolation" "${cmd[@]}" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -1376,11 +1290,11 @@ import sys
 dispatch = runpy.run_path(dispatch_source, run_name="agy_dispatch_scope_reader")
 provider_env_count = int(provider_env_count)
 provider_env = sorted(remainder[:provider_env_count])
-selection_path, provider_scope_arg, approved_transmission_sha_arg, approved_whole_worktree_sha_arg, boost_arg, boost_policy_sha_arg, approved_boost_risk_sha_arg, allow_scoped_repair_arg, self_verification_manifest_arg, provider_isolation_arg, *argv = remainder[provider_env_count:]
+selection_path, provider_scope_arg, approved_transmission_sha_arg, approved_whole_worktree_sha_arg, allow_scoped_repair_arg, self_verification_manifest_arg, provider_isolation_arg, *argv = remainder[provider_env_count:]
 if not isinstance(child_umask, str) or len(child_umask) not in (3, 4) or any(ch not in "01234567" for ch in child_umask):
     raise SystemExit(64)
 value = {
-    "schema_version": 11,
+    "schema_version": dispatch["CURRENT_COMMAND_SCHEMA"],
     "kind": "agy-worker-dispatch-command",
     "job_id": job_id,
     "workdir": workdir,
@@ -1412,9 +1326,6 @@ value = {
     "provider_scope_identity": None,
     "approved_transmission_sha256": None,
     "approved_whole_worktree_sha256": approved_whole_worktree_sha_arg or None,
-    "boost": boost_arg == "1",
-    "boost_policy_sha256": boost_policy_sha_arg or None,
-    "approved_boost_risk_sha256": approved_boost_risk_sha_arg or None,
     "allow_scoped_repair": allow_scoped_repair_arg == "1",
     "repair_authority_sha256": None,
     "allow_self_verification": bool(self_verification_manifest_arg),

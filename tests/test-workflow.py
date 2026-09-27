@@ -1913,7 +1913,7 @@ def test_referenced_dispatch_versions_reject_before_effects() -> bool:
         state_path, command_path = job / dispatch.STATE_NAME, job / dispatch.COMMAND_NAME
         state_raw, command_raw = state_path.read_bytes(), command_path.read_bytes()
         current_state, current_command = json.loads(state_raw), json.loads(command_raw)
-        assert (current_state["schema_version"], current_command["schema_version"]) == (14, 11)
+        assert (current_state["schema_version"], current_command["schema_version"]) == (dispatch.CURRENT_STATE_SCHEMA, dispatch.CURRENT_COMMAND_SCHEMA)
         state = _explicit_state(f)
         repo = worktree.parent / "owner"
         branch = git(worktree, "branch", "--show-current")
@@ -1925,8 +1925,8 @@ def test_referenced_dispatch_versions_reject_before_effects() -> bool:
         f.state_file.write_bytes(WORKFLOW_MODULE.canonical_json(state) + b"\n")
         f.state_file.chmod(0o600)
         for target, current, versions, label in (
-            (state_path, current_state, range(1, 14), "dispatch state schema"),
-            (command_path, current_command, range(1, 11), "dispatch command schema"),
+            (state_path, current_state, range(1, dispatch.CURRENT_STATE_SCHEMA), "dispatch state schema"),
+            (command_path, current_command, range(1, dispatch.CURRENT_COMMAND_SCHEMA), "dispatch command schema"),
         ):
             for version in versions:
                 state_path.write_bytes(state_raw)

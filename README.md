@@ -225,7 +225,6 @@ Choose a guide by what you need to do:
 | Inspect the host marketplace package contracts | [Marketplace](docs/MARKETPLACE.md) |
 | Verify a candidate without trusting its report | [Verification tutorial](docs/VERIFYING_AGENT_OUTPUT.md) |
 | Integrate against the bounded public gate fixtures | [Conformance](docs/CONFORMANCE.md) |
-| Review offline benchmark and adoption evidence | [Benchmarking](docs/BENCHMARKING.md) · [Measurement](docs/MEASUREMENT.md) |
 | Understand source ownership or product direction | [Repository map](docs/REPO_MAP.md) · [Roadmap](docs/ROADMAP.md) |
 
 Public documentation follows a single-owner and progressive-disclosure policy. See
@@ -261,16 +260,7 @@ Use normal language and state the repository, allowed scope, desired result, and
 driver-owned checks. For broader work, Codex can discover ordinary structure and test
 commands instead of requiring a predeclared file list.
 
-Personas remain optional prompt templates. They cannot select a repository, command,
-model, authorization, verification result, or Git action. Model and effort selection
-remain caller-owned, while recommendations remain advisory.
-
-The advanced raw dispatcher has an opt-in, one-cycle `--boost` task profile for an
-explicitly approved higher-authority experiment. Its provider-free preflight prints a
-job-bound risk digest; the acknowledgement warns that Boost may invoke provider-side
-subagents and protected tools, but grants no permission and widens no transmission
-scope. Provider init identity is verified, and Boost failures cannot resume, restart,
-or continue.
+Model and effort selection remain caller-owned; recommendations remain advisory.
 
 See [Usage](docs/USAGE.md) for workflow examples, manual invocation, read-only
 inventory, common options, and explicit model-selection behavior.
@@ -310,8 +300,8 @@ larger fixture contract.
 ## Sanitized bug reports and improvement requests
 
 Use [SUPPORT.md](SUPPORT.md) to choose a public bug, feature request, or private
-security route. Public submission is always a separate, byte-reviewed action; local
-drafting never implies permission to publish.
+security route and the information to include. Review and sanitize the report before
+posting; preparing a draft never implies permission to publish.
 
 ## agy behaviour worth knowing
 
@@ -319,11 +309,6 @@ Exit 0 with empty output is not success. The runtime accepts a terminal result o
 through its bounded structured envelope. Use `./ground-truth.sh` to inspect the local
 interface before changing agy-facing claims, and read the troubleshooting notes in
 [Installation and compatibility](docs/INSTALLATION.md).
-
-## Reproducible offline benchmarks
-
-The provider-independent benchmark and SWE-bench workflow study do not rank models,
-route work, or influence `qa-gate` acceptance. See [Benchmarking](docs/BENCHMARKING.md).
 
 ## Roadmap
 

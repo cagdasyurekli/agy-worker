@@ -17,7 +17,6 @@ body:
         - QA gate
         - Codex skill or installer
         - Updater or compatibility check
-        - Bug reporting workflow
         - Documentation
         - Other
     validations:

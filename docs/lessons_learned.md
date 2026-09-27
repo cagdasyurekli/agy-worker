@@ -200,7 +200,7 @@ from mutable candidate content.
 Security controls protect irreversible boundaries; they are not the product goal.
 Keep provider-transmission approval, worktree containment, credential exclusion,
 dangerous-bypass rejection, and explicit publication authority. Do not require an
-exact file list, a persona, or a prewritten acceptance command merely to start useful
+exact file list or a prewritten acceptance command merely to start useful
 Codex-guided work.
 
 Test policy text against natural requests such as “build this project”, “discover the
@@ -341,19 +341,6 @@ fast-forward checks prove transport consistency, not that candidate code is harm
 Keep the expected-origin boundary, protect the release account and tag process, and
 do not describe candidate execution as a sandbox.
 
-## Reporting must bind review to the uploaded bytes
-
-Generate local drafts atomically with mode `0600` and refuse overwrite. Sanitize
-caller-provided text before rendering, validate the complete rendered body before
-hashing, and validate again when loading it for preview or submission. Redaction is a
-conservative filter, not proof of privacy; the human must review the exact body.
-
-Avoid the upload time-of-check/time-of-use bug: never validate one mutable path and
-later ask another process to reread it. Submit the already validated in-memory bytes
-over stdin, or use an equally immutable private snapshot. Bind the destination to the
-intended public GitHub host, require the exact reviewed SHA-256, and never collect
-prompts, source, envelopes, credentials, private paths, or raw logs automatically.
-
 ## Private evidence must be private when created
 
 Prompts, model streams, stderr, and extracted envelopes can contain repository data.
@@ -386,21 +373,6 @@ stdout incrementally under byte and wall-clock limits, close the whole group on
 oversize, timeout, HUP, INT, or TERM, and do so before reading the task or publishing
 selection provenance. Signal cleanup must preserve the conventional `128 + signal`
 status instead of relabelling interruption as unavailable evidence.
-
-## A convenience skeleton must not become policy
-
-Repeated command inputs tempt a tool to hide choices inside a “profile.” Keep the
-profile surface data-only and closed: fixed hash-bound source files may suggest a
-maintained mode, persona, and repo-relative path-policy shape, but they must never
-carry a selected tier/model/effort, repository/path, executable verifier, external
-root, authorization, dispatch, routing, acceptance, or Git action. Make every
-caller-owned input explicit in the rendered value.
-
-Do not discover target-repository, home-directory, environment-selected, or arbitrary
-caller profile files. That would let untrusted local content expand scope or smuggle
-execution policy into a convenience feature. Validate the fixed portable inventory,
-modes, canonical bytes, semantic pairings, and hashes before rendering; list/show
-remains pure stdout and cannot replace lifecycle, gate, or human review.
 
 ## Model routing is explicit
 
@@ -716,20 +688,6 @@ use lstat-only traversal and never follow the target. Nested repositories, initi
 submodules, mount/device changes, special nodes, and any digest drift remain manual
 recovery boundaries.
 
-Do not let a benchmark become a second router or acceptance system. Preregister the
-ordered caller selections and fixed public tasks before execution, bind the clean
-source commit plus every runner/fixture/gate byte in a checkout. A folder-only bundle
-must instead bind an explicit reviewed portable revision and exact source manifest;
-inventing a Git commit would be false provenance. Reject missing, extra, writable,
-wrong-mode, symlinked, or hash-drifted portable authority. Structurally complete
-schemas make the public artifact contract inspectable while runtime checks retain
-cross-field and canonical-byte authority. Spend exactly one attempt per
-variant-task pair. Delegate every outcome to the existing gate and bind its raw
-Receipt bytes; the benchmark result is only an unsigned serialization of those facts.
-A deterministic report should expose completeness in manifest order, not invent a
-score, winner, retry, fallback, route, recommendation, usage estimate, or persona
-quality claim. Keep provider-backed benchmarking as a separate reviewed boundary.
-
 Do not let an explicit-account capture profile become a hidden execution path. Keep
 profile preparation process-inert, accept only a closed canonical stdin request, and
 reopen every supplied authority through no-follow descriptors. A retained snapshot
@@ -809,15 +767,6 @@ handoff semantics; a harness should be process-owning by default and expose retu
 only as a named test handoff. Keep exact dependency pins ordered from version to
 models to capture, with independent harness and profile pins.
 
-Do not turn historical persona anecdotes into a trust label. A useful prompt can
-produce an honest escalation, and a test-writing prompt can still be rejected by the
-gate. Registry state must bind the exact persona source and mode contract plus public
-evidence bytes. Offline P1-C fixtures that never execute the persona prove only the
-contract shape. Real escalation and accepted-candidate states require separate public
-Receipt/base/selection/verifier/tool and maintainer-approval bindings; promotion is a
-reviewed source change, never a runtime action. Keep target repositories out of the
-allowlist and keep P1-C free of persona quality semantics.
-
 Hashing an opaque “approval” file is not review evidence. Parse and cohere canonical
 Receipt, dispatch, tool/version, selection, verifier, candidate-diff, approval, and
 human-review records, then read their exact `100644` blobs from immutable Git objects.
@@ -857,21 +806,10 @@ explicit `refresh` command. It reuses the old ledger solely for bound, authentic
 resumable uninstall; the replacement ledger is produced by a fresh current install.
 Every other command and every unknown legacy shape remains strict and fail-closed.
 
-An accumulating measurement ledger must age records out per reporting horizon rather
-than become invalid when the first record expires. Store only closed aggregate
-metrics, opaque observation IDs, exact revisions, and explicitly public evidence.
-Missing and partial measurements are honest report states. Measurement remains
-after-the-fact evidence and can never activate metadata, routing, cleanup, or P2.
-
-A published tag, a checked-out repository, an installed Codex skill, a loaded
-notifier snapshot, and an accumulating measurement ledger are five different state
-planes. Updating or verifying one does not imply any of the others changed. Release
-handoff must name every intended plane, perform its explicit transition, and read it
-back: exact tag/commit, installed bundle parity, notifier source binding, ledger
-identity, and a first real observation. In particular, a daily watcher without an
-explicit append path produces alerts but no 30/60/90 dataset. Keep that separation
-visible instead of reporting a broad “installed” or “measurement ready” outcome from
-checkout or scheduler evidence alone.
+A published tag, a checked-out repository, an installed skill, and a loaded notifier
+snapshot are separate states. Updating or verifying one does not establish the
+others. Read back the exact tag/commit, installed bundle parity, and notifier source
+binding before claiming the intended installation is current.
 
 Resource limits must apply while bytes cross the trust boundary, not after a helper
 has already copied or buffered them. Bound regular-file snapshots by both initial
@@ -933,22 +871,6 @@ group. Keep passed groups as evidence when their relevant bytes are unchanged.
 For a shell-suite failure investigation, set `KEEP_AGY_WORKER_TEST_TMP=1` so the
 failing fixtures survive the exit trap. Capture the exit code and process handle
 along with output; a missing observation is not permission to start a duplicate run.
-
-### Driver-side usage observation and token accounting boundaries (2026-08-28)
-
-Observation: Measuring Codex orchestration overhead around delegation must not rely on
-loose heuristics, automatic background executors, or unverified billing claims.
-Change: `codex-usage-report.sh` pins Codex CLI 0.150.1 and an exact experimental
-app-server schema digest, communicates over the live bounded JSONL stdio protocol (which
-has request IDs but no `jsonrpc` member), drains both child streams with independent limits,
-process-group cleanup, and reads explicit session files under owner-private mode 0600.
-All sensitive fields (cwd, prompts, messages, raw logs, thread IDs, account identities,
-and file paths) are strictly redacted. Token accounting keeps input, cached input, net-new
-input, cache-write, output, and reasoning distinct, with the latest validated phase window
-separate from cumulative totals; reasoning is reported as a subset of
-output and is never double-counted. Exact per-thread usage may emit estimated credits in
-integer micros labeled `provider_estimate`; account-wide observation emits rate limits,
-not invented credit totals, and token comparisons are labeled directional.
 
 ### Sidecar failure classification of non-activating evidence (2026-08-28)
 
@@ -1050,20 +972,6 @@ revalidated and only authorized mutations are reconciled transactionally with du
 fsync, an atomic recovery ledger, equality checks, and exact rollback. The stage narrows provider
 scope but is not an OS sandbox and grants no execution, Git, acceptance, or publication authority.
 
-### Retire unused optional registries without weakening direct selection (2026-09-01)
-
-Observation: A profile skeleton or persona-evidence registry that cannot choose a
-repository, command, verification result, or acceptance decision adds maintenance
-surface without replacing any required driver judgment. After the announced window,
-no reproducible external use established value for either surface.
-Change: Remove the commands, registries, schemas, package entries, CI stages, and
-documentation together. Keep the shipped `--persona` prompt templates and their
-explicit mode restrictions. At that time, read and approved recovery for V1–V10
-dispatch state moved behind a compatibility adapter, keeping the active controller
-V11-focused while old records remained readable under their existing approvals.
-That adapter is removed by the unreleased
-[current-only job format change](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
-
 ### Raw dispatch must preserve the facade's transmission choice (2026-09-01)
 
 Observation: Requiring an explicit transmission mode only in the ordinary facade left the
@@ -1079,12 +987,11 @@ remained readable, but an unapproved broad record could not launch through dispa
 `run`/`start`. Retired job formats are now subject to the
 [current-only format policy](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
-### Bind self-updating capture binaries and Boost authority explicitly (2026-09-03)
+### Bind self-updating capture binaries explicitly (2026-09-03)
 
 Observation: A version-pinned `agy models` observation can replace its own disposable
 snapshot before returning, so post-run digest rejection prevents false evidence but
-cannot produce an inventory. Separately, Boost is an authority change rather than a
-mere speed preference because it may invoke subagents and protected tools.
+cannot produce an inventory.
 Correction: an attempted `UF_IMMUTABLE` guard did not prevent the observed same-user
 self-update, so it is not an accepted capture control. Version manifest rows can instead
 require a disposable snapshot on a macOS kernel-reported read-only mount (for example an
@@ -1092,11 +999,6 @@ owner-prepared UDRO image). The runner binds digest and descriptor/path evidence
 checks the mount flag before and after the child. This blocks the observed in-place
 replacement route, but does not prove that an updater cannot re-execute from a writable
 location; same-UID or administrator tampering remains an explicit residual.
-Boost requires a job-bound warning acknowledgement, a one-cycle task profile, and
-provider-observed `Boost` plus `request-review` identity; it cannot resume, restart, or
-continue. Neither acknowledgement expands transmission, permissions, acceptance, Git,
-or publication authority.
-
 ## Transparent provider dispatch notice and truthful boundaries
 
 When Codex delegates to an external worker CLI backed by provider services, transparency
