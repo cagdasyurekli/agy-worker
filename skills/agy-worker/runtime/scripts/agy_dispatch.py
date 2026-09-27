@@ -653,8 +653,8 @@ def _require_supported_schema(
     found = f"v{version}" if type(version) is int and 0 < version < max(supported) else "invalid or unsupported"
     expected = " or ".join(f"v{item}" for item in supported)
     raise UnsupportedSchemaError(
-        f"{label} schema {found} is not supported; this unreleased development "
-        f"version supports only {expected}. Finish or discard the job with the "
+        f"{label} schema {found} is not supported by this agy-worker release; "
+        f"supported: {expected}. Finish or discard the job with the "
         "release that created it. Last documented release with legacy-schema "
         f"support: {LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}."
     )
@@ -3118,7 +3118,8 @@ def _copy_bound_candidate(worktree: Path, destination: Path) -> None:
         if not stat.S_ISLNK(before.st_mode):
             raise DispatchError("verification copy source link changed")
         try:
-            _target_text = os.readlink(source)
+            # Validate that the source still supports reading its symlink target.
+            os.readlink(source)
             resolved = os.path.realpath(source)
             after = source.lstat()
         except OSError as exc:
@@ -5311,9 +5312,6 @@ def _classify_controller_candidate(
     # Keep an incomplete one as inaccessible forensic state and
     # fail closed; do not let a concurrent local cancel convert it
     # into an apparently usable candidate.
-    _preserve_candidate = bool(
-        outcome.result_binding is None and prior_candidate_is_bound
-    )
     disposition.preserve_candidate_forensics = bool(
         outcome.result_binding is None and prior_candidate_exists
     )
@@ -5882,90 +5880,90 @@ def spawn(
         signal.signal(number, latch)
     controller_process: subprocess.Popen[bytes] | None = None
     try:
-      with lifecycle_lock(job, blocking=False) as ownership_fd:
-        state, _sha = create_state(
-            job, origin, resume=resume, approve_sha=approve_sha,
-            verification=verification,
-            require_initial_choice=True,
-        )
-        if parent_signal is not None:
-            _terminalize_queued_signal(job, parent_signal)
-            return 128 + parent_signal
-        bound_command = _load_bound_command(job, state, stage_readonly=False)
-        controller_environment = _provider_environment(bound_command)
-        controller_argv = [
-            sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
-            "controller", "--job-dir", str(job), "--ownership-fd", str(ownership_fd),
-        ]
-        controller_process = subprocess.Popen(
-            controller_argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
-            pass_fds=(ownership_fd,),
-            env=controller_environment,
-        )
-      deadline = time.monotonic() + 5.0
-      forwarded = False
-      while time.monotonic() < deadline:
-        current, _raw, sha = read_state_snapshot(job)
-        if parent_signal is not None and not forwarded:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(controller_process.pid, parent_signal)
-            forwarded = True
-        if current["status"] in TERMINAL:
-            break
-        if controller_process.poll() is not None:
-            _terminalize_start_failure(job)
-            raise DispatchError("controller exited before startup handshake")
-        if (
-            current["status"] in {"queued", "running", "cancel-requested"}
-            and current["controller_pid"] == controller_process.pid
-        ):
-            break
-        time.sleep(0.02)
-      else:
-        _terminate(controller_process)
-        controller_process = None
-        _terminalize_start_failure(job)
-        raise DispatchError("controller startup handshake timed out")
-      if parent_signal is not None and not foreground:
-        try:
-            controller_process.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
+        with lifecycle_lock(job, blocking=False) as ownership_fd:
+            state, _sha = create_state(
+                job, origin, resume=resume, approve_sha=approve_sha,
+                verification=verification,
+                require_initial_choice=True,
+            )
+            if parent_signal is not None:
+                _terminalize_queued_signal(job, parent_signal)
+                return 128 + parent_signal
+            bound_command = _load_bound_command(job, state, stage_readonly=False)
+            controller_environment = _provider_environment(bound_command)
+            controller_argv = [
+                sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
+                "controller", "--job-dir", str(job), "--ownership-fd", str(ownership_fd),
+            ]
+            controller_process = subprocess.Popen(
+                controller_argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                pass_fds=(ownership_fd,),
+                env=controller_environment,
+            )
+        deadline = time.monotonic() + 5.0
+        forwarded = False
+        while time.monotonic() < deadline:
+            current, _raw, sha = read_state_snapshot(job)
+            if parent_signal is not None and not forwarded:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(controller_process.pid, parent_signal)
+                forwarded = True
+            if current["status"] in TERMINAL:
+                break
+            if controller_process.poll() is not None:
+                _terminalize_start_failure(job)
+                raise DispatchError("controller exited before startup handshake")
+            if (
+                current["status"] in {"queued", "running", "cancel-requested"}
+                and current["controller_pid"] == controller_process.pid
+            ):
+                break
+            time.sleep(0.02)
+        else:
             _terminate(controller_process)
-        return 128 + parent_signal
-      if not foreground:
-        print_control_status(current, sha, output_format, job=job)
-        return 0
-      while controller_process.poll() is None:
-        if parent_signal is not None and not forwarded:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(controller_process.pid, parent_signal)
-            forwarded = True
-        time.sleep(0.02)
-      result_code = controller_process.returncode
-      # Linearize foreground completion: after this snapshot lifecycle signals stay
-      # blocked until process exit, so success bytes cannot race a late cancellation.
-      signal.pthread_sigmask(signal.SIG_BLOCK, watched)
-      completion_blocked = True
-      pending = signal.sigpending()
-      completion_signal = parent_signal
-      for candidate in watched:
-        if candidate in pending or candidate == parent_signal:
-            completion_signal = candidate
-            break
-      if completion_signal is not None:
-        result_code = 128 + completion_signal
-      final, _raw, sha = read_state_snapshot(job)
-      if completion_signal is None and final["status"] == "succeeded" and final["result_path"] is not None:
-        command_result(job)
-      else:
-        sys.stderr.buffer.write(canonical(public_status(final, sha, job=job)))
-        sys.stderr.buffer.flush()
-      return result_code
+            controller_process = None
+            _terminalize_start_failure(job)
+            raise DispatchError("controller startup handshake timed out")
+        if parent_signal is not None and not foreground:
+            try:
+                controller_process.wait(timeout=5.0)
+            except subprocess.TimeoutExpired:
+                _terminate(controller_process)
+            return 128 + parent_signal
+        if not foreground:
+            print_control_status(current, sha, output_format, job=job)
+            return 0
+        while controller_process.poll() is None:
+            if parent_signal is not None and not forwarded:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(controller_process.pid, parent_signal)
+                forwarded = True
+            time.sleep(0.02)
+        result_code = controller_process.returncode
+        # Linearize foreground completion: after this snapshot lifecycle signals stay
+        # blocked until process exit, so success bytes cannot race a late cancellation.
+        signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+        completion_blocked = True
+        pending = signal.sigpending()
+        completion_signal = parent_signal
+        for candidate in watched:
+            if candidate in pending or candidate == parent_signal:
+                completion_signal = candidate
+                break
+        if completion_signal is not None:
+            result_code = 128 + completion_signal
+        final, _raw, sha = read_state_snapshot(job)
+        if completion_signal is None and final["status"] == "succeeded" and final["result_path"] is not None:
+            command_result(job)
+        else:
+            sys.stderr.buffer.write(canonical(public_status(final, sha, job=job)))
+            sys.stderr.buffer.flush()
+        return result_code
     finally:
-      if not completion_blocked:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+        if not completion_blocked:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
 
 
 def _terminal_projection(
@@ -6473,7 +6471,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if any(arg.partition("=")[0] == "--approve-migration-sha" for arg in arguments):
         raise DispatchError(
-            "--approve-migration-sha was removed in this unreleased development version; "
+            f"--approve-migration-sha was removed after {LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}; "
             "finish or discard the old job with the release that created it."
         )
     args = parser().parse_args(arguments)

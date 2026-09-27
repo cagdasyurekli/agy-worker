@@ -128,7 +128,7 @@ def run(context: dict[str, object]) -> None:
                 context = (surface, label, arguments[0], diagnostic)
                 assert completed.returncode != 0 and not completed.stdout, context
                 assert f"dispatch {surface} schema" in diagnostic, context
-                assert f"supports only v{MODULE.CURRENT_STATE_SCHEMA if surface == 'state' else MODULE.CURRENT_COMMAND_SCHEMA}" in diagnostic, context
+                assert f"supported: v{MODULE.CURRENT_STATE_SCHEMA if surface == 'state' else MODULE.CURRENT_COMMAND_SCHEMA}" in diagnostic, context
                 assert "Finish or discard the job with the release that created it" in diagnostic, context
                 assert "v0.22.0" in diagnostic and "Traceback" not in diagnostic, context
                 assert "PRIVATE-VERSION-SENTINEL" not in diagnostic and "999999999" not in diagnostic, context
@@ -154,7 +154,7 @@ def run(context: dict[str, object]) -> None:
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
                     )
                     assert completed.returncode != 0 and not completed.stdout, completed
-                    assert b"--approve-migration-sha was removed in this unreleased development version" in completed.stderr
+                    assert b"--approve-migration-sha was removed after v0.22.0" in completed.stderr
                     assert b"finish or discard the old job with the release that created it" in completed.stderr
                     assert b"Traceback" not in completed.stderr
                     assert not list(fixture.iterdir())

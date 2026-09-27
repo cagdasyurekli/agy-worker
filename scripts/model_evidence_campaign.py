@@ -1346,7 +1346,6 @@ def evaluate_campaign(
     anchor_matches = True
     identity_matches = True
     substituted = False
-    _drift_detected = False
     telemetry_compatible = True
     budget_within_limits = True
     uncertainty_acceptable = True
@@ -1359,7 +1358,6 @@ def evaluate_campaign(
         or plan["trigger"]["maintainer_disposition"] != "collect"
     ):
         anchor_matches = False
-        _drift_detected = True
 
     if (
         not isinstance(review, dict)
@@ -1369,17 +1367,13 @@ def evaluate_campaign(
         or matrix_sha is None
     ):
         anchor_matches = False
-        _drift_detected = True
     else:
         if review_sha != plan["anchors"]["benchmark_review_sha256"]:
             anchor_matches = False
-            _drift_detected = True
         if review.get("status") != "benchmark-review-due":
             anchor_matches = False
-            _drift_detected = True
         if review.get("maintainer_disposition") != "collect":
             anchor_matches = False
-            _drift_detected = True
         reviews_due = review.get("reviews_due", [])
         matching_due = [
             it for it in reviews_due
@@ -1389,17 +1383,13 @@ def evaluate_campaign(
         ]
         if not matching_due:
             anchor_matches = False
-            _drift_detected = True
 
     if dataset_sha != plan["anchors"]["dataset_sha256"]:
         anchor_matches = False
-        _drift_detected = True
     if inventory_sha != plan["anchors"]["inventory_binding_sha256"]:
         anchor_matches = False
-        _drift_detected = True
     if matrix_sha != plan["anchors"]["model_matrix_sha256"]:
         anchor_matches = False
-        _drift_detected = True
 
     # Build cohort record list
     all_cohort_records: list[dict[str, Any]] = []

@@ -103,7 +103,7 @@ the facade composes, not parallel implementations to keep in sync.
 
 ## Retired job formats and flags
 
-This unreleased development version accepts only the current dispatcher state and
+This agy-worker release accepts only the current dispatcher state and
 command formats, defined by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
 [`agy_dispatch.py`](../skills/agy-worker/runtime/scripts/agy_dispatch.py). Persisted
 workflow records must use the current explicit or facade format, defined by
@@ -117,7 +117,7 @@ documented release with legacy-schema support. Preserve its job artifacts and us
 that release's existing approvals. The new runtime does not migrate the job or grant
 new provider, cleanup, or publication authority.
 
-The following removals belong to this unreleased development version:
+The following surfaces were removed after v0.22.0:
 
 | Removed surface | Replacement |
 |---|---|
@@ -129,7 +129,7 @@ Advanced dispatcher and job lifecycle commands still use `--approve-state-sha`.
 Model-evidence export still uses its independent `--approve-preview-sha` approval.
 Named tiers and raw dispatch remain supported; their legacy naming is unrelated to
 retired on-disk job formats. Historical release notes describe their released trees,
-not support in this development candidate.
+not support in this agy-worker release.
 
 ## Quality and command boundary
 

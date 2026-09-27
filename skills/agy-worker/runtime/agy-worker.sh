@@ -185,7 +185,7 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --approve-migration-sha|--approve-migration-sha=*)
-                echo "agy-worker.sh: --approve-migration-sha was removed in this unreleased development version; finish or discard the old job with the release that created it." >&2
+                echo "agy-worker.sh: --approve-migration-sha was removed after v0.22.0; finish or discard the old job with the release that created it." >&2
                 exit 64 ;;
             --job-id)
                 [[ $# -ge 2 && $control_job_seen -eq 0 ]] || usage
@@ -298,7 +298,7 @@ disable_slash=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --approve-migration-sha|--approve-migration-sha=*)
-            echo "agy-worker.sh: --approve-migration-sha was removed in this unreleased development version; finish or discard the old job with the release that created it." >&2
+            echo "agy-worker.sh: --approve-migration-sha was removed after v0.22.0; finish or discard the old job with the release that created it." >&2
             exit 64 ;;
         --workdir) [[ $# -ge 2 ]] || usage; workdir="$2"; shift 2 ;;
         # Persona by PROMPT INJECTION, not by --agent. Measured 2026-08-01: passing

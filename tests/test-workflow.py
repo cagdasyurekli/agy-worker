@@ -1870,7 +1870,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
             try:
                 WORKFLOW_MODULE.WorkflowStateStore(f.state_file)
             except WORKFLOW_MODULE.UnsupportedWorkflowSchemaError as exc:
-                assert "supports only v5 or v6" in str(exc)
+                assert "supported: v5 or v6" in str(exc)
                 assert "Finish or discard the job" in str(exc)
                 assert "untrusted-version-marker" not in str(exc)
             else:
@@ -1973,7 +1973,7 @@ def test_removed_approval_flags_reject_before_effects() -> bool:
             for removed in ([flag, "a" * 64], [f"{flag}={'a' * 64}"]):
                 for current in ([], [replacement, "b" * 64]):
                     _rejection_without_effects(f.tmp, base + current + removed,
-                                               f"{flag} was removed in this unreleased development version; use {replacement}.", code=64)
+                                               f"{flag} was removed after v0.22.0; use {replacement}.", code=64)
         return True
     finally:
         f.clean()

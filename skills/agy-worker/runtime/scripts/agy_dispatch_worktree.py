@@ -872,7 +872,6 @@ def _preview_main(argv: list[str]) -> int:
     scope_path: str | None = None
     provider_isolation = "session"
     provider_isolation_seen = False
-    _format_opt = "json"
     idx = 0
     while idx < len(argv):
         arg = argv[idx]
@@ -899,7 +898,6 @@ def _preview_main(argv: list[str]) -> int:
             if idx + 1 >= len(argv) or argv[idx + 1] != "json":
                 print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
                 return 64
-            _format_opt = argv[idx + 1]
             idx += 2
         else:
             print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)

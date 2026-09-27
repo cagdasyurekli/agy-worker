@@ -134,7 +134,7 @@ job lifecycle commands still use their own `--approve-state-sha` flag.
 
 ## Unsupported job schema or removed approval flag
 
-This unreleased development version accepts only current dispatch and workflow job
+This agy-worker release accepts only current dispatch and workflow job
 formats. Finish or discard an older job using the release that created it; the last
 documented release with legacy-schema support is v0.22.0. Preserve its artifacts;
 do not rewrite a schema number to bypass rejection. There is no in-place migration.

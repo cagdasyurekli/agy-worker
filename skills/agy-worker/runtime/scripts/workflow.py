@@ -1976,7 +1976,7 @@ def main(argv: list[str] | None = None) -> int:
         option = argument.partition("=")[0]
         if option in removed:
             sys.stderr.write(
-                f"workflow: {option} was removed in this unreleased development version; "
+                f"workflow: {option} was removed after {DISPATCH.LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}; "
                 f"use {removed[option]}.\n"
             )
             return 64

@@ -1453,7 +1453,7 @@ assert '"--approve-whole-worktree", approved_whole_worktree' in workflow_source
 assert '"--provider-scope"' in workflow_source
 assert '"--approve-transmission-sha"' in workflow_source
 assert '"--legacy-preview-approval"' in workflow_source
-assert 'was removed in this unreleased development version' in workflow_source
+assert 'was removed after {DISPATCH.LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}' in workflow_source
 assert 'run_parser.add_argument("--legacy-preview-approval"' not in workflow_source
 runtime_wrapper = (
     root / "skills/agy-worker/runtime/agy-worker.sh"
@@ -1699,6 +1699,31 @@ if ! grep -R -Fq '__REPO_ROOT__' "$ROOT/skills/agy-worker" \
     ok "public skill bundle contains no checkout placeholder or local path marker"
 else
     bad "public skill bundle contains no checkout placeholder or local path marker"
+fi
+
+if python3 - "$ROOT/skills/agy-worker" <<'PY'
+import ast
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+for path in root.rglob("*"):
+    if path.is_file():
+        text = path.read_bytes().decode("utf-8", errors="replace")
+        fragments = [text]
+        if path.suffix == ".py":
+            fragments.extend(
+                node.value for node in ast.walk(ast.parse(text))
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            )
+        for fragment in fragments:
+            assert "unreleased development version" not in re.sub(r"\s+", " ", fragment).lower(), path
+PY
+then
+    ok "shipped skill uses release-neutral diagnostics and documentation"
+else
+    bad "shipped skill uses release-neutral diagnostics and documentation"
 fi
 
 if [[ -x "$ROOT/doctor.sh" ]] \

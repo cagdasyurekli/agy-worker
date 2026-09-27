@@ -126,8 +126,8 @@ to both facade calls and approve the scoped preview with
 the boundaries in [Security and compatibility](SECURITY_AND_COMPATIBILITY.md).
 
 Omitting both modes fails before provider launch. The facade flags
-`--approve-preview-sha` and `--legacy-preview-approval` were removed in this
-unreleased development version; use the explicit transmission modes above.
+`--approve-preview-sha` and `--legacy-preview-approval` were removed after
+v0.22.0; use the explicit transmission modes above.
 
 The facade does not choose a model, assurance label, repair, retry, Git action, or
 external write. `status --state "$STATE_DIR/workflow.json"` is read-only. For a bound
@@ -170,7 +170,7 @@ Current bound jobs expose `provider_isolation` (`session` or `native`) and
 `provider_execution` facts (`scope`, `agy_sandbox`, `native_containment`, `legacy`,
 with `legacy` false). Unbound jobs may have no execution facts yet.
 
-This unreleased development version rejects retired dispatch state, command, and
+This agy-worker release rejects retired dispatch state, command, and
 workflow job formats before partial reads or mutation. The current formats are
 identified by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
 `runtime/scripts/agy_dispatch.py`, and `BOUND_SCHEMA_VERSION` and

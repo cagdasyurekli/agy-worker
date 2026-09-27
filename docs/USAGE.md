@@ -158,12 +158,11 @@ model-specific drift decision and does not qualify that model or establish live 
 compatibility.
 
 The facade flags `--approve-preview-sha` and `--legacy-preview-approval` were removed
-in this unreleased development version. Use one of the two canonical transmission
+after v0.22.0. Use one of the two canonical transmission
 modes above; there is no implicit whole-worktree default.
 
 Facade `verify-finalize` requires `--approve-dispatch-sha` for a bound dispatch;
-its former `--approve-state-sha` alias was removed in this unreleased development
-version. The facade never synthesizes an approval. Advanced dispatcher and job
+its former `--approve-state-sha` alias was removed after v0.22.0. The facade never synthesizes an approval. Advanced dispatcher and job
 lifecycle commands retain their own `--approve-state-sha` flag. See
 [retired job formats and flags](PROJECT_WORKFLOW.md#retired-job-formats-and-flags). Gate exits 10–15 keep
 their receipt but do not call the lifecycle finalizer. A local pre-dispatch rejection
