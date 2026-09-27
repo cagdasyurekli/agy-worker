@@ -27,7 +27,7 @@ import stat
 import subprocess
 import sys
 import time
-from typing import AbstractSet, Any, Iterator, NamedTuple, NoReturn, IO, cast
+from typing import Callable, Mapping, TypedDict, TypeVar, AbstractSet, Any, Iterator, NamedTuple, NoReturn, IO, cast
 
 sys.dont_write_bytecode = True
 
@@ -661,7 +661,7 @@ def _check_existing_dispatch_schemas(job: Path) -> None:
     _check_existing_command_schema(job)
 
 
-def load_state(job: Path) -> tuple[dict[str, Any], bytes, str]:
+def load_state(job: Path) -> tuple[DispatchState, bytes, str]:
     raw, _info = read_regular(job / STATE_NAME, MAX_STATE_BYTES, "dispatch state")
     value = parse_json(raw, "dispatch state")
     value = validate_state(value)
@@ -669,7 +669,7 @@ def load_state(job: Path) -> tuple[dict[str, Any], bytes, str]:
     return value, raw, digest(raw)
 
 
-def read_state_snapshot(job: Path) -> tuple[dict[str, Any], bytes, str]:
+def read_state_snapshot(job: Path) -> tuple[DispatchState, bytes, str]:
     """Read one strict state snapshot without racing an approved replacement."""
 
     with state_lock(job):
@@ -852,27 +852,232 @@ def _require_initial_transmission_choice(command: dict[str, Any], origin: str) -
         raise DispatchError("initial whole-worktree dispatch lacks explicit approval")
 
 
-def validate_state(value: Any) -> dict[str, Any]:
-    _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
-    if not isinstance(value, dict) or set(value) != CURRENT_STATE_FIELDS:
-        raise DispatchError("dispatch state fields are invalid")
-    if value["kind"] != "agy-worker-dispatch-state":
-        raise DispatchError("dispatch state version is invalid")
-    if value["provider_isolation"] not in {"session", "native"}:
-        raise DispatchError("dispatch provider isolation state is invalid")
-    if not isinstance(value.get("native_grant_profile"), str) or value.get("native_grant_profile") not in {"baseline", "A", "B", "AB"} or (
-        value["provider_isolation"] == "session" and value.get("native_grant_profile") != "baseline"
+class FileAuthority(TypedDict):
+    dev: int
+    ino: int
+    type: int
+    mode: int
+    uid: int
+    gid: int
+
+
+class RootIdentity(TypedDict):
+    realpath: str
+    dev: int
+    ino: int
+
+
+class GitMarkerIdentity(TypedDict):
+    kind: str
+    authority: FileAuthority
+    content_sha256: str | None
+
+
+class GitDirectoryIdentity(TypedDict):
+    realpath: str
+    authority: FileAuthority
+
+
+class WorktreeRootIdentity(TypedDict):
+    root: RootIdentity
+    git_marker: GitMarkerIdentity
+    git_dir: GitDirectoryIdentity
+    common_dir: GitDirectoryIdentity
+    object_format: str
+    show_toplevel: str
+
+
+class WorktreeBaseline(TypedDict):
+    sha256: str
+    entries: int
+
+
+class CheckCounts(TypedDict):
+    passed: int
+    failed: int
+    advisory: int
+    missing: int
+
+
+class ProjectBoundary(TypedDict):
+    kind: str
+    # Validation guarantees the list's length, but does not constrain its elements.
+    identity: list[object]
+    sha256: str
+
+
+class DispatchState(TypedDict):
+    """Fields proven by validate_state; optional values remain explicitly nullable."""
+    schema_version: int
+    kind: str
+    sequence: int
+    previous_state_sha256: str | None
+    job_id: str
+    status: str
+    attempt: int
+    attempt_origin: str
+    reason: str | None
+    exit_code: int | None
+    controller_pid: int | None
+    workdir: str | None
+    created_epoch: float
+    started_epoch: float | None
+    updated_epoch: float
+    finished_epoch: float | None
+    elapsed_seconds: float
+    progress_count: int
+    last_progress_epoch: float | None
+    notice_count: int
+    hard_seconds: float
+    max_seconds: float
+    idle_seconds: float
+    attempt_base_elapsed: float
+    cancel_requested: bool
+    conversation_id: str | None
+    resume_available: bool
+    remote_cancel_unverified: bool
+    result_path: str | None
+    stream_path: str | None
+    stderr_path: str | None
+    agy_returncode: int | None
+    limit_kind: str | None
+    command_sha256: str | None
+    command_identity: list[int] | None
+    stage_sha256: str | None
+    stage_identity: list[int] | None
+    result_sha256: str | None
+    result_identity: list[int] | None
+    workflow: str
+    max_cycles: int
+    cycle: int
+    phase: str
+    assurance: str
+    check_summary: str | None
+    check_counts: CheckCounts
+    verification_path: str | None
+    verification_sha256: str | None
+    verification_identity: list[int] | None
+    continue_available: bool
+    last_success_path: str | None
+    last_success_sha256: str | None
+    last_success_identity: list[int] | None
+    project_boundary: ProjectBoundary | None
+    provider_retry_after_seconds: int | None
+    provider_retry_observed_epoch: float | None
+    candidate_recognized: bool
+    candidate_source: str
+    result_available: bool
+    worktree_reconciliation: str
+    worktree_changes_present: bool | None
+    worktree_changed_since_dispatch: bool | None
+    driver_disposition: str
+    failure_stage: str | None
+    last_activity: str | None
+    next_action: str
+    next_action_command: str | None
+    worktree_baseline: WorktreeBaseline | None
+    provider_schema_sha256: str | None
+    provider_schema_identity: list[int] | None
+    canonical_schema_sha256: str | None
+    canonical_schema_identity: list[int] | None
+    candidate_worktree_sha256: str | None
+    candidate_worktree_entries: int | None
+    selection_sha256: str | None
+    selection_identity: list[int] | None
+    worktree_snapshot_algorithm: str
+    worktree_root_identity: WorktreeRootIdentity
+    provider_terminal_status: str
+    allow_scoped_repair: bool
+    repair_authority_sha256: str | None
+    repair_lineage_sha256: str | None
+    repair_parent_result_sha256: str | None
+    repair_parent_worktree_sha256: str | None
+    repair_lineage_attempt: int | None
+    allow_self_verification: bool
+    self_verification_elapsed_seconds: float
+    self_verification_run: int
+    self_verification_started_epoch: float | None
+    self_verification_return_phase: str | None
+    provider_isolation: str
+    provider_scope_path: str | None
+    provider_scope_sha256: str | None
+    provider_scope_identity: list[int] | None
+    approved_transmission_sha256: str | None
+    transmission_sha256: str | None
+    selected_content_sha256: str | None
+    selected_file_count: int | None
+    selected_tree_count: int | None
+    provider_stage_path: str | None
+    provider_stage_identity: list[int] | None
+    provider_stage_manifest_sha256: str | None
+    reconciliation_manifest_sha256: str | None
+    whole_worktree_content_sha256: str | None
+    native_grant_profile: str
+
+
+def _invalid_if(invalid: bool, message: str) -> None:
+    if invalid:
+        raise DispatchError(message)
+
+
+def _validate_worktree_observation(item: Any) -> None:
+    if item is not None and type(item) is not bool:
+        raise DispatchError("dispatch worktree observation is invalid")
+
+
+def _validate_boolean(item: Any) -> None:
+    if type(item) is not bool:
+        raise DispatchError("dispatch boolean is invalid")
+
+
+def _validate_counter(item: Any) -> None:
+    if type(item) is not int or item < 0:
+        raise DispatchError("dispatch counter is invalid")
+
+
+def _validate_time(item: Any) -> None:
+    if type(item) not in (int, float) or item < 0:
+        raise DispatchError("dispatch time is invalid")
+
+
+def _validate_optional_time(item: Any) -> None:
+    if item is not None and (type(item) not in (int, float) or item < 0):
+        raise DispatchError("dispatch optional time is invalid")
+
+
+def _validate_optional_integer(item: Any) -> None:
+    if item is not None and type(item) is not int:
+        raise DispatchError("dispatch integer is invalid")
+
+
+def _validate_optional_path(item: Any) -> None:
+    if item is not None and not isinstance(item, str):
+        raise DispatchError("dispatch path is invalid")
+
+
+def _validate_optional_digest(item: Any) -> None:
+    if item is not None and (
+        not isinstance(item, str) or SHA_RE.fullmatch(item) is None
     ):
-        raise DispatchError("dispatch native grant profile state is invalid")
-    whole_content_sha = value.get("whole_worktree_content_sha256")
-    if whole_content_sha is not None and (
-        not isinstance(whole_content_sha, str) or SHA_RE.fullmatch(whole_content_sha) is None
+        raise DispatchError("dispatch digest is invalid")
+
+
+def _validate_optional_identity(item: Any) -> None:
+    identity = item
+    if identity is not None and (
+        not isinstance(identity, list) or len(identity) != 5
+        or any(type(item) is not int or item < 0 for item in identity)
     ):
-        raise DispatchError("dispatch whole-worktree content state is invalid")
-    if (value["worktree_snapshot_algorithm"] != CURRENT_WORKTREE_SNAPSHOT_ALGORITHM):
-        raise DispatchError("dispatch worktree snapshot algorithm is invalid")
-    if (value.get("provider_terminal_status") not in {"unknown", "success", "error", "cancelled"}):
-        raise DispatchError("dispatch provider terminal status is invalid")
+        raise DispatchError("dispatch identity is invalid")
+
+
+def _validate_fields(value: Mapping[str, Any], validators: dict[str, Callable[[Any], None]]) -> None:
+    """Run one phase's field checks in their declared first-error order."""
+    for key, validate in validators.items():
+        validate(value[key])
+
+
+def _validate_root_identity(value: Mapping[str, Any]) -> None:
     root_identity = value.get("worktree_root_identity")
     def valid_authority(authority: Any, *, directory: bool | None = None) -> bool:
         if not isinstance(authority, dict) or set(authority) != {
@@ -921,156 +1126,10 @@ def validate_state(value: Any) -> dict[str, Any]:
         )
     ):
         raise DispatchError("dispatch worktree root identity is invalid")
-    if type(value["sequence"]) is not int or value["sequence"] < 1:
-        raise DispatchError("dispatch sequence is invalid")
-    previous = value["previous_state_sha256"]
-    if previous is not None and (not isinstance(previous, str) or SHA_RE.fullmatch(previous) is None):
-        raise DispatchError("dispatch history is invalid")
-    if (value["sequence"] == 1) != (previous is None):
-        raise DispatchError("dispatch history is inconsistent")
-    if value["status"] not in {"queued", "running", "cancel-requested", *TERMINAL}:
-        raise DispatchError("dispatch status is invalid")
-    if value["reason"] is not None and value["reason"] not in REASONS:
-        raise DispatchError("dispatch reason is invalid")
-    if type(value["candidate_recognized"]) is not bool or type(value["result_available"]) is not bool:
-        raise DispatchError("dispatch candidate flags are invalid")
-    if value["candidate_source"] not in {"none", "provider_success", "provider_error", "provider_cancelled"}:
-        raise DispatchError("dispatch candidate source is invalid")
-    if (
-        value["candidate_recognized"] != (value["candidate_source"] != "none")
-        or (value["result_available"] and not value["candidate_recognized"])
-    ):
-        raise DispatchError("dispatch candidate state is inconsistent")
-    if value["worktree_reconciliation"] not in {"available", "unavailable", "not_applicable"}:
-        raise DispatchError("dispatch worktree reconciliation is invalid")
-    for key in ("worktree_changes_present", "worktree_changed_since_dispatch"):
-        if value[key] is not None and type(value[key]) is not bool:
-            raise DispatchError("dispatch worktree observation is invalid")
-    if value["worktree_reconciliation"] == "available" and (
-        value["worktree_changes_present"] is None or value["worktree_changed_since_dispatch"] is None
-    ):
-        raise DispatchError("dispatch worktree reconciliation is incomplete")
-    if value["worktree_reconciliation"] != "available" and (
-        value["worktree_changes_present"] is not None or value["worktree_changed_since_dispatch"] is not None
-    ):
-        raise DispatchError("dispatch unavailable worktree reconciliation has observations")
-    if value["driver_disposition"] not in {"not_applicable", "unreviewed", "verified", "partially_verified", "rejected", "blocked"}:
-        raise DispatchError("dispatch driver disposition is invalid")
-    if value["failure_stage"] not in {None, *FAILURE_STAGES}:
-        raise DispatchError("dispatch failure stage is invalid")
-    if value["last_activity"] not in {None, "provider_initialized", "progress_signal", "terminal_received"}:
-        raise DispatchError("dispatch activity is invalid")
-    if value["next_action"] not in {"none", "wait", "resume", "restart", "driver_review", "driver_finalize", "blocked"}:
-        raise DispatchError("dispatch next action is invalid")
-    if value["next_action_command"] is not None and (not isinstance(value["next_action_command"], str) or not value["next_action_command"]):
-        raise DispatchError("dispatch next action command is invalid")
-    baseline = value["worktree_baseline"]
-    if baseline is not None and (
-        not isinstance(baseline, dict) or set(baseline) != {"sha256", "entries"}
-        or not isinstance(baseline["sha256"], str) or SHA_RE.fullmatch(baseline["sha256"]) is None
-        or type(baseline["entries"]) is not int or not (0 <= baseline["entries"] <= MAX_BOUNDARY_ENTRIES)
-    ):
-        raise DispatchError("dispatch worktree baseline is invalid")
+
+
+def _validate_scope_state(value: Mapping[str, Any]) -> None:
     candidate_worktree_sha = value["candidate_worktree_sha256"]
-    candidate_worktree_entries = value["candidate_worktree_entries"]
-    if (candidate_worktree_sha is None) != (candidate_worktree_entries is None):
-        raise DispatchError("dispatch candidate worktree binding is incomplete")
-    if candidate_worktree_sha is not None and (
-        not isinstance(candidate_worktree_sha, str)
-        or SHA_RE.fullmatch(candidate_worktree_sha) is None
-        or type(candidate_worktree_entries) is not int
-        or not (0 <= candidate_worktree_entries <= MAX_BOUNDARY_ENTRIES)
-    ):
-        raise DispatchError("dispatch candidate worktree binding is invalid")
-    for digest_key, identity_key in (
-        ("provider_schema_sha256", "provider_schema_identity"),
-        ("canonical_schema_sha256", "canonical_schema_identity"),
-    ):
-        bound_digest, bound_identity = value[digest_key], value[identity_key]
-        if (bound_digest is None) != (bound_identity is None):
-            raise DispatchError("dispatch schema binding is incomplete")
-        if bound_digest is not None and (
-            not isinstance(bound_digest, str) or SHA_RE.fullmatch(bound_digest) is None
-            or not isinstance(bound_identity, list) or len(bound_identity) != 5
-            or any(type(item) is not int or item < 0 for item in bound_identity)
-        ):
-            raise DispatchError("dispatch schema binding is invalid")
-    if value["attempt_origin"] not in {"initial", "conversation-resume", "fresh-restart", "conversation-continue"}:
-        raise DispatchError("dispatch attempt origin is invalid")
-    if type(value["attempt"]) is not int or value["attempt"] < 1:
-        raise DispatchError("dispatch attempt is invalid")
-    if value["workflow"] not in {"legacy", "explore", "task", "project"}:
-        raise DispatchError("dispatch workflow state is invalid")
-    if not _valid_max_cycles(value["workflow"], value["max_cycles"]):
-        raise DispatchError("dispatch max cycles state is invalid")
-    if type(value["cycle"]) is not int or value["cycle"] != value["attempt"] or (
-        value["workflow"] != "legacy" and value["cycle"] > value["max_cycles"]
-    ):
-        raise DispatchError("dispatch cycle state is invalid")
-    if not isinstance(value["job_id"], str) or JOB_RE.fullmatch(value["job_id"]) is None:
-        raise DispatchError("dispatch job ID is invalid")
-    conversation = value["conversation_id"]
-    if conversation is not None and (
-        not isinstance(conversation, str) or CONVERSATION_RE.fullmatch(conversation) is None
-    ):
-        raise DispatchError("dispatch conversation ID is invalid")
-    for key in ("cancel_requested", "resume_available", "continue_available", "remote_cancel_unverified"):
-        if type(value[key]) is not bool:
-            raise DispatchError("dispatch boolean is invalid")
-    for key in ("progress_count", "notice_count"):
-        if type(value[key]) is not int or value[key] < 0:
-            raise DispatchError("dispatch counter is invalid")
-    for key in (
-        "created_epoch", "updated_epoch", "elapsed_seconds", "hard_seconds",
-        "max_seconds", "idle_seconds", "attempt_base_elapsed",
-    ):
-        if type(value[key]) not in (int, float) or value[key] < 0:
-            raise DispatchError("dispatch time is invalid")
-    for key in ("started_epoch", "finished_epoch", "last_progress_epoch"):
-        if value[key] is not None and (type(value[key]) not in (int, float) or value[key] < 0):
-            raise DispatchError("dispatch optional time is invalid")
-    retry_after = value["provider_retry_after_seconds"]
-    retry_observed = value["provider_retry_observed_epoch"]
-    if (retry_after is None) != (retry_observed is None):
-        raise DispatchError("dispatch provider retry binding is incomplete")
-    if retry_after is not None and (
-        type(retry_after) is not int or not (1 <= retry_after <= MAX_PROVIDER_RETRY_SECONDS)
-        or type(retry_observed) not in (int, float)
-        or not math.isfinite(retry_observed) or retry_observed < 0
-    ):
-        raise DispatchError("dispatch provider retry binding is invalid")
-    if value["reason"] != "provider_quota_exhausted" and retry_after is not None:
-        raise DispatchError("dispatch provider retry reason is inconsistent")
-    for key in ("exit_code", "controller_pid", "agy_returncode"):
-        if value[key] is not None and type(value[key]) is not int:
-            raise DispatchError("dispatch integer is invalid")
-    for key in ("workdir", "result_path", "stream_path", "stderr_path", "verification_path", "last_success_path"):
-        if value[key] is not None and not isinstance(value[key], str):
-            raise DispatchError("dispatch path is invalid")
-    if value["limit_kind"] not in {None, "idle", "hard", "max-runtime"}:
-        raise DispatchError("dispatch limit kind is invalid")
-    for key in ("command_sha256", "stage_sha256", "result_sha256", "verification_sha256", "last_success_sha256"):
-        if value[key] is not None and (
-            not isinstance(value[key], str) or SHA_RE.fullmatch(value[key]) is None
-        ):
-            raise DispatchError("dispatch digest is invalid")
-    for key in ("command_identity", "stage_identity", "result_identity", "verification_identity", "last_success_identity"):
-        identity = value[key]
-        if identity is not None and (
-            not isinstance(identity, list) or len(identity) != 5
-            or any(type(item) is not int or item < 0 for item in identity)
-        ):
-            raise DispatchError("dispatch identity is invalid")
-    selection_sha = value["selection_sha256"]
-    selection_identity = value["selection_identity"]
-    if (selection_sha is None) != (selection_identity is None):
-        raise DispatchError("dispatch selection state binding is incomplete")
-    if selection_sha is not None and (
-        not isinstance(selection_sha, str) or SHA_RE.fullmatch(selection_sha) is None
-        or not isinstance(selection_identity, list) or len(selection_identity) != 5
-        or any(type(item) is not int or item < 0 for item in selection_identity)
-    ):
-        raise DispatchError("dispatch selection state binding is invalid")
     scope_path = value.get("provider_scope_path")
     scope_sha = value.get("provider_scope_sha256")
     scope_identity = value.get("provider_scope_identity")
@@ -1164,6 +1223,9 @@ def validate_state(value: Any) -> dict[str, Any]:
         )
     ):
         raise DispatchError("dispatch repair lineage is invalid")
+
+
+def _validate_self_verification_state(value: Mapping[str, Any]) -> None:
     allow_self_verification = value["allow_self_verification"]
     self_verification_elapsed = value["self_verification_elapsed_seconds"]
     self_verification_run = value["self_verification_run"]
@@ -1171,16 +1233,10 @@ def validate_state(value: Any) -> dict[str, Any]:
     self_verification_return = value["self_verification_return_phase"]
     if type(allow_self_verification) is not bool:
         raise DispatchError("dispatch self-verification choice is invalid")
-    if allow_self_verification and value["workflow"] not in {"task", "project"}:
-        raise DispatchError("dispatch self-verification workflow is invalid")
-    if (
-        type(self_verification_elapsed) not in (int, float)
-        or not math.isfinite(self_verification_elapsed)
-        or self_verification_elapsed < 0
-        or type(self_verification_run) is not int
-        or not (0 <= self_verification_run <= value["attempt"])
-    ):
-        raise DispatchError("dispatch self-verification accounting is invalid")
+    _validate_fields(value, {
+        "workflow": lambda item: _invalid_if(allow_self_verification and item not in {'task', 'project'}, 'dispatch self-verification workflow is invalid'),
+        "attempt": lambda item: _invalid_if(type(self_verification_elapsed) not in (int, float) or not math.isfinite(self_verification_elapsed) or self_verification_elapsed < 0 or (type(self_verification_run) is not int) or (not 0 <= self_verification_run <= item), 'dispatch self-verification accounting is invalid'),
+    })
     if self_verification_started is not None and (
         type(self_verification_started) not in (int, float)
         or not math.isfinite(self_verification_started)
@@ -1210,6 +1266,9 @@ def validate_state(value: Any) -> dict[str, Any]:
             raise DispatchError("active self-verification state is invalid")
     elif self_verification_started is not None or self_verification_return is not None:
         raise DispatchError("inactive self-verification has active state")
+
+
+def _validate_candidate_lifecycle(value: Mapping[str, Any]) -> None:
     current_result = [value["result_path"], value["result_sha256"], value["result_identity"]]
     if any(item is None for item in current_result) != all(item is None for item in current_result):
         raise DispatchError("dispatch result binding is incomplete")
@@ -1234,10 +1293,10 @@ def validate_state(value: Any) -> dict[str, Any]:
     if value["status"] in TERMINAL:
         if value["finished_epoch"] is None or value["exit_code"] is None:
             raise DispatchError("terminal dispatch state is incomplete")
-    if value["phase"] not in LIFECYCLE_PHASES:
-        raise DispatchError("dispatch lifecycle phase is invalid")
-    if value["assurance"] not in {"pending", "verified", "partially_verified", "rejected", "blocked"}:
-        raise DispatchError("dispatch lifecycle assurance is invalid")
+    _validate_fields(value, {
+        "phase": lambda item: _invalid_if(item not in LIFECYCLE_PHASES, 'dispatch lifecycle phase is invalid'),
+        "assurance": lambda item: _invalid_if(item not in {'pending', 'verified', 'partially_verified', 'rejected', 'blocked'}, 'dispatch lifecycle assurance is invalid'),
+    })
     if inaccessible_candidate and (
         value["phase"] != "blocked" or value["assurance"] != "blocked"
     ):
@@ -1283,6 +1342,9 @@ def validate_state(value: Any) -> dict[str, Any]:
             value["phase"] != "attempt-failed" or value["assurance"] != "pending"
         ):
             raise DispatchError("failed legacy lifecycle is invalid")
+
+
+def _validate_verification_state(value: Mapping[str, Any]) -> None:
     summary = value["check_summary"]
     if summary is not None and (
         not isinstance(summary, str) or not (1 <= len(summary) <= MAX_CHECK_SUMMARY)
@@ -1310,17 +1372,172 @@ def validate_state(value: Any) -> dict[str, Any]:
             raise DispatchError("project boundary marker digest is invalid")
     elif boundary is not None:
         raise DispatchError("non-project state has a boundary binding")
-    return value
+
+
+def _validate_worktree_state(value: Mapping[str, Any]) -> None:
+    if value["worktree_reconciliation"] not in {"available", "unavailable", "not_applicable"}:
+        raise DispatchError("dispatch worktree reconciliation is invalid")
+    _validate_fields(value, dict.fromkeys(('worktree_changes_present', 'worktree_changed_since_dispatch'), _validate_worktree_observation))
+    if value["worktree_reconciliation"] == "available" and (
+        value["worktree_changes_present"] is None or value["worktree_changed_since_dispatch"] is None
+    ):
+        raise DispatchError("dispatch worktree reconciliation is incomplete")
+    if value["worktree_reconciliation"] != "available" and (
+        value["worktree_changes_present"] is not None or value["worktree_changed_since_dispatch"] is not None
+    ):
+        raise DispatchError("dispatch unavailable worktree reconciliation has observations")
+    _validate_fields(value, {
+        "driver_disposition": lambda item: _invalid_if(item not in {'not_applicable', 'unreviewed', 'verified', 'partially_verified', 'rejected', 'blocked'}, 'dispatch driver disposition is invalid'),
+        "failure_stage": lambda item: _invalid_if(item not in {None, *FAILURE_STAGES}, 'dispatch failure stage is invalid'),
+        "last_activity": lambda item: _invalid_if(item not in {None, 'provider_initialized', 'progress_signal', 'terminal_received'}, 'dispatch activity is invalid'),
+        "next_action": lambda item: _invalid_if(item not in {'none', 'wait', 'resume', 'restart', 'driver_review', 'driver_finalize', 'blocked'}, 'dispatch next action is invalid'),
+        "next_action_command": lambda item: _invalid_if(item is not None and (not isinstance(item, str) or not item), 'dispatch next action command is invalid'),
+    })
+    baseline = value["worktree_baseline"]
+    if baseline is not None and (
+        not isinstance(baseline, dict) or set(baseline) != {"sha256", "entries"}
+        or not isinstance(baseline["sha256"], str) or SHA_RE.fullmatch(baseline["sha256"]) is None
+        or type(baseline["entries"]) is not int or not (0 <= baseline["entries"] <= MAX_BOUNDARY_ENTRIES)
+    ):
+        raise DispatchError("dispatch worktree baseline is invalid")
+    candidate_worktree_sha = value["candidate_worktree_sha256"]
+    candidate_worktree_entries = value["candidate_worktree_entries"]
+    if (candidate_worktree_sha is None) != (candidate_worktree_entries is None):
+        raise DispatchError("dispatch candidate worktree binding is incomplete")
+    if candidate_worktree_sha is not None and (
+        not isinstance(candidate_worktree_sha, str)
+        or SHA_RE.fullmatch(candidate_worktree_sha) is None
+        or type(candidate_worktree_entries) is not int
+        or not (0 <= candidate_worktree_entries <= MAX_BOUNDARY_ENTRIES)
+    ):
+        raise DispatchError("dispatch candidate worktree binding is invalid")
+    for digest_key, identity_key in (
+        ("provider_schema_sha256", "provider_schema_identity"),
+        ("canonical_schema_sha256", "canonical_schema_identity"),
+    ):
+        bound_digest, bound_identity = value[digest_key], value[identity_key]
+        if (bound_digest is None) != (bound_identity is None):
+            raise DispatchError("dispatch schema binding is incomplete")
+        if bound_digest is not None and (
+            not isinstance(bound_digest, str) or SHA_RE.fullmatch(bound_digest) is None
+            or not isinstance(bound_identity, list) or len(bound_identity) != 5
+            or any(type(item) is not int or item < 0 for item in bound_identity)
+        ):
+            raise DispatchError("dispatch schema binding is invalid")
+
+
+def _validate_attempt_state(value: Mapping[str, Any]) -> None:
+    _validate_fields(value, {
+        "attempt_origin": lambda item: _invalid_if(item not in {'initial', 'conversation-resume', 'fresh-restart', 'conversation-continue'}, 'dispatch attempt origin is invalid'),
+        "attempt": lambda item: _invalid_if(type(item) is not int or item < 1, 'dispatch attempt is invalid'),
+        "workflow": lambda item: _invalid_if(item not in {'legacy', 'explore', 'task', 'project'}, 'dispatch workflow state is invalid'),
+    })
+    if not _valid_max_cycles(value["workflow"], value["max_cycles"]):
+        raise DispatchError("dispatch max cycles state is invalid")
+    if type(value["cycle"]) is not int or value["cycle"] != value["attempt"] or (
+        value["workflow"] != "legacy" and value["cycle"] > value["max_cycles"]
+    ):
+        raise DispatchError("dispatch cycle state is invalid")
+    if not isinstance(value["job_id"], str) or JOB_RE.fullmatch(value["job_id"]) is None:
+        raise DispatchError("dispatch job ID is invalid")
+    conversation = value["conversation_id"]
+    if conversation is not None and (
+        not isinstance(conversation, str) or CONVERSATION_RE.fullmatch(conversation) is None
+    ):
+        raise DispatchError("dispatch conversation ID is invalid")
+    _validate_fields(value, dict.fromkeys(('cancel_requested', 'resume_available', 'continue_available', 'remote_cancel_unverified'), _validate_boolean))
+    _validate_fields(value, dict.fromkeys(('progress_count', 'notice_count'), _validate_counter))
+    _validate_fields(value, dict.fromkeys(('created_epoch', 'updated_epoch', 'elapsed_seconds', 'hard_seconds', 'max_seconds', 'idle_seconds', 'attempt_base_elapsed'), _validate_time))
+    _validate_fields(value, dict.fromkeys(('started_epoch', 'finished_epoch', 'last_progress_epoch'), _validate_optional_time))
+    retry_after = value["provider_retry_after_seconds"]
+    retry_observed = value["provider_retry_observed_epoch"]
+    if (retry_after is None) != (retry_observed is None):
+        raise DispatchError("dispatch provider retry binding is incomplete")
+    if retry_after is not None and (
+        type(retry_after) is not int or not (1 <= retry_after <= MAX_PROVIDER_RETRY_SECONDS)
+        or type(retry_observed) not in (int, float)
+        or not math.isfinite(retry_observed) or retry_observed < 0
+    ):
+        raise DispatchError("dispatch provider retry binding is invalid")
+    if value["reason"] != "provider_quota_exhausted" and retry_after is not None:
+        raise DispatchError("dispatch provider retry reason is inconsistent")
+    _validate_fields(value, dict.fromkeys(('exit_code', 'controller_pid', 'agy_returncode'), _validate_optional_integer))
+    _validate_fields(value, dict.fromkeys(('workdir', 'result_path', 'stream_path', 'stderr_path', 'verification_path', 'last_success_path'), _validate_optional_path))
+    if value["limit_kind"] not in {None, "idle", "hard", "max-runtime"}:
+        raise DispatchError("dispatch limit kind is invalid")
+    _validate_fields(value, dict.fromkeys(('command_sha256', 'stage_sha256', 'result_sha256', 'verification_sha256', 'last_success_sha256'), _validate_optional_digest))
+    _validate_fields(value, dict.fromkeys(('command_identity', 'stage_identity', 'result_identity', 'verification_identity', 'last_success_identity'), _validate_optional_identity))
+    selection_sha = value["selection_sha256"]
+    selection_identity = value["selection_identity"]
+    if (selection_sha is None) != (selection_identity is None):
+        raise DispatchError("dispatch selection state binding is incomplete")
+    if selection_sha is not None and (
+        not isinstance(selection_sha, str) or SHA_RE.fullmatch(selection_sha) is None
+        or not isinstance(selection_identity, list) or len(selection_identity) != 5
+        or any(type(item) is not int or item < 0 for item in selection_identity)
+    ):
+        raise DispatchError("dispatch selection state binding is invalid")
+
+
+def validate_state(value: Any) -> DispatchState:
+    _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
+    if not isinstance(value, dict) or set(value) != CURRENT_STATE_FIELDS:
+        raise DispatchError("dispatch state fields are invalid")
+    _validate_fields(value, {
+        "kind": lambda item: _invalid_if(item != 'agy-worker-dispatch-state', 'dispatch state version is invalid'),
+        "provider_isolation": lambda item: _invalid_if(item not in {'session', 'native'}, 'dispatch provider isolation state is invalid'),
+    })
+    if not isinstance(value.get("native_grant_profile"), str) or value.get("native_grant_profile") not in {"baseline", "A", "B", "AB"} or (
+        value["provider_isolation"] == "session" and value.get("native_grant_profile") != "baseline"
+    ):
+        raise DispatchError("dispatch native grant profile state is invalid")
+    whole_content_sha = value.get("whole_worktree_content_sha256")
+    if whole_content_sha is not None and (
+        not isinstance(whole_content_sha, str) or SHA_RE.fullmatch(whole_content_sha) is None
+    ):
+        raise DispatchError("dispatch whole-worktree content state is invalid")
+    if (value["worktree_snapshot_algorithm"] != CURRENT_WORKTREE_SNAPSHOT_ALGORITHM):
+        raise DispatchError("dispatch worktree snapshot algorithm is invalid")
+    if (value.get("provider_terminal_status") not in {"unknown", "success", "error", "cancelled"}):
+        raise DispatchError("dispatch provider terminal status is invalid")
+    _validate_root_identity(value)
+    if type(value["sequence"]) is not int or value["sequence"] < 1:
+        raise DispatchError("dispatch sequence is invalid")
+    previous = value["previous_state_sha256"]
+    if previous is not None and (not isinstance(previous, str) or SHA_RE.fullmatch(previous) is None):
+        raise DispatchError("dispatch history is invalid")
+    _validate_fields(value, {
+        "sequence": lambda item: _invalid_if((item == 1) != (previous is None), 'dispatch history is inconsistent'),
+        "status": lambda item: _invalid_if(item not in {'queued', 'running', 'cancel-requested', *TERMINAL}, 'dispatch status is invalid'),
+        "reason": lambda item: _invalid_if(item is not None and item not in REASONS, 'dispatch reason is invalid'),
+    })
+    if type(value["candidate_recognized"]) is not bool or type(value["result_available"]) is not bool:
+        raise DispatchError("dispatch candidate flags are invalid")
+    if value["candidate_source"] not in {"none", "provider_success", "provider_error", "provider_cancelled"}:
+        raise DispatchError("dispatch candidate source is invalid")
+    if (
+        value["candidate_recognized"] != (value["candidate_source"] != "none")
+        or (value["result_available"] and not value["candidate_recognized"])
+    ):
+        raise DispatchError("dispatch candidate state is inconsistent")
+    _validate_worktree_state(value)
+    _validate_attempt_state(value)
+    _validate_scope_state(value)
+    _validate_self_verification_state(value)
+    _validate_candidate_lifecycle(value)
+    _validate_verification_state(value)
+    # Exact shape and every field/cross-field rule have passed; preserve input identity.
+    return cast(DispatchState, value)
 
 
 def initial_state(
     command: dict[str, Any], origin: str, attempt: int, *, command_sha: str,
     command_identity: tuple[int, int, int, int, int], stage_sha: str | None,
     stage_identity: tuple[int, int, int, int, int] | None,
-    project_boundary: dict[str, Any] | None = None,
+    project_boundary: Mapping[str, Any] | None = None,
     schema_bindings: dict[str, Any] | None = None,
     explain_worktree_rejection: bool = False,
-    repair_authority_state: dict[str, Any] | None = None,
+    repair_authority_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = time.time()
     workflow = command.get("workflow", "legacy")
@@ -1513,8 +1730,8 @@ def initial_state(
 
 
 def _transition_locked(
-    job: Path, state: dict[str, Any], prior_raw: bytes, updates: dict[str, Any],
-) -> tuple[dict[str, Any], bytes, str]:
+    job: Path, state: Mapping[str, Any], prior_raw: bytes, updates: dict[str, Any],
+) -> tuple[DispatchState, bytes, str]:
     current, _info = read_regular(job / STATE_NAME, MAX_STATE_BYTES, "dispatch state")
     if current != prior_raw:
         raise DispatchError("dispatch state changed before transition")
@@ -1530,12 +1747,12 @@ def _transition_locked(
     return validate_state(value), raw, sha
 
 
-def transition(job: Path, state: dict[str, Any], prior_raw: bytes, updates: dict[str, Any]) -> tuple[dict[str, Any], bytes, str]:
+def transition(job: Path, state: Mapping[str, Any], prior_raw: bytes, updates: dict[str, Any]) -> tuple[DispatchState, bytes, str]:
     with state_lock(job):
         return _transition_locked(job, state, prior_raw, updates)
 
 
-def _live_elapsed(value: dict[str, Any], now: float) -> float:
+def _live_elapsed(value: Mapping[str, Any], now: float) -> float:
     elapsed = float(value["elapsed_seconds"])
     if value["status"] in {"running", "cancel-requested"} and value["started_epoch"] is not None:
         elapsed = max(
@@ -1545,7 +1762,7 @@ def _live_elapsed(value: dict[str, Any], now: float) -> float:
     return elapsed
 
 
-def _verification_live_elapsed(value: dict[str, Any], now: float) -> float:
+def _verification_live_elapsed(value: Mapping[str, Any], now: float) -> float:
     elapsed = float(value.get("self_verification_elapsed_seconds", 0.0))
     started = value.get("self_verification_started_epoch")
     if value.get("phase") == "self-verifying" and started is not None:
@@ -1553,11 +1770,11 @@ def _verification_live_elapsed(value: dict[str, Any], now: float) -> float:
     return elapsed
 
 
-def _total_live_elapsed(value: dict[str, Any], now: float) -> float:
+def _total_live_elapsed(value: Mapping[str, Any], now: float) -> float:
     return _live_elapsed(value, now) + _verification_live_elapsed(value, now)
 
 
-def _provider_max_seconds(value: dict[str, Any]) -> float:
+def _provider_max_seconds(value: Mapping[str, Any]) -> float:
     """Keep provider hard/idle clocks separate from the shared job allowance."""
     return max(0.0, float(value["max_seconds"])
                - float(value.get("self_verification_elapsed_seconds", 0.0)))
@@ -1565,7 +1782,7 @@ def _provider_max_seconds(value: dict[str, Any]) -> float:
 
 def _freeze_reaped_runtime(
     job: Path, attempt: int, controller_pid: int, elapsed: float,
-) -> tuple[dict[str, Any], bytes, str, str | None]:
+) -> tuple[DispatchState, bytes, str, str | None]:
     """Atomically stop the provider clock and classify its locked deadline.
 
     Reaping is the last provider-owned operation.  Everything after this
@@ -1600,11 +1817,11 @@ def _freeze_reaped_runtime(
         return current, raw, sha, deadline
 
 
-def _is_active(value: dict[str, Any]) -> bool:
+def _is_active(value: Mapping[str, Any]) -> bool:
     return value["status"] in {"queued", "running", "cancel-requested"}
 
 
-def _extend_is_eligible(value: dict[str, Any], now: float) -> bool:
+def _extend_is_eligible(value: Mapping[str, Any], now: float) -> bool:
     """One cheap state/time predicate shared by status and the lock guard."""
     elapsed = _live_elapsed(value, now)
     return bool(
@@ -1624,9 +1841,7 @@ def _extend_is_eligible(value: dict[str, Any], now: float) -> bool:
     )
 
 
-
-
-def _resume_is_eligible(value: dict[str, Any], now: float) -> bool:
+def _resume_is_eligible(value: Mapping[str, Any], now: float) -> bool:
     """Mirror the strict same-conversation resume guard used before staging."""
     return bool(
         value["status"] == "failed"
@@ -1638,12 +1853,12 @@ def _resume_is_eligible(value: dict[str, Any], now: float) -> bool:
     )
 
 
-def _continue_is_eligible(value: dict[str, Any], now: float) -> bool:
+def _continue_is_eligible(value: Mapping[str, Any], now: float) -> bool:
     """Return the state-only half of the exact continuation guard."""
     return bool(value["continue_available"] and _continue_from_facts(value, now))
 
 
-def _continue_from_facts(value: dict[str, Any], now: float) -> bool:
+def _continue_from_facts(value: Mapping[str, Any], now: float) -> bool:
     """Recompute eligibility after verification without a circular stored flag."""
     return bool(
         value["workflow"] != "legacy"
@@ -1674,7 +1889,7 @@ def _continue_from_facts(value: dict[str, Any], now: float) -> bool:
     )
 
 
-def _finalize_is_eligible(value: dict[str, Any]) -> bool:
+def _finalize_is_eligible(value: Mapping[str, Any]) -> bool:
     """Return the state-only half of the exact finalization guard."""
     return bool(
         value["candidate_recognized"] and value["result_available"]
@@ -1685,14 +1900,14 @@ def _finalize_is_eligible(value: dict[str, Any]) -> bool:
     )
 
 
-def _verification_copy_is_eligible(value: dict[str, Any]) -> bool:
+def _verification_copy_is_eligible(value: Mapping[str, Any]) -> bool:
     """Return the exact state predicate for the current candidate copy helper."""
     return bool(
         _finalize_is_eligible(value)
     )
 
 
-def _controller_phase(value: dict[str, Any]) -> str | None:
+def _controller_phase(value: Mapping[str, Any]) -> str | None:
     """Project controller-owned mechanics from the current bound state."""
     if value.get("phase") == "self-verifying":
         return "self-verifying"
@@ -1713,7 +1928,7 @@ def _controller_phase(value: dict[str, Any]) -> str | None:
     return None
 
 
-def _candidate_actions_are_bound(job: Path | None, value: dict[str, Any]) -> bool:
+def _candidate_actions_are_bound(job: Path | None, value: Mapping[str, Any]) -> bool:
     """Keep public candidate actions as strict as their mutating commands."""
     if job is None:
         return False
@@ -1726,7 +1941,7 @@ def _candidate_actions_are_bound(job: Path | None, value: dict[str, Any]) -> boo
     return True
 
 
-def _post_candidate_selection_binding_drift(job: Path | None, value: dict[str, Any]) -> bool:
+def _post_candidate_selection_binding_drift(job: Path | None, value: Mapping[str, Any]) -> bool:
     """Identify a frozen direct-selection failure without publishing its bytes.
 
     The candidate action binder uses the same selection record, but can also
@@ -1757,7 +1972,7 @@ def _post_candidate_selection_binding_drift(job: Path | None, value: dict[str, A
 
 
 def _lifecycle_mutation_bindings(
-    job: Path | None, value: dict[str, Any],
+    job: Path | None, value: Mapping[str, Any],
 ) -> tuple[bool, bool]:
     """Return driver-write and provider-launch binding availability.
 
@@ -1812,7 +2027,7 @@ def _selection_launch_is_authorized(record: dict[str, Any] | None) -> bool:
 
 
 def _available_actions(
-    value: dict[str, Any], sha: str, now: float, *, job: Path | None = None,
+    value: Mapping[str, Any], sha: str, now: float, *, job: Path | None = None,
     candidate_bound: bool | None = None,
     lifecycle_mutation_bound: bool | None = None,
     provider_launch_bound: bool | None = None,
@@ -1993,14 +2208,14 @@ def _provider_execution_from_bound_command(command: dict[str, Any]) -> dict[str,
     }
 
 
-def bound_provider_execution(job: Path, state: dict[str, Any]) -> dict[str, Any]:
+def bound_provider_execution(job: Path, state: Mapping[str, Any]) -> dict[str, Any]:
     """Bind execution facts to the command, not the state projection."""
 
     command = _load_bound_command(job, state, stage_readonly=False)
     return _provider_execution_from_bound_command(command)
 
 
-def public_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -> dict[str, Any]:
+def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None) -> dict[str, Any]:
     _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
     if job is not None:
         _check_existing_command_schema(job)
@@ -2147,7 +2362,7 @@ def print_json(value: Any) -> None:
     sys.stdout.buffer.flush()
 
 
-def print_text_status(value: dict[str, Any], sha: str, *, job: Path | None = None) -> None:
+def print_text_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None) -> None:
     """Print exactly three private-data-free lines for the human CLI surface."""
     counts = value["check_counts"]
     public = public_status(value, sha, job=job)
@@ -2260,7 +2475,7 @@ def print_text_status(value: dict[str, Any], sha: str, *, job: Path | None = Non
 
 
 def print_control_status(
-    value: dict[str, Any], sha: str, output_format: str, *, job: Path | None = None,
+    value: Mapping[str, Any], sha: str, output_format: str, *, job: Path | None = None,
 ) -> None:
     if output_format == "text":
         print_text_status(value, sha, job=job)
@@ -2268,7 +2483,7 @@ def print_control_status(
         print_json(public_status(value, sha, job=job))
 
 
-def _state_approval_error(state: dict[str, Any], sha: str, action: str) -> DispatchError:
+def _state_approval_error(state: Mapping[str, Any], sha: str, action: str) -> DispatchError:
     """Keep stale approval recovery useful without exposing private controller data."""
     suffix = {
         "continue": " < DRIVER_VERIFICATION_JSON",
@@ -2558,7 +2773,7 @@ def _verification_is_verified(value: dict[str, Any], workflow: str) -> bool:
     return counts["passed"] >= 1 and value["diff_review_complete"]
 
 
-def _require_current_candidate_verification(value: dict[str, Any], state: dict[str, Any]) -> None:
+def _require_current_candidate_verification(value: Mapping[str, Any], state: Mapping[str, Any]) -> None:
     """V1 is readable for compatibility, but never authorizes a lifecycle write."""
     if value["schema_version"] != 2:
         raise DispatchError("verification v2 is required for candidate disposition")
@@ -2656,7 +2871,7 @@ def _discard_new_verification(path: Path | None, identity: tuple[int, int, int, 
         pass
 
 
-def _bound_verification(job: Path, state: dict[str, Any]) -> Path | None:
+def _bound_verification(job: Path, state: Mapping[str, Any]) -> Path | None:
     path_text = state["verification_path"]
     if path_text is None:
         return None
@@ -2716,7 +2931,7 @@ def _compute_repair_lineage_sha256(
 
 
 def _require_scoped_transmission_authority(
-    command: dict[str, Any], state: dict[str, Any], *,
+    command: dict[str, Any], state: Mapping[str, Any], *,
     selected_content_sha256: str, transmission_sha256: str,
     provider_origin: str | None = None,
 ) -> None:
@@ -2760,7 +2975,7 @@ def _dispatch_root_identity(workdir: str) -> dict[str, Any] | None:
     return WORKTREE._git_boundary_identity(workdir)
 
 
-def _state_worktree_snapshot(state: dict[str, Any], workdir: str) -> dict[str, Any] | None:
+def _state_worktree_snapshot(state: Mapping[str, Any], workdir: str) -> dict[str, Any] | None:
     """Use the one persisted semantic algorithm without changing its digest."""
     if state.get("schema_version") is not None:
         _require_supported_schema(state, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
@@ -2787,7 +3002,7 @@ def _reconciliation_from_snapshot(
 
 
 def _reconcile_worktree(
-    workdir: str, baseline: dict[str, Any] | None, *, state: dict[str, Any] | None = None,
+    workdir: str, baseline: dict[str, Any] | None, *, state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     current = WORKTREE._worktree_snapshot(workdir) if state is None else _state_worktree_snapshot(state, workdir)
     return _reconciliation_from_snapshot(current, baseline)
@@ -2848,7 +3063,7 @@ def _schema_bindings(command: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _bound_schemas(command: dict[str, Any], state: dict[str, Any]) -> tuple[Path, Path]:
+def _bound_schemas(command: dict[str, Any], state: Mapping[str, Any]) -> tuple[Path, Path]:
     paths = _schema_paths(command)
     if paths is None:
         raise DispatchError("dispatch schema argument is unavailable")
@@ -2859,7 +3074,7 @@ def _bound_schemas(command: dict[str, Any], state: dict[str, Any]) -> tuple[Path
     return paths
 
 
-def _bound_candidate_worktree(state: dict[str, Any], command: dict[str, Any]) -> None:
+def _bound_candidate_worktree(state: Mapping[str, Any], command: dict[str, Any]) -> None:
     """Reject post-review worktree drift before a continuation or final disposition."""
     quiescent = (
         state["status"] in TERMINAL and state["controller_pid"] is None
@@ -2895,7 +3110,7 @@ def _bound_candidate_worktree(state: dict[str, Any], command: dict[str, Any]) ->
         )
 
 
-def _bound_current_candidate(job: Path, state: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+def _bound_current_candidate(job: Path, state: Mapping[str, Any]) -> tuple[dict[str, Any], bytes]:
     """Reopen every current-candidate authority before exposing or mutating it.
 
     This is intentionally one bounded no-follow binding sequence, reused by
@@ -3185,8 +3400,7 @@ def command_verification_copy(job: Path, destination: Path, output_format: str) 
     return 0
 
 
-
-def _bound_worktree_baseline(state: dict[str, Any], command: dict[str, Any]) -> None:
+def _bound_worktree_baseline(state: Mapping[str, Any], command: dict[str, Any]) -> None:
     """Require the queued worktree fact set immediately before provider launch."""
     expected = state["worktree_baseline"]
     current = _state_worktree_snapshot(state, command["workdir"])
@@ -3201,7 +3415,7 @@ def _bound_worktree_baseline(state: dict[str, Any], command: dict[str, Any]) -> 
 
 
 def _restart_guard_accepts(
-    state: dict[str, Any], *, status: str | None = None,
+    state: Mapping[str, Any], *, status: str | None = None,
     elapsed_seconds: float | None = None,
 ) -> bool:
     """Share the state-only fresh-restart guard with public recovery projection."""
@@ -3225,7 +3439,7 @@ def _restart_guard_accepts(
 
 
 def _load_bound_command(
-    job: Path, state: dict[str, Any], *, stage_readonly: bool,
+    job: Path, state: Mapping[str, Any], *, stage_readonly: bool,
 ) -> dict[str, Any]:
     command, raw, identity = load_command(job)
     if digest(raw) != state["command_sha256"] or list(identity) != state["command_identity"]:
@@ -3239,7 +3453,7 @@ def _load_bound_command(
 
 
 def _load_bound_selection(
-    command: dict[str, Any], state: dict[str, Any],
+    command: dict[str, Any], state: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """Read the frozen selection bytes and bind them to command and state.
 
@@ -3271,10 +3485,13 @@ def _load_bound_selection(
     return record
 
 
+StateMapping = TypeVar("StateMapping", bound=Mapping[str, Any])
+
+
 def _bound_lifecycle_inputs(
-    job: Path, state: dict[str, Any], command: dict[str, Any] | None = None,
+    job: Path, state: StateMapping, command: dict[str, Any] | None = None,
     *, bind_terminal_candidate: bool = False,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], StateMapping]:
     """Bind non-provider recovery/finalization inputs before any state write.
 
     This never writes state or launches a provider, but it does perform the
@@ -3385,7 +3602,7 @@ def _bound_lifecycle_inputs(
 
 
 def _reprobe_direct_selection(
-    command: dict[str, Any], state: dict[str, Any], argv: list[str],
+    command: dict[str, Any], state: Mapping[str, Any], argv: list[str],
 ) -> tuple[str, dict[str, Any]]:
     """Probe every provider launch and bind exact caller model/effort arguments."""
     record = _load_bound_selection(command, state)
@@ -3900,7 +4117,7 @@ def _validate_terminal_envelope(
 
 @dataclasses.dataclass
 class _ControllerBinding:
-    state: dict[str, Any] = dataclasses.field(default_factory=dict)
+    state: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     prior_raw: bytes = b""
     command: dict[str, Any] = dataclasses.field(default_factory=dict)
     feedback: Path | None = None
@@ -3983,7 +4200,7 @@ class _CandidateReconciliation:
 
 
 def _controller_monitor_limit(
-    state: dict[str, Any], stop_signal: int | None, elapsed: float,
+    state: Mapping[str, Any], stop_signal: int | None, elapsed: float,
     now_mono: float, heartbeat_mono: float, *, float_hard: bool,
 ) -> tuple[str, str | None] | None:
     """Classify a sample without evaluating limits after a winning control."""
@@ -4000,7 +4217,7 @@ def _controller_monitor_limit(
 
 
 def _controller_wait_seconds(
-    state: dict[str, Any], started_mono: float, heartbeat_mono: float,
+    state: Mapping[str, Any], started_mono: float, heartbeat_mono: float,
     next_notice: float, now_mono: float,
 ) -> float:
     """Bound a selector wait by the first controller-owned clock."""
@@ -4108,6 +4325,8 @@ def _bind_controller_inputs(
             exit_code=EXIT_BY_REASON["status_unavailable"],
             failure_stage="binding_failure", expected_controller_pid=os.getpid(),
         )
+        # Terminal validation guarantees an integer exit code.
+        assert terminal["exit_code"] is not None
         return int(terminal["exit_code"])
     return None
 
@@ -4140,6 +4359,8 @@ def _open_controller_artifacts(
             exit_code=EXIT_BY_REASON["status_unavailable"],
             failure_stage="binding_failure", expected_controller_pid=os.getpid(),
         )
+        # Terminal validation guarantees an integer exit code.
+        assert terminal["exit_code"] is not None
         return int(terminal["exit_code"])
     return None
 
@@ -5060,7 +5281,7 @@ def _reconcile_controller_candidate(
 def _classify_controller_candidate(
     outcome: _ControllerOutcome,
     candidate_data: _CandidateReconciliation,
-    current: dict[str, Any],
+    current: Mapping[str, Any],
 ) -> tuple[_ControllerOutcome, _CandidateDisposition]:
     outcome = dataclasses.replace(outcome)
     disposition = _CandidateDisposition()
@@ -5139,7 +5360,7 @@ def _classify_controller_candidate(
 def _controller_repair_lineage(
     outcome: _ControllerOutcome,
     candidate_data: _CandidateReconciliation,
-    current: dict[str, Any],
+    current: Mapping[str, Any],
 ) -> dict[str, Any]:
     repair_lineage_updates: dict[str, Any] = {}
     if (outcome.result_binding is not None):
@@ -5206,7 +5427,7 @@ def _controller_terminal_updates(
     outcome: _ControllerOutcome,
     candidate_data: _CandidateReconciliation,
     disposition: _CandidateDisposition,
-    current: dict[str, Any],
+    current: Mapping[str, Any],
     repair_lineage_updates: dict[str, Any],
 ) -> dict[str, Any]:
     updates = {
@@ -5427,6 +5648,8 @@ def _recover_controller_failure(
             failure_stage="binding_failure", expected_controller_pid=os.getpid(),
             elapsed_seconds=frozen_elapsed, postlaunch_cancel=True,
         )
+        # Terminal validation guarantees an integer exit code.
+        assert terminal["exit_code"] is not None
         return int(terminal["exit_code"])
     except Exception:
         # A failed final write is still not allowed to disguise the
@@ -5490,7 +5713,7 @@ def create_state(
     job: Path, origin: str, *, resume: bool, approve_sha: str | None = None,
     verification: dict[str, Any] | None = None,
     require_initial_choice: bool = False,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[DispatchState, str]:
     command, command_raw, command_info = load_command(job)
     if require_initial_choice:
         _require_initial_transmission_choice(command, origin)
@@ -5587,6 +5810,7 @@ def create_state(
                     next_state["last_success_sha256"] = state["result_sha256"] or state["last_success_sha256"]
                     next_state["last_success_identity"] = state["result_identity"] or state["last_success_identity"]
                     if origin == "conversation-continue":
+                        state_fields: Mapping[str, object] = state
                         for key in (
                             "result_path", "result_sha256", "result_identity",
                             "candidate_recognized", "candidate_source", "result_available",
@@ -5595,7 +5819,7 @@ def create_state(
                             "worktree_changes_present",
                             "worktree_changed_since_dispatch",
                         ):
-                            next_state[key] = state[key]
+                            next_state[key] = state_fields[key]
                         for key in (
                             "repair_lineage_sha256",
                             "repair_parent_result_sha256",
@@ -5603,7 +5827,7 @@ def create_state(
                             "repair_lineage_attempt",
                             "reconciliation_manifest_sha256",
                         ):
-                            next_state[key] = state[key]
+                            next_state[key] = state_fields[key]
                 if verification_path is not None:
                     next_state.update({
                         "verification_path": str(verification_path),
@@ -5612,12 +5836,12 @@ def create_state(
                         "check_summary": cast(dict[str, Any], verification)["summary"],
                         "check_counts": _verification_counts(cast(dict[str, Any], verification)),
                     })
-                validate_state(next_state)
+                validated_next = validate_state(next_state)
                 current, _info = read_regular(path, MAX_STATE_BYTES, "dispatch state")
                 if current != raw:
                     raise DispatchError("dispatch state changed before continuation")
                 _new_raw, new_sha = write_atomic(job, STATE_NAME, next_state)
-                return next_state, new_sha
+                return validated_next, new_sha
             except Exception:
                 _discard_new_verification(verification_path, verification_identity)
                 raise
@@ -5625,13 +5849,13 @@ def create_state(
             raise DispatchError("dispatch state already exists")
         if command.get("workflow") == "project" and _job_is_inside_worktree(job, command["workdir"]):
             raise DispatchError("dispatch job directory cannot be inside the target workdir")
-        state = initial_state(
+        initial = initial_state(
             command, origin, 1, command_sha=digest(command_raw),
             command_identity=command_info, stage_sha=stage_sha, stage_identity=stage_info,
             schema_bindings=schema_bindings,
             explain_worktree_rejection=True,
         )
-        validate_state(state)
+        state = validate_state(initial)
         _raw, sha = write_atomic(job, STATE_NAME, state)
         return state, sha
 
@@ -5742,7 +5966,7 @@ def spawn(
 
 
 def _terminal_projection(
-    state: dict[str, Any], *, status: str, reason: str, exit_code: int,
+    state: Mapping[str, Any], *, status: str, reason: str, exit_code: int,
     failure_stage: str | None = None, remote_cancel_unverified: bool = False,
     allow_continue: bool = True,
 ) -> dict[str, Any]:
@@ -5810,10 +6034,10 @@ def _terminal_projection(
 
 
 def _terminalize_owned(
-    job: Path, state: dict[str, Any], *, status: str, reason: str, exit_code: int,
+    job: Path, state: Mapping[str, Any], *, status: str, reason: str, exit_code: int,
     failure_stage: str | None = None, expected_controller_pid: int | None = None,
     elapsed_seconds: float | None = None, postlaunch_cancel: bool = False,
-) -> tuple[dict[str, Any], bytes, str]:
+) -> tuple[DispatchState, bytes, str]:
     """Publish one owned terminal state without holding a lock across scans."""
     projection_unavailable = False
     try:
@@ -5850,13 +6074,14 @@ def _terminalize_owned(
             # are internally complete and still advertised as available.  Its
             # command paths will independently bind it again before result,
             # continue, or finalize is allowed.
+            current_fields: Mapping[str, object] = current
             prior_candidate_is_bound = bool(
                 current["attempt_origin"] == "conversation-continue"
                 and current["candidate_recognized"]
                 and current["candidate_source"] != "none"
                 and current["result_available"]
                 and current["failure_stage"] is None
-                and all(current[key] is not None for key in (
+                and all(current_fields[key] is not None for key in (
                     "result_path", "result_sha256", "result_identity",
                     "candidate_worktree_sha256", "candidate_worktree_entries",
                 ))
@@ -5946,7 +6171,7 @@ def _terminalize_queued_signal(job: Path, number: int) -> None:
         ))
 
 
-def _recover_interrupted_self_verification(job: Path) -> tuple[dict[str, Any], bytes, str]:
+def _recover_interrupted_self_verification(job: Path) -> tuple[DispatchState, bytes, str]:
     """Recover only while holding the lifecycle lock; never rerun a check."""
     with state_lock(job):
         state, raw, sha = load_state(job)
@@ -5956,7 +6181,11 @@ def _recover_interrupted_self_verification(job: Path) -> tuple[dict[str, Any], b
             state["max_seconds"], state["elapsed_seconds"],
             state["self_verification_elapsed_seconds"],
         )
-        charge = min(remaining, max(0.0, time.time() - state["self_verification_started_epoch"]))
+        started = state["self_verification_started_epoch"]
+        result_sha = state["result_sha256"]
+        # validate_state proves both bindings for the self-verifying phase above.
+        assert started is not None and result_sha is not None
+        charge = min(remaining, max(0.0, time.time() - started))
         updates = {
             "phase": state["self_verification_return_phase"],
             "self_verification_started_epoch": None,
@@ -5964,7 +6193,7 @@ def _recover_interrupted_self_verification(job: Path) -> tuple[dict[str, Any], b
             "self_verification_elapsed_seconds": state["self_verification_elapsed_seconds"] + charge,
             "verification_path": None, "verification_sha256": None,
             "verification_identity": None,
-            "check_counts": _verification_counts(SELF_VERIFICATION.advisory_feedback(state["result_sha256"], [])),
+            "check_counts": _verification_counts(SELF_VERIFICATION.advisory_feedback(result_sha, [])),
             "check_summary": "Self-verification was interrupted; wall-clock time was conservatively charged.",
         }
         updates["continue_available"] = _continue_from_facts({**state, **updates}, time.time())
@@ -6072,7 +6301,7 @@ def command_result(job: Path, output_format: str = "json") -> int:
     return 0
 
 
-def _bound_self_verification_feedback(job: Path, state: dict[str, Any]) -> dict[str, Any]:
+def _bound_self_verification_feedback(job: Path, state: Mapping[str, Any]) -> dict[str, Any]:
     """Read only the advisory artifact published for this candidate attempt."""
     expected = job / "continue-staged" / f"self-verify-{state['attempt']:03d}.json"
     if (

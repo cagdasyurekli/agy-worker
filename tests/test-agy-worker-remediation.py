@@ -1392,9 +1392,22 @@ with tempfile.TemporaryDirectory() as temporary:
             closed_after_failure(lambda: MODULE._worktree_snapshot(str(repo)))
         finally:
             MODULE.selectors.DefaultSelector = original_selector
-        body = worktree_function_source("_worktree_snapshot_raw").encode("utf-8")
+        source = WORKTREE_SOURCE.read_text(encoding="utf-8")
+        snapshot_nodes = [
+            node for node in ast.parse(source).body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+            and (node.name == "_worktree_snapshot_raw"
+                 or node.name.startswith(("_snapshot_", "_Snapshot")))
+        ]
+        segments = [ast.get_source_segment(source, node) for node in snapshot_nodes]
+        assert segments and all(isinstance(segment, str) for segment in segments)
+        body = "\n".join(segments).encode("utf-8")
+        coordinator = worktree_function_source("_worktree_snapshot_raw").encode("utf-8")
         runner = worktree_function_source("_bounded_git_read").encode("utf-8")
-        assert b"_bounded_git_read(" in body
+        assert b"context = _SnapshotGitContext(" in coordinator
+        assert b"completed = _bounded_git_read(" in body
+        assert b"return self.read(" in body
+        assert b"_BoundGitReadArguments(arguments, git_dir_boundary)" in body
         assert b'"GIT_OPTIONAL_LOCKS": "0"' in runner
         assert b'"GIT_CONFIG_NOSYSTEM": "1"' in runner
         assert b'if key.startswith("GIT_")' in runner
@@ -1408,11 +1421,15 @@ with tempfile.TemporaryDirectory() as temporary:
         assert b'"status", "--porcelain' not in body
         assert b'"diff"' not in body and b'"hash-object"' not in body
         assert b'"--filters"' not in body and b'"--textconv"' not in body
-        assert b'git_read(["ls-files", "--stage", "-z"])' in body
-        assert b'git_read(["ls-files", "-z", "--others", "--exclude-standard"])' in body
-        assert b'git_read(["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])' in body
-        assert b'git_read(["cat-file", "--batch"]' in body
-        assert b'second != first' in body and b'index_binding(index_path) != before_index' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["ls-files", "--stage", "-z"])' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["ls-files", "-z", "--others", "--exclude-standard"])' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["cat-file", "--batch"]' in body
+        assert b'first = _snapshot_listings(context, git,' in body
+        assert b'second = _snapshot_listings(context, git,' in coordinator
+        assert b'third = _snapshot_listings(context, git,' in coordinator
+        assert b'second != facts.first' in coordinator and b'third != facts.first' in coordinator
+        assert coordinator.count(b'_snapshot_index_binding(git.index_path) != git.before_index') == 4
         assert b"os.killpg(process.pid, signal.SIGKILL)" in runner and b"process.wait(" in runner
         assert b"payload_write" in runner and b"stream.close()" in runner
 
@@ -5457,8 +5474,15 @@ with tempfile.TemporaryDirectory() as temporary:
 
             boundary = worktree_function_source("_git_boundary_identity")
             snapshot = worktree_function_source("_worktree_snapshot_raw")
+            source = WORKTREE_SOURCE.read_text(encoding="utf-8")
+            context_node = next(node for node in ast.parse(source).body
+                                if isinstance(node, ast.ClassDef) and node.name == "_SnapshotGitContext")
+            context = ast.get_source_segment(source, context_node)
+            assert context is not None
             assert "_bound_git_worktree_root(top_level, root, root_binding)" in boundary
-            assert "_bound_git_worktree_root(top_level[1], root, root_binding)" in snapshot
+            assert "_bound_git_worktree_root(top_level[1], self.root, self.root_binding)" in context
+            assert "if not context.bound_worktree():" in worktree_function_source("_snapshot_bind_git")
+            assert "or not context.bound_worktree()" in snapshot
 
         git_toplevel_alias_is_narrowly_bound_to_the_held_directory()
 
