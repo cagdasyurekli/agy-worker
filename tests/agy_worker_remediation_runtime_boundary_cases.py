@@ -105,16 +105,14 @@ def run(context: dict[str, object]) -> None:
                 )
             finally:
                 os.environ["PATH"] = previous_path
-            assert selection["schema_version"] == 2
-            assert selection["version_relation"] == "match"
-            assert selection["compatibility_status"] == "reviewed-version-match"
+            assert selection["schema_version"] == 4
             assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(selection))
             selection_path = job / "selection.json"
             MODULE.MODEL_SELECTION.publish_record(selection_path, selection)
             raw, info = MODULE.read_regular(selection_path, MODULE.MAX_COMMAND_BYTES, "fixture selection")
             command = current_command_fixture({
                 "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"direct-{label}",
-                "workdir": str(repo), "argv": ["agy", "--mode", "accept-edits", "--add-dir", str(repo), "--json-schema", str(schema), "--model", "gemini-3.6-flash-high", "--print", "task"],
+                "workdir": str(repo), "argv": ["agy", "--mode", "accept-edits", "--add-dir", str(repo), "--json-schema", str(schema), "--model", "gemini-3.6-flash", "--effort", "high", "--print", "task"],
                 "agy_version": "1.2.11", "agy_version_observed": True,
                 "selection_path": str(selection_path), "selection_sha256": MODULE.digest(raw), "selection_identity": list(MODULE._identity(info)),
                 "idle_seconds": idle_seconds, "hard_seconds": hard_seconds, "max_seconds": max_seconds, "notice_seconds": 3,
@@ -266,13 +264,11 @@ def run(context: dict[str, object]) -> None:
                 verification=continuation_feedback,
             )
 
-        # The bound record is caller input, not a policy lookup on every later
-        # attempt.  Mutating the live matrix location after job creation must
-        # not alter resume/restart/continue, while malformed frozen evidence
-        # remains rejected before any executable or provider action.
+        # Malformed frozen caller selection remains rejected before any
+        # executable or provider action on later attempts.
         bad_frozen = root / "bad-frozen-selection.json"
         malformed_frozen = json.loads(Path(initial_command["selection_path"]).read_text(encoding="utf-8"))
-        malformed_frozen["matrix_sha256"] = "not-a-digest"
+        malformed_frozen["resolved_agy_model"] = "different-model"
         bad_frozen.write_text(json.dumps(malformed_frozen), encoding="utf-8")
         try:
             MODULE.MODEL_SELECTION.read_selection_record(bad_frozen, frozen=True)
@@ -320,19 +316,6 @@ def run(context: dict[str, object]) -> None:
         assert (swap_terminal["reason"], swap_terminal["failure_stage"]) == (
             "status_unavailable", "binding_failure",
         )
-
-        original_matrix_path = MODULE.MODEL_SELECTION.MATRIX_PATH
-        mutated_matrix = root / "mutated-policy-matrix.json"
-        mutated_matrix.write_bytes(original_matrix_path.read_bytes() + b"\n")
-        for origin in ("conversation-resume", "fresh-restart", "conversation-continue"):
-            job, bin_dir, calls, _fake, command = fixture(f"matrix-mutation-{origin}")
-            queue_bound_origin(job, command, origin)
-            MODULE.MODEL_SELECTION.MATRIX_PATH = mutated_matrix
-            try:
-                calls.unlink(missing_ok=True)
-                assert_attempt(job, bin_dir, calls, command, origin)
-            finally:
-                MODULE.MODEL_SELECTION.MATRIX_PATH = original_matrix_path
 
         # Local controller proofs run before a provider process exists.  A
         # slow exact version/help probe therefore cannot consume the provider

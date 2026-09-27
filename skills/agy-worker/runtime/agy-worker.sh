@@ -115,9 +115,7 @@ usage() {
 usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
                      [--workflow explore|task|project] [--max-cycles N]
                      [--tier bulk|cheap|hard|hardest|default|MODEL]
-                     [--model REVIEWED_MODEL [--effort low|medium|high]]
-                     [--compatibility-disposition proceed --approve-help-sha SHA256]
-                     [--literal-model EXACT_SLUG]
+                     [--model MODEL [--effort EFFORT]]
                      [--idle-timeout 10m] [--hard-timeout 2h]
                      [--max-runtime 12h]
                      [--provider-isolation session|native]
@@ -146,8 +144,7 @@ usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
 
 Workflow cycle limits: explore/task 1..2 (default 2); project 1..5 (default 5).
 --max-cycles requires an explicit workflow; legacy raw mode remains one attempt.
-Direct model: an exact reviewed version launches after the structural help probe;
-version drift requires both --compatibility-disposition and --approve-help-sha.
+Every selection runs capability preflight; model and effort are literal caller values.
 
 Stdout contracts: run emits a worker result envelope; start and lifecycle controls emit
 control JSON, with status/wait/resume/restart/continue/finalize accepting --format text;
@@ -155,11 +152,10 @@ result emits its bound worker envelope unless --format text. A non-zero run exit
 stdout is NOT a valid envelope. Artifacts land in $AGY_WORKER_LOG_DIR.
 
 Exit codes: 0 ok · 2 no prompt · 3 empty output · 4 schema invalid · 5 unclassified agy failure
-            6 permission gate · 7 compatibility review · 8 compatibility evidence unavailable
-            9 idle timeout · 16 hard deadline · 17-19 reserved for version-bound
-            provider/auth evidence · 20 status, binding, or verification-copy runtime unavailable · 21 resume failed
+            6 permission gate · 8 capability evidence unavailable
+            9 idle timeout · 16 hard deadline · 17 provider timeout · 20 status, binding, or verification-copy runtime unavailable · 21 resume failed
             22 cancelled · 23 output oversized · 24 quota exhausted · 25 provider terminal error
-            26 direct-selection preflight failed
+            26 selection preflight failed
             64 invalid usage
 
 Resume and restart use the current state approval before any provider call:
@@ -275,9 +271,6 @@ extra_dirs=()
 tier_cli_seen=0; tier_cli_value=""
 model_cli_seen=0; model_cli_value=""
 effort_cli_seen=0; effort_cli_value=""
-compatibility_disposition_seen=0; compatibility_disposition=""
-approve_help_sha_seen=0; approve_help_sha=""
-literal_cli_seen=0; literal_cli_value=""
 idle_cli_seen=0; hard_cli_seen=0; max_cli_seen=0
 job_cli_seen=0
 provider_scope_seen=0; provider_scope=""
@@ -316,10 +309,9 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || usage
             (( model_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --model" >&2; exit 64; }
             model_cli_seen=1; model_cli_value="$2"; shift 2 ;;
-        --literal-model)
-            [[ $# -ge 2 ]] || usage
-            (( literal_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --literal-model" >&2; exit 64; }
-            literal_cli_seen=1; literal_cli_value="$2"; shift 2 ;;
+        --literal-model|--literal-model=*)
+            echo "agy-worker.sh: --literal-model is retired; use --model" >&2
+            exit 64 ;;
         --idle-timeout)
             [[ $# -ge 2 ]] || usage
             (( idle_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --idle-timeout" >&2; exit 64; }
@@ -346,14 +338,9 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || usage
             (( effort_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --effort" >&2; exit 64; }
             effort_cli_seen=1; effort_cli_value="$2"; shift 2 ;;
-        --compatibility-disposition)
-            [[ $# -ge 2 ]] || usage
-            (( compatibility_disposition_seen == 0 )) || { echo "agy-worker.sh: repeated --compatibility-disposition" >&2; exit 64; }
-            compatibility_disposition_seen=1; compatibility_disposition="$2"; shift 2 ;;
-        --approve-help-sha)
-            [[ $# -ge 2 ]] || usage
-            (( approve_help_sha_seen == 0 )) || { echo "agy-worker.sh: repeated --approve-help-sha" >&2; exit 64; }
-            approve_help_sha_seen=1; approve_help_sha="$2"; shift 2 ;;
+        --compatibility-disposition|--approve-help-sha)
+            echo "agy-worker.sh: version-attestation flags are retired; remove them and use capability preflight" >&2
+            exit 64 ;;
         --provider-scope)
             [[ $# -ge 2 ]] || usage
             (( provider_scope_seen == 0 )) || { echo "agy-worker.sh: repeated --provider-scope" >&2; exit 64; }
@@ -480,10 +467,7 @@ fi
 tier_seen=$((tier_cli_seen + tier_env_seen))
 model_seen=$((model_cli_seen + model_env_seen))
 effort_seen=$((effort_cli_seen + effort_env_seen))
-if (( literal_cli_seen > 0 && (tier_seen > 0 || model_seen > 0 || effort_seen > 0) )); then
-    echo "agy-worker.sh: --literal-model conflicts with tier/model/effort selectors" >&2
-    exit 64
-fi
+
 if (( tier_seen > 0 && (model_seen > 0 || effort_seen > 0) )); then
     echo "agy-worker.sh: explicit tier and model/effort selectors are mutually exclusive" >&2
     exit 64
@@ -492,14 +476,8 @@ if (( effort_seen > 0 && model_seen == 0 )); then
     echo "agy-worker.sh: effort requires an explicit base model" >&2
     exit 64
 fi
-if (( (compatibility_disposition_seen > 0 || approve_help_sha_seen > 0) && model_seen == 0 )); then
-    echo "agy-worker.sh: compatibility approval requires an explicit model selector" >&2
-    exit 64
-fi
-if (( literal_cli_seen > 0 )); then
-    [[ -n "$literal_cli_value" ]] || { echo "agy-worker.sh: literal model must not be empty" >&2; exit 64; }
-    literal_model="$literal_cli_value"; selection_kind="literal"
-elif (( tier_seen > 0 )); then
+
+if (( tier_seen > 0 )); then
     if (( tier_cli_seen )); then tier="$tier_cli_value"; tier_source="cli"
     else tier="$tier_env_value"; tier_source="environment"; fi
     [[ -n "$tier" ]] || { echo "agy-worker.sh: explicit tier must not be empty" >&2; exit 64; }
@@ -870,11 +848,8 @@ PY
     exit 64
 }
 
-# A review-required direct selection is intentionally pre-task.  The newly
-# created controller directory is empty at this point; remove only that exact
-# owner-private inode so a caller can retry the same explicit job ID with the
-# SHA copied from the public review evidence.  Any replacement or unexpected
-# content fails closed and is left untouched.
+# Capability preflight is pre-task. Remove only the exact empty owner-private
+# directory after rejection; preserve replacements and unexpected content.
 cleanup_empty_preflight_job() {
     python3 -I -S -B - "$job_dir" "$job_dir_identity" <<'PY'
 import os
@@ -905,7 +880,7 @@ staged_prompt_file="$staged_dir/full-prompt.txt"
 selection_file="$job_dir/selection.json"
 
 # Resolve once before consuming the task. New direct selectors validate the exact
-# portable matrix and installed agy version; legacy tiers preserve their old mapping.
+# capability probe; convenience tiers preserve their documented mapping.
 selection_args=(--output "$selection_file")
 child_env_args=()
 for provider_env_name in ${provider_env+"${provider_env[@]}"}; do
@@ -916,19 +891,12 @@ if (( ${#child_env_args[@]} )); then
 fi
 if [[ "$selection_kind" == "tier" ]]; then
     selection_args+=(--tier "$tier" --tier-source "$tier_source")
-elif [[ "$selection_kind" == "literal" ]]; then
-    selection_args+=(--literal-model "$literal_model")
 else
     selection_args+=(--model "$user_model" --model-source "$model_source")
     if [[ -n "$user_effort" ]]; then
         selection_args+=(--effort "$user_effort" --effort-source "$effort_source")
     fi
-    if (( compatibility_disposition_seen )); then
-        selection_args+=(--compatibility-disposition "$compatibility_disposition")
-    fi
-    if (( approve_help_sha_seen )); then
-        selection_args+=(--approve-help-sha "$approve_help_sha")
-    fi
+
 fi
 set +e
 model="$(python3 -B "$SCRIPT_DIR/scripts/model_selection.py" "${selection_args[@]}")"
@@ -938,57 +906,14 @@ if (( selection_rc != 0 )); then
     cleanup_empty_preflight_job || true
     exit "$selection_rc"
 fi
-IFS=$'\t' read -r agy_version agy_version_observed agy_selection_mode < <(python3 -I -S -B - "$selection_file" \
-    "$SCRIPT_DIR/compat/agy-verified-version.txt" <<'PY'
-import json
-import re
-import sys
-
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    value = json.load(handle)
-with open(sys.argv[2], "r", encoding="ascii") as handle:
-    baseline = handle.read().strip()
-version = value.get("installed_agy_version", baseline) if isinstance(value, dict) else None
-if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
-    raise SystemExit(7)
-print("\t".join((
-    version,
-    "true" if "installed_agy_version" in value else "false",
-    value.get("selection_mode", ""),
-)))
-PY
-) || exit $?
-if [[ "$agy_selection_mode" == "literal-model" ]]; then
-    set +e
-    observed_version="$(python3 -B "$SCRIPT_DIR/scripts/model_selection.py" \
-        ${child_env_args+"${child_env_args[@]}"} \
-        --observe-installed-version 2>/dev/null)"
-    observe_rc=$?
-    set -e
-    if (( observe_rc == 0 )); then
-        agy_version="$observed_version"
-        agy_version_observed=true
-    elif (( observe_rc >= 128 )); then
-        exit "$observe_rc"
-    fi
-fi
-
-# The initial direct-selection preflight is deliberately completed before task
-# bytes are read.  This second, silent binding check closes the small interval
-# between selection publication and task consumption; it never prints a local
-# executable path or changes the caller's selection.
-if [[ "$agy_selection_mode" == "exact-model" || "$agy_selection_mode" == "model-effort" ]]; then
-    set +e
-    python3 -B "$SCRIPT_DIR/scripts/model_selection.py" \
-        ${child_env_args+"${child_env_args[@]}"} \
-        --verify-record-executable "$selection_file" > /dev/null 2>&1
-    executable_rc=$?
-    set -e
-    if (( executable_rc != 0 )); then
-        if (( executable_rc >= 128 )); then exit "$executable_rc"; fi
-        exit 8
-    fi
-fi
+# Selection publication has completed the shared capability preflight.
+agy_version="$(python3 -I -S -B - "$selection_file" <<'PYCODE'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["installed_agy_version"])
+PYCODE
+)"
+agy_version_observed=true
 
 self_verification_manifest_file=""
 self_verification_prompt_block=""
@@ -1233,6 +1158,7 @@ build_cmd() {
     cmd+=(--mode "$mode" --print-timeout "${max_seconds}s")
     cmd+=(--output-format stream-json --json-schema "$SCHEMA")
     [[ -n "$model" ]] && cmd+=(--model "$model")
+    [[ -z "${user_effort:-}" ]] || cmd+=(--effort "$user_effort")
     if (( disable_slash )) && [[ "$mode" != "plan" ]]; then
         cmd+=(--disable-slash-commands)
     fi

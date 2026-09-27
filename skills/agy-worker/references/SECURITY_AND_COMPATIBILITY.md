@@ -176,28 +176,23 @@ change selection, permission, authentication, provider scope, or a human-require
 outcome. With no selector, leave the provider default unresolved rather than inventing
 a model slug or thinking level.
 
-The reviewed model/effort matrix is compatibility evidence for its exact accepted
-bytes and agy version. Before every reviewed direct dispatch, including an exact
-version match, the driver inspects current bounded raw `agy --help` and stops when the
-caller-selected model or effort cannot be honored. Installed-version drift requires
-an explicit compatibility disposition bound to the reviewed help SHA; structural help
-acceptance alone is not semantic approval or a provider-availability claim.
+Every provider launch uses the same bounded local version/help capability probe,
+including default/tier selection and recovery attempts. Version text is diagnostic
+only. Missing required flags or mode/output values stop before provider execution;
+the controller rechecks the same executable's identity and content immediately before
+launch. Capability acceptance does not certify authentication, model availability,
+backend identity, effective mode semantics, or task quality.
 
-Resolve the installed package, then run `"$PIPELINE/ground-truth.sh"` without arguments
-and inspect `agy --help` before changing agy-facing flags or public claims. The default
-interface phase invokes only `agy --version` and `agy --help`; `--account` is a separate
-explicit action because it inspects account-owned model, agent, plugin, and local-settings
-state. agy may exit zero while ordinary output is empty; the structured result is
-`result.structured_output`, never the echoed schema.
+Caller model and effort values pass through without a checked-in model matrix or
+silent substitution. Provider rejection remains visible. The driver still chooses
+and runs the checks that establish candidate assurance.
 
-For an exact version policy, manifest-bound model-inventory capture can require the
-disposable snapshot to execute from a macOS kernel-reported read-only mount (for example,
-an owner-prepared UDRO image). It binds the snapshot digest and descriptor/path evidence,
-checks the mount's read-only flag before and after the sole child, and fails closed on
-drift. This blocks the observed in-place self-update route; it does not prove that a
-self-updater cannot execute a different writable binary, nor establish resistance to the
-local owner, same-UID processes, or an OS administrator. The installed `agy` binary and
-user configuration are never modified.
+Resolve the installed package, then run `"$PIPELINE/ground-truth.sh"` before changing
+AGY-facing flags or claims. Its interface phase invokes only local version/help
+probes; `--account` is a separate explicit action because it inspects account-owned
+models, agents, plugins and settings. Neither phase authorizes provider dispatch or
+configuration changes. The structured answer is `result.structured_output`, never
+the echoed schema.
 
 ## Supported distribution
 

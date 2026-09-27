@@ -77,7 +77,7 @@ def receipt(exit_code=0):
 
 def recommendation():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "model-tier-recommendation",
         "stage": "pre-dispatch",
         "recommendation_only": True,
@@ -101,7 +101,7 @@ def recommendation():
 
 def selection():
     return {
-        "schema_version": 1,
+        "schema_version": 4,
         "kind": "agy-worker-selection",
         "selection_mode": "tier",
         "selected_tier": "bulk",
@@ -362,28 +362,26 @@ case("receipt-only recommendation validation invokes no subprocess", pure)
 
 direct = copy.deepcopy(base)
 direct["caller_selection"] = {
-    "schema_version": 1,
+    "schema_version": 4,
     "kind": "agy-worker-selection",
     "selection_mode": "exact-model",
     "user_model": "gemini-3.1-pro-high",
     "user_model_source": "cli",
     "resolved_agy_model": "gemini-3.1-pro-high",
-    "installed_agy_version": "1.1.11",
-    "matrix_sha256": "2" * 64,
-    "matrix_agy_version": "1.1.11",
-    "matrix_source_revision": "3" * 40,
 }
 import model_selection
-original_policy = model_selection.load_policy
-model_selection.load_policy = lambda: (_ for _ in ()).throw(AssertionError("policy read"))
+original_probe = model_selection.probe_capabilities
+model_selection.probe_capabilities = lambda: (_ for _ in ()).throw(AssertionError("interface probe"))
+evidence_receipt.subprocess.run = forbidden_subprocess
 try:
     evidence_receipt.validate_receipt(direct, schema)
     pure_selection = True
 except BaseException:
     pure_selection = False
 finally:
-    model_selection.load_policy = original_policy
-case("receipt-only direct selection validation reads no routing policy", pure_selection)
+    model_selection.probe_capabilities = original_probe
+    evidence_receipt.subprocess.run = original_run
+case("receipt-only direct selection validation invokes no interface probe or subprocess", pure_selection)
 
 direct_mismatch = copy.deepcopy(direct)
 direct_mismatch["caller_selection"]["resolved_agy_model"] = "claude-sonnet-4-6"
@@ -395,9 +393,9 @@ except evidence_receipt.ValidationFailure:
 case("pure selection validator rejects exact-model resolution mismatch", exact_selection_rejected)
 
 selection_source = (SCRIPTS / "model_selection.py").read_text(encoding="utf-8")
-selection_mutated = selection_source.replace(
-    'elif resolved_model != user_model:', 'elif False:', 1
-)
+selection_equality = "if any(record[key] != value for key, value in expected.items()):"
+assert selection_source.count(selection_equality) == 1
+selection_mutated = selection_source.replace(selection_equality, "if False:", 1)
 selection_namespace = {
     "__name__": "model_selection_mutation",
     "__file__": str(SCRIPTS / "model_selection.py"),
@@ -436,9 +434,6 @@ direct_advisory = copy.deepcopy(advisory)
 direct_advisory.pop("selected_tier")
 direct_advisory["user_model"] = "claude-sonnet-4-6"
 direct_advisory["resolved_agy_model"] = "claude-sonnet-4-6"
-direct_advisory["matrix_sha256"] = "2" * 64
-direct_advisory["matrix_agy_version"] = "1.1.11"
-direct_advisory["matrix_source_revision"] = "3" * 40
 direct_advisory["rationale"] = (
     "An explicit model/effort selection is caller-owned and unranked; "
     "this advisory cannot change or redispatch it."
@@ -453,11 +448,9 @@ except recommendation_record.RecommendationRecordError:
     exact_advisory_rejected = True
 case("pure recommendation validator rejects exact-model resolution mismatch", exact_advisory_rejected)
 
-equality_mutated = source.replace(
-    'if "user_effort" not in value and value["resolved_agy_model"] != value["user_model"]:',
-    'if False:',
-    1,
-)
+advisory_equality = 'if value["resolved_agy_model"] != value["user_model"]:'
+assert source.count(advisory_equality) == 1
+equality_mutated = source.replace(advisory_equality, "if False:", 1)
 equality_namespace = {
     "__name__": "recommendation_equality_mutation",
     "__file__": str(SCRIPTS / "recommendation_record.py"),
@@ -478,7 +471,7 @@ case(
 )
 recommender_source = (SCRIPTS / "model-recommendation.py").read_text(encoding="utf-8")
 case(
-    "recommender binds its output to the shared v1 validator",
+    "recommender binds its output to the shared v2 validator",
     "validate_recommendation_record(result)" in recommender_source,
 )
 report_source = (SCRIPTS / "evidence_report.py").read_text(encoding="utf-8")

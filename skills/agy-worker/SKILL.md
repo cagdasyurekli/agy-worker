@@ -40,8 +40,9 @@ Use initial `--allow-scoped-repair` for approved multi-turn scoped work. Approva
 human decision. Preview, transmission, state, candidate, and dispatch SHA values are
 mechanical bindings to that decision; refreshing a still-applicable binding is not another
 approval request. New scope, content exposure, destination, isolation, permissions or
-budget still require authority. Preserve required current raw-help/semantic version
-preflight on each launch; add no cache or alternate controller. Ordinary jobs require
+budget still require authority. Each launch requires the bounded capability probe and
+immediate executable-binding recheck; version text is diagnostic only. Do not require
+version activation or help-SHA approval. Ordinary jobs require
 neither hand-authored JSON nor Goal as a prerequisite (Goal remains an ordinary-use opt-in).
 
 Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds exact reviewed read entries, their selected-content digest, and a write subset, then stages only selected entries in a fresh owner-private mode-`0700` Gitless provider cwd.

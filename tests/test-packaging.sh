@@ -42,10 +42,10 @@ ground_truth_phase_contract() {
     mkdir -p "$fixture/bin" "$fixture/home/.gemini/antigravity-cli"
     printf '%s\n' \
         '#!/usr/bin/env bash' \
-        'printf "%s\\n" "$*" >> "$GROUND_TRUTH_LOG"' \
+        'printf "%s\\n" "$*" >> "${0%/*}/../calls.log"' \
         'case "$*" in' \
         '  --version) printf "%s\\n" "1.1.16" ;;' \
-        '  --help) printf "%s\\n" "usage: agy [--output-format] [--print]" ;;' \
+        '  --help) printf "%s\\n" "  --add-dir  Directory" "  --conversation  Conversation" "  --disable-slash-commands  Disabled" "  --effort  Effort" "  --json-schema  Schema" "  --mode  Mode (plan, accept-edits)" "  --model  Model" "  --output-format  Format (stream-json)" "  --print  Prompt" "  --print-timeout  Timeout" "  --sandbox  Sandbox" ;;' \
         '  models) printf "%s\\n" "model-a" ;;' \
         '  agents) printf "%s\\n" "agent-a" ;;' \
         '  "plugin list") printf "%s\\n" "plugin-a" ;;' \
@@ -61,9 +61,10 @@ ground_truth_phase_contract() {
     [[ ! -s "$fixture/interface.err" ]] \
         && grep -Fxq 'interface' "$fixture/interface.out" \
         && ! grep -Fq 'account phase' "$fixture/interface.out" \
-        && [[ "$(cat "$fixture/interface.log")" == $'--version\n--help' ]] \
+        && [[ "$(cat "$fixture/calls.log")" == $'--version\n--help' ]] \
         || return 1
 
+    : > "$fixture/calls.log"
     HOME="$fixture/home" PATH="$fixture/bin:$PATH" \
     GROUND_TRUTH_LOG="$fixture/account.log" "$helper" --account \
         > "$fixture/account.out" 2> "$fixture/account.err" || return 1
@@ -71,9 +72,10 @@ ground_truth_phase_contract() {
         && grep -Fxq 'account' "$fixture/account.out" \
         && grep -Fq 'models available to --model (account phase)' "$fixture/account.out" \
         && grep -Fq 'allow: [' "$fixture/account.out" \
-        && [[ "$(cat "$fixture/account.log")" == $'--version\n--help\nmodels\nagents\nplugin list' ]] \
+        && [[ "$(cat "$fixture/calls.log")" == $'--version\n--help\nmodels\nagents\nplugin list' ]] \
         || return 1
 
+    rm "$fixture/calls.log"
     HOME="$fixture/home" PATH="$fixture/bin:$PATH" \
     GROUND_TRUTH_LOG="$fixture/invalid.log" "$helper" --invalid \
         > "$fixture/invalid.out" 2> "$fixture/invalid.err"
@@ -81,7 +83,7 @@ ground_truth_phase_contract() {
     [[ "$rc" == 64 ]] \
         && [[ ! -s "$fixture/invalid.out" ]] \
         && grep -Fxq 'usage: ground-truth.sh [--account]' "$fixture/invalid.err" \
-        && [[ ! -e "$fixture/invalid.log" ]]
+        && [[ ! -e "$fixture/calls.log" ]]
 }
 
 echo "Codex distribution offline test suite"
@@ -101,56 +103,6 @@ listed = subprocess.run(
     stdout=subprocess.PIPE,
 ).stdout.split(b"\0")
 paths = {item.decode("utf-8") for item in listed if item}
-paths.update((
-    "scripts/models_capture_runner.py",
-    "tests/test-models-capture-runner.py",
-    "scripts/version_bootstrap_runner.py",
-    "tests/test-version-bootstrap-runner.py",
-    "scripts/version_initial_bootstrap_runner.py",
-    "tests/test-version-initial-bootstrap-runner.py",
-    "scripts/version_recovery_1_1_12_runner.py",
-    "tests/test-version-recovery-1-1-12-runner.py",
-    "scripts/models_capture_profile.py",
-    "tests/test-models-capture-profile.py",
-    "scripts/models_capture_1_1_12_profile.py",
-    "scripts/models_capture_1_1_12_runner.py",
-    "tests/test-models-capture-1-1-12.py",
-    "tests/test-models-capture-1-1-12-profile.py",
-    "tests/test-models-capture-1-1-12-runner.py",
-    "scripts/models_capture_1_1_16_version_evidence.py",
-    "scripts/models_capture_1_1_16_profile.py",
-    "scripts/models_capture_1_1_16_runner.py",
-    "tests/test-models-capture-1-1-16.py",
-    "tests/test-models-capture-1-1-16-version-evidence.py",
-    "tests/test-models-capture-1-1-16-profile.py",
-    "tests/test-models-capture-1-1-16-runner.py",
-    "scripts/models_capture_1_1_22_version_evidence.py",
-    "scripts/models_capture_1_1_22_profile.py",
-    "scripts/models_capture_1_1_22_runner.py",
-    "scripts/models_capture_1_1_22_classifier.py",
-    "tests/test-models-capture-1-1-22.py",
-    "tests/test-models-capture-1-1-22-version-evidence.py",
-    "tests/test-models-capture-1-1-22-profile.py",
-    "tests/test-models-capture-1-1-22-runner.py",
-    "scripts/models_capture_1_1_22_reprofile.py",
-    "scripts/version_manifest_version_evidence.py",
-    "scripts/version_manifest_capture_profile.py",
-    "scripts/version_manifest_capture_runner.py",
-    "scripts/version_manifest_capture_classifier.py",
-    "scripts/version_manifest_reprofile.py",
-    "tests/test-models-capture-1-1-22-classifier.py",
-    "tests/test-models-capture-1-1-22-reprofile.py",
-    "tests/test-agy-1-1-16-activation.py",
-    "scripts/version_manifest_engine.py",
-    "scripts/version_copy_guard.py",
-    "tests/test-version-manifest-engine.py",
-    "compat/agy-version-manifest.json",
-    "compat/agy-version-manifest.sha256",
-    "compat/version-manifest.schema.json",
-    "skills/agy-worker/runtime/compat/agy-version-manifest.json",
-    "skills/agy-worker/runtime/compat/agy-version-manifest.sha256",
-    "skills/agy-worker/runtime/compat/version-manifest.schema.json",
-))
 for relative in sorted(paths):
     path = root / relative
     try:
@@ -262,11 +214,6 @@ else:
 assert len(workflow_files) > 0, "No workflows found"
 PINNED = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 EXPECTED_BLOCKS = {
-    "compatibility-watch.yml": (
-        f"      - uses: {PINNED}\n"
-        "        with:\n"
-        "          persist-credentials: false\n"
-    ),
     "test.yml": (
         f"      - uses: {PINNED}\n"
         "        with:\n"
@@ -276,7 +223,6 @@ EXPECTED_BLOCKS = {
     ),
 }
 EXPECTED_COUNTS = {
-    "compatibility-watch.yml": 1,
     "test.yml": 4,
 }
 
@@ -360,22 +306,15 @@ assert not any(token in offline_text for token in ("curl ", "wget ", "git fetch"
 sys.path.insert(0, str(stages_file.parent))
 import ci_stages
 
-assert len(ci_stages.STAGES) == 36
-assert len({s.id for s in ci_stages.STAGES}) == 36
+assert len(ci_stages.STAGES) == 22
+assert len({s.id for s in ci_stages.STAGES}) == 22
 assert set(ci_stages.SHARDS) == {"dispatcher", "dispatcher-remediation", "other-a", "other-b"}
 
 required_stage_ids = (
     "diff-hygiene", "shell-syntax", "python-syntax", "qa-gate", "evidence-receipt",
     "evidence-report", "job-lifecycle",
     "dispatcher", "dispatcher-remediation", "provider-containment", "self-verification", "self-verification-lifecycle",
-    "updater", "update-notifier", "version-attestation-runner",
-    "version-bootstrap-preflight", "version-bootstrap-runner",
-    "version-initial-bootstrap-runner",
-    "version-attestation-harness", "models-attestation-runner", "models-capture-runner",
-    "models-capture-profile", "models-capture-1-1-22-version-evidence",
-    "models-capture-1-1-22-profile", "models-capture-1-1-22-runner",
-    "models-capture-1-1-22-reprofile", "models-capture-1-1-22-classifier",
-    "agy-1-1-22-activation",
+    "updater", "update-notifier",
     "delegation-policy", "workflow", "workflow-integration", "packaging",
     "doctor", "conformance", "proof-demo", "bytecode-hygiene",
 )
@@ -638,7 +577,7 @@ for wf in "$ROOT/.github/workflows"/*.yml; do
     cp "$wf" "$TMP/workflow-policy-mutations/"
 done
 
-python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/test.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
@@ -650,9 +589,9 @@ if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/n
 else
     bad "workflow checkout policy rejects mutable checkout tag in any workflow"
 fi
-cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
+cp "$ROOT/.github/workflows/test.yml" "$TMP/workflow-policy-mutations/test.yml"
 
-python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/test.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
@@ -664,9 +603,9 @@ if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/n
 else
     bad "workflow checkout policy rejects different checkout SHA in any workflow"
 fi
-cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
+cp "$ROOT/.github/workflows/test.yml" "$TMP/workflow-policy-mutations/test.yml"
 
-python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/test.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
@@ -681,19 +620,19 @@ if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/n
 else
     bad "workflow checkout policy rejects a credential marker hidden in a comment"
 fi
-cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
+cp "$ROOT/.github/workflows/test.yml" "$TMP/workflow-policy-mutations/test.yml"
 
-python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/test.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 t = p.read_text(encoding="utf-8")
-old = "        with:\n          persist-credentials: false\n"
+old = "        with:\n          fetch-depth: 0\n          persist-credentials: false\n"
 new = (
     "        env:\n"
     "          CHECKOUT_PERSIST_CREDENTIALS: \"false\" # persist-credentials: false\n"
 )
-assert t.count(old) == 1
+assert t.count(old) == 4
 p.write_text(t.replace(old, new), encoding="utf-8")
 PY
 if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/null; then
@@ -701,14 +640,14 @@ if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/n
 else
     bad "workflow checkout policy rejects credentials mis-scoped under env"
 fi
-cp "$ROOT/.github/workflows/compatibility-watch.yml" "$TMP/workflow-policy-mutations/compatibility-watch.yml"
+cp "$ROOT/.github/workflows/test.yml" "$TMP/workflow-policy-mutations/test.yml"
 
-python3 - "$TMP/workflow-policy-mutations/compatibility-watch.yml" <<'PY'
+python3 - "$TMP/workflow-policy-mutations/test.yml" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 t = p.read_text(encoding="utf-8")
-p.write_text(t.replace("      - name: Check fixed official compatibility evidence", "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n      - name: Check fixed official compatibility evidence"), encoding="utf-8")
+p.write_text(t.replace("      - name: committed diff hygiene", "      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd\n      - name: committed diff hygiene"), encoding="utf-8")
 PY
 if ! workflow_checkout_policy_contract "$TMP/workflow-policy-mutations" 2>/dev/null; then
     ok "workflow checkout policy rejects extra unprotected checkout step in any workflow"
@@ -1723,7 +1662,7 @@ if [[ -x "$ROOT/doctor.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/doctor.sh" ]] \
         && [[ -x "$ROOT/ground-truth.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/ground-truth.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/doctor-metadata.py" ]] \
+        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" ]] \
         && ground_truth_phase_contract "$ROOT/ground-truth.sh" root \
         && ground_truth_phase_contract "$ROOT/skills/agy-worker/runtime/ground-truth.sh" runtime; then
     ok "root and portable ground-truth phases preserve their read-only boundary"
@@ -1887,15 +1826,12 @@ required_runtime_dependencies=(
     scripts/recommendation_record.py
     scripts/model-recommendation.py
     scripts/model_selection.py
-    scripts/compatibility.py
     scripts/candidate_state.py
     scripts/agy_dispatch.py
     scripts/agy_dispatch_worktree.py
     scripts/agy_dispatch_containment.py
     scripts/agy_dispatch_verification.py
-    scripts/version_manifest_engine.py
     scripts/job_lifecycle.py
-    scripts/doctor-metadata.py
     scripts/delegation_policy.py
     schemas/workflow-state.schema.json
     schemas/worker-result.schema.json
@@ -1905,15 +1841,6 @@ required_runtime_dependencies=(
     schemas/model-recommendation.schema.json
     schemas/job-state.schema.json
     schemas/delegation-policy.schema.json
-    compat/agy-verified-version.txt
-    compat/agy-upstream-head.txt
-    compat/agy-last-reviewed.txt
-    compat/agy-model-effort-matrix.json
-    compat/model-effort-matrix.schema.json
-    compat/agy-model-effort-matrix.sha256
-    compat/agy-version-manifest.json
-    compat/agy-version-manifest.sha256
-    compat/version-manifest.schema.json
 )
 for dependency in "${required_runtime_dependencies[@]}"; do
     label="${dependency//\//-}"
@@ -1966,7 +1893,50 @@ else
     bad "resolver accepts bundle-owned real runtime parent directories"
 fi
 
-for parent in scripts agents schemas compat; do
+# Git distributions contain files, never the checkout's empty directories.
+tracked_source="$TMP/tracked-source"
+tracked_install="$TMP/tracked-install"
+if python3 -B - "$ROOT" "$tracked_source" <<'PYTRACKED'
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+root, target = map(Path, sys.argv[1:])
+paths = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "--", "install.sh", "skills/agy-worker"])
+for raw in paths.split(b"\0"):
+    if not raw:
+        continue
+    relative = Path(raw.decode("utf-8"))
+    source = root / relative
+    if not source.exists():  # Deleted tracked paths await the final commit.
+        continue
+    assert source.is_file() and not source.is_symlink(), relative
+    destination = target / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+assert not (target / "skills/agy-worker/runtime/agents").exists()
+PYTRACKED
+then
+    tracked_folder_root="$(bash "$tracked_source/skills/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
+    HOME="$TMP/tracked-home" CODEX_SKILLS_DIR="$tracked_install" \
+        bash "$tracked_source/install.sh" > "$TMP/tracked-install.out" 2> "$TMP/tracked-install.err"
+    tracked_install_rc=$?
+    # Remove the advisory checkout marker to prove installed runtime fallback.
+    rm -f "$tracked_install/agy-worker/.pipeline-root"
+    tracked_installed_root="$(bash "$tracked_install/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
+    if [[ "$tracked_install_rc" == 0 \
+            && "$tracked_folder_root" == "$(cd "$tracked_source/skills/agy-worker/runtime" && pwd -P)" \
+            && "$tracked_installed_root" == "$(cd "$tracked_install/agy-worker/runtime" && pwd -P)" \
+            && ! -e "$tracked_install/agy-worker/runtime/agents" ]]; then
+        ok "tracked-file folder and installed bundle resolve without untracked empty directories"
+    else
+        bad "tracked-file folder and installed bundle resolve without untracked empty directories"
+    fi
+else
+    bad "tracked-file folder and installed bundle resolve without untracked empty directories"
+fi
+
+for parent in scripts schemas; do
     for link_kind in absolute relative in-root; do
         parent_copy="$TMP/parent-$parent-$link_kind"
         foreign_parent="$TMP/foreign-$parent-$link_kind"
@@ -2023,9 +1993,7 @@ for specification in \
     'schemas/worker-result.schema.json:data' \
     'schemas/evidence-receipt.schema.json:data' \
     'schemas/job-state.schema.json:data' \
-    'schemas/delegation-policy.schema.json:data' \
-    'compat/agy-verified-version.txt:data' \
-    'compat/agy-model-effort-matrix.json:data'; do
+    'schemas/delegation-policy.schema.json:data'; do
     dependency="${specification%:*}"
     dependency_class="${specification##*:}"
     for wrong_type in directory symlink-directory symlink-foreign fifo wrong-mode; do
@@ -2122,7 +2090,7 @@ mkdir -p "$workflow_compile_fixture/conformance/v1" \
     "$workflow_compile_fixture/scripts" \
     "$workflow_compile_fixture/skills/agy-worker/runtime/scripts"
 cp "$ROOT/conformance/v1/run.py" "$workflow_compile_fixture/conformance/v1/run.py"
-cp "$ROOT/scripts/compatibility.py" "$workflow_compile_fixture/scripts/compatibility.py"
+cp "$ROOT/scripts/official_github.py" "$workflow_compile_fixture/scripts/official_github.py"
 cp "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" \
     "$workflow_compile_fixture/skills/agy-worker/runtime/scripts/model_selection.py"
 (
@@ -2160,7 +2128,7 @@ fi
 plain_compile_fixture="$TMP/plain-compile-fixture"
 mkdir -p "$plain_compile_fixture/scripts" \
     "$plain_compile_fixture/skills/agy-worker/runtime/scripts"
-cp "$ROOT/scripts/compatibility.py" "$plain_compile_fixture/scripts/compatibility.py"
+cp "$ROOT/scripts/official_github.py" "$plain_compile_fixture/scripts/official_github.py"
 cp "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" \
     "$plain_compile_fixture/skills/agy-worker/runtime/scripts/model_selection.py"
 (
@@ -2235,343 +2203,75 @@ else
     bad "starter proof fixes the maintained gate and its bounded success contract"
 fi
 
-if cmp -s "$ROOT/compat/agy-verified-version.txt" \
-        "$ROOT/skills/agy-worker/runtime/compat/agy-verified-version.txt" \
-        && cmp -s "$ROOT/compat/agy-upstream-head.txt" \
-        "$ROOT/skills/agy-worker/runtime/compat/agy-upstream-head.txt" \
-        && cmp -s "$ROOT/compat/agy-last-reviewed.txt" \
-        "$ROOT/skills/agy-worker/runtime/compat/agy-last-reviewed.txt" \
-        && cmp -s "$ROOT/compat/agy-models-inventory-binding.json" \
-            "$ROOT/skills/agy-worker/runtime/compat/agy-models-inventory-binding.json" \
-        && cmp -s "$ROOT/compat/agy-models-inventory-binding.sha256" \
-            "$ROOT/skills/agy-worker/runtime/compat/agy-models-inventory-binding.sha256" \
-        && [[ "$(<"$ROOT/compat/agy-verified-version.txt")" == "1.2.11" ]] \
-        && grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' "$ROOT/compat/agy-last-reviewed.txt" \
-        && grep -Fxq -- "- **Reviewed Date**: $(<"$ROOT/compat/agy-last-reviewed.txt")" \
-            "$ROOT/compat/reviews/agy-1.2.11-activation.md"; then
-    ok "portable doctor metadata is byte-synchronized with canonical compatibility records"
-else
-    bad "portable doctor metadata is byte-synchronized with canonical compatibility records"
-fi
-
-if cmp -s "$ROOT/compat/agy-model-effort-matrix.json" \
-        "$ROOT/skills/agy-worker/runtime/compat/agy-model-effort-matrix.json" \
-        && cmp -s "$ROOT/compat/model-effort-matrix.schema.json" \
-            "$ROOT/skills/agy-worker/runtime/compat/model-effort-matrix.schema.json" \
-        && cmp -s "$ROOT/compat/agy-model-effort-matrix.sha256" \
-            "$ROOT/skills/agy-worker/runtime/compat/agy-model-effort-matrix.sha256" \
-        && python3 - "$ROOT/compat/agy-model-effort-matrix.json" \
-            "$ROOT/compat/agy-model-effort-matrix.sha256" <<'PY'
-import hashlib
-import sys
-
-actual = hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
-expected = open(sys.argv[2], encoding="ascii").read().strip()
-assert actual == expected
-PY
-then
-    ok "portable resolver matrix, schema, and exact SHA are byte-synchronized"
-else
-    bad "portable resolver matrix, schema, and exact SHA are byte-synchronized"
-fi
-
-if cmp -s "$ROOT/compat/agy-version-manifest.json" \
-        "$ROOT/skills/agy-worker/runtime/compat/agy-version-manifest.json" \
-        && cmp -s "$ROOT/compat/agy-version-manifest.sha256" \
-            "$ROOT/skills/agy-worker/runtime/compat/agy-version-manifest.sha256" \
-        && cmp -s "$ROOT/compat/version-manifest.schema.json" \
-            "$ROOT/skills/agy-worker/runtime/compat/version-manifest.schema.json" \
-        && python3 - "$ROOT/compat/agy-version-manifest.json" \
-            "$ROOT/compat/agy-version-manifest.sha256" <<'PY'
-import hashlib
-import sys
-
-actual = hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()
-expected = open(sys.argv[2], encoding="ascii").read().strip()
-assert actual == expected
-PY
-then
-    ok "portable version manifest, schema, and exact SHA are byte-synchronized"
-else
-    bad "portable version manifest, schema, and exact SHA are byte-synchronized"
-fi
-
-if [[ -f "$ROOT/scripts/version_manifest_engine.py" ]] \
-        && [[ -f "$ROOT/scripts/version_copy_guard.py" ]] \
-        && /usr/bin/python3 -I -S -B "$ROOT/scripts/version_copy_guard.py" \
-        && /usr/bin/python3 -I -S -B "$ROOT/tests/test-version-manifest-engine.py"; then
-    ok "version manifest engine and copy guard pass offline contracts"
-else
-    bad "version manifest engine and copy guard pass offline contracts"
-fi
-
-if python3 -B - "$ROOT/skills/agy-worker/runtime/schemas/model-selection.schema.json" \
-        "$ROOT/skills/agy-worker/runtime/compat/agy-verified-version.txt" <<'PY'
+if python3 -B - "$ROOT/skills/agy-worker/runtime/schemas/model-selection.schema.json" <<'PYSCHEMA'
 import copy
 import json
 import sys
-
 schema = json.load(open(sys.argv[1], encoding="utf-8"))
-matrix_version = open(sys.argv[2], encoding="ascii").read().strip()
-
-required = {
-    "legacy tier selection": {
-        "schema_version", "kind", "selection_mode", "selected_tier",
-        "selected_tier_source", "resolved_agy_model",
-    },
-    "unreconciled literal model selection": {
-        "schema_version", "kind", "selection_mode", "user_model",
-        "user_model_source", "resolved_agy_model", "compatibility_status",
-    },
-    "exact reviewed model selection": {
-        "schema_version", "kind", "selection_mode", "user_model",
-        "user_model_source", "resolved_agy_model", "installed_agy_version",
-        "matrix_sha256", "matrix_agy_version", "matrix_source_revision",
-    },
-    "reviewed model and effort selection": {
-        "schema_version", "kind", "selection_mode", "user_model",
-        "user_model_source", "user_effort", "user_effort_source",
-        "resolved_agy_model", "installed_agy_version", "matrix_sha256",
-        "matrix_agy_version", "matrix_source_revision",
-    },
-    "v2 exact reviewed model selection": {
-        "schema_version", "kind", "selection_mode", "user_model", "user_model_source",
-        "resolved_agy_model", "installed_agy_version", "matrix_sha256",
-        "matrix_agy_version", "matrix_source_revision", "version_relation",
-        "compatibility_status", "critical_interface_probe_version",
-        "critical_interface_status", "critical_capabilities_sha256", "help_sha256",
-        "model_availability", "probed_executable",
-    },
-    "v2 reviewed model and effort selection": {
-        "schema_version", "kind", "selection_mode", "user_model", "user_model_source",
-        "user_effort", "user_effort_source", "resolved_agy_model",
-        "installed_agy_version", "matrix_sha256", "matrix_agy_version",
-        "matrix_source_revision", "version_relation", "compatibility_status",
-        "critical_interface_probe_version", "critical_interface_status",
-        "critical_capabilities_sha256", "help_sha256", "model_availability",
-        "probed_executable",
-    },
-    "v3 approved drift exact-model selection": {
-        "schema_version", "kind", "selection_mode", "user_model", "user_model_source",
-        "resolved_agy_model", "installed_agy_version", "matrix_sha256",
-        "matrix_agy_version", "matrix_source_revision", "version_relation",
-        "compatibility_status", "critical_interface_probe_version",
-        "critical_interface_status", "critical_capabilities_sha256", "help_sha256",
-        "model_availability", "probed_executable", "compatibility_disposition",
-        "approved_help_sha256", "compatibility_decision_sha256",
-    },
-    "v3 approved drift model and effort selection": {
-        "schema_version", "kind", "selection_mode", "user_model", "user_model_source",
-        "user_effort", "user_effort_source", "resolved_agy_model",
-        "installed_agy_version", "matrix_sha256", "matrix_agy_version",
-        "matrix_source_revision", "version_relation", "compatibility_status",
-        "critical_interface_probe_version", "critical_interface_status",
-        "critical_capabilities_sha256", "help_sha256", "model_availability",
-        "probed_executable", "compatibility_disposition", "approved_help_sha256",
-        "compatibility_decision_sha256",
-    },
-}
-forbidden = {
-    "legacy tier selection": {
-        "user_model", "user_model_source", "user_effort", "user_effort_source",
-        "installed_agy_version", "matrix_sha256", "matrix_agy_version",
-        "matrix_source_revision",
-        "compatibility_status", "version_relation", "critical_interface_probe_version",
-        "critical_interface_status", "critical_capabilities_sha256", "help_sha256",
-        "model_availability", "probed_executable", "compatibility_disposition",
-        "approved_help_sha256", "compatibility_decision_sha256",
-    },
-    "unreconciled literal model selection": {
-        "selected_tier", "selected_tier_source", "user_effort", "user_effort_source",
-        "installed_agy_version", "matrix_sha256", "matrix_agy_version",
-        "matrix_source_revision",
-        "version_relation", "critical_interface_probe_version", "critical_interface_status",
-        "critical_capabilities_sha256", "help_sha256", "model_availability", "probed_executable",
-        "compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256",
-    },
-    "exact reviewed model selection": {
-        "selected_tier", "selected_tier_source", "user_effort", "user_effort_source",
-        "compatibility_status", "version_relation", "critical_interface_probe_version",
-        "critical_interface_status", "critical_capabilities_sha256", "help_sha256",
-        "model_availability", "probed_executable", "compatibility_disposition",
-        "approved_help_sha256", "compatibility_decision_sha256",
-    },
-    "reviewed model and effort selection": {
-        "selected_tier", "selected_tier_source", "compatibility_status",
-        "version_relation", "critical_interface_probe_version", "critical_interface_status",
-        "critical_capabilities_sha256", "help_sha256", "model_availability", "probed_executable",
-        "compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256",
-    },
-    "v2 exact reviewed model selection": {
-        "selected_tier", "selected_tier_source", "user_effort", "user_effort_source",
-        "compatibility_disposition", "approved_help_sha256",
-        "compatibility_decision_sha256",
-    },
-    "v2 reviewed model and effort selection": {
-        "selected_tier", "selected_tier_source",
-        "compatibility_disposition", "approved_help_sha256",
-        "compatibility_decision_sha256",
-    },
-    "v3 approved drift exact-model selection": {
-        "selected_tier", "selected_tier_source", "user_effort", "user_effort_source",
-    },
-    "v3 approved drift model and effort selection": {
-        "selected_tier", "selected_tier_source",
-    },
-}
-
-def assert_strict(value):
+def check_schema(value):
     assert value["additionalProperties"] is False
-    assert set(value["required"]) == {"schema_version", "kind", "selection_mode"}
-    assert "reviewed_help_sha256" not in value["properties"]
-    binding = value["properties"]["probed_executable"]
+    assert set(value["required"]) == {"schema_version", "kind", "selection_mode", "resolved_agy_model"}
+    props = value["properties"]
+    assert props["schema_version"]["const"] == 4
+    assert set(props) == {"schema_version", "kind", "selection_mode", "resolved_agy_model", "selected_tier", "selected_tier_source", "user_model", "user_model_source", "user_effort", "user_effort_source", "installed_agy_version", "probed_executable"}
+    assert set(props["selection_mode"]["enum"]) == {"tier", "exact-model", "model-effort"}
+    modes = {v["properties"]["selection_mode"]["const"]: v for v in value["oneOf"]}
+    expected = {"tier": {"selected_tier", "selected_tier_source"}, "exact-model": {"user_model", "user_model_source"}, "model-effort": {"user_model", "user_model_source", "user_effort", "user_effort_source"}}
+    selectors = set().union(*expected.values())
+    for mode, required in expected.items():
+        assert set(modes[mode]["required"]) == required
+        assert {tuple(x["required"]) for x in modes[mode]["not"]["anyOf"]} == {(key,) for key in selectors - required}
+    assert value["dependencies"] == {"installed_agy_version": ["probed_executable"], "probed_executable": ["installed_agy_version"]}
+    binding = props["probed_executable"]
     assert binding["additionalProperties"] is False
-    assert set(binding["required"]) == {
-        "path_sha256", "target_lstat", "symlink_chain", "components",
-    }
-    assert binding["properties"]["content_sha256"] == {
-        "type": "string", "pattern": "^[0-9a-f]{64}$",
-    }
+    assert set(binding["required"]) == set(binding["properties"]) == {"path_sha256", "target_lstat", "symlink_chain", "components", "content_sha256"}
+    assert binding["properties"]["content_sha256"] == {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     lstat = binding["properties"]["target_lstat"]
     assert lstat["additionalProperties"] is False
-    assert set(lstat["required"]) == {
-        "device", "inode", "mode", "uid", "gid", "size", "mtime_ns",
-    }
-    assert lstat["properties"]["ctime_ns"] == {"type": "integer", "minimum": 0}
-    variants = {variant["title"]: variant for variant in value["oneOf"]}
-    assert set(variants) == set(required)
-    assert value["properties"]["schema_version"]["enum"] == [1, 2, 3]
-    for title, expected in required.items():
-        variant = variants[title]
-        assert set(variant["required"]) == expected
-        blocked = {
-            tuple(rule["required"])[0]
-            for rule in variant["not"]["anyOf"]
-            if len(rule.get("required", [])) == 1
-        }
-        assert blocked == forbidden[title]
-    tier_conditions = json.dumps(variants["legacy tier selection"]["allOf"], sort_keys=True)
-    assert '"const": "default"' in tier_conditions and '"type": "null"' in tier_conditions
-    assert '"const": "implicit-default"' in tier_conditions
-    assert tier_conditions.count('"const": "default"') >= 2
-    expected_relation = {
-        "oneOf": [
-            {"properties": {
-                "installed_agy_version": {"const": matrix_version},
-                "matrix_agy_version": {"const": matrix_version},
-                "version_relation": {"const": "match"},
-                "compatibility_status": {"const": "reviewed-version-match"},
-            }},
-            {"properties": {
-                "installed_agy_version": {"not": {"const": matrix_version}},
-                "matrix_agy_version": {"const": matrix_version},
-                "version_relation": {"const": "drift"},
-                "compatibility_status": {"const": "critical-interface-compatible-version-drift"},
-            }},
-        ],
-    }
-    expected_v3_relation = {
-        "properties": {
-            "installed_agy_version": {"not": {"const": matrix_version}},
-            "matrix_agy_version": {"const": matrix_version},
-            "version_relation": {"const": "drift"},
-            "compatibility_status": {"const": "critical-interface-compatible-version-drift"},
-        },
-    }
-    assert value.get("definitions") == {
-        "v2_version_relation": expected_relation,
-        "v3_approved_help": expected_v3_relation,
-    }
-    for title in ("v2 exact reviewed model selection", "v2 reviewed model and effort selection"):
-        assert variants[title]["allOf"] == [{"$ref": "#/definitions/v2_version_relation"}]
-    for title in ("v3 approved drift exact-model selection", "v3 approved drift model and effort selection"):
-        assert variants[title]["allOf"] == [{"$ref": "#/definitions/v3_approved_help"}]
-        props = variants[title]["properties"]
-        assert props["schema_version"] == {"const": 3}
-        assert props["compatibility_disposition"] == {"const": "proceed"}
-
-def relation_accepts(record):
-    relation = schema["definitions"]["v2_version_relation"]
-    for variant in relation["oneOf"]:
-        if any(key not in record for key in variant.get("required", ())):
-            continue
-        accepted = True
-        for field, rule in variant["properties"].items():
-            if "const" in rule and record.get(field) != rule["const"]:
-                accepted = False
-            if "not" in rule and record.get(field) == rule["not"]["const"]:
-                accepted = False
-        if accepted:
-            return True
-    return False
-
-assert_strict(schema)
-match = {
-    "installed_agy_version": matrix_version, "matrix_agy_version": matrix_version,
-    "version_relation": "match", "compatibility_status": "reviewed-version-match",
-}
-drift = {
-    "installed_agy_version": "9.9.9", "matrix_agy_version": matrix_version,
-    "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-}
-assert relation_accepts(match) and relation_accepts(drift)
-for invalid in (
-    {**match, "version_relation": "drift"},
-    {**match, "compatibility_status": "critical-interface-compatible-version-drift"},
-    {**drift, "version_relation": "match"},
-    {**drift, "compatibility_status": "reviewed-version-match"},
-    {**match, "matrix_agy_version": "9.9.9", "installed_agy_version": "9.9.9"},
-):
-    assert not relation_accepts(invalid)
+    assert set(lstat["required"]) == set(lstat["properties"]) == {"device", "inode", "mode", "uid", "gid", "size", "mtime_ns", "ctime_ns"}
+    for key, rule in lstat["properties"].items():
+        assert rule == {"type": "integer", "minimum": 1 if key in {"device", "inode", "mode"} else 0}
+    for array, keys, bound in (("symlink_chain", {"path_sha256", "lstat", "target_sha256"}, 16), ("components", {"path_sha256", "lstat"}, 128)):
+        rule = binding["properties"][array]
+        assert rule["type"] == "array" and rule["maxItems"] == bound
+        item = rule["items"]
+        assert item["additionalProperties"] is False
+        assert set(item["required"]) == set(item["properties"]) == keys
+        assert item["properties"]["lstat"] == lstat
+    assert props["user_model_source"]["enum"] == props["user_effort_source"]["enum"] == ["cli", "environment"]
+    tier = modes["tier"]["allOf"]
+    assert tier == [
+        {"if": {"required": ["selected_tier"], "properties": {"selected_tier": {"const": "default"}}},
+         "then": {"properties": {"resolved_agy_model": {"type": "null"}}},
+         "else": {"properties": {"resolved_agy_model": {"type": "string", "minLength": 1}}}},
+        {"if": {"required": ["selected_tier_source"], "properties": {"selected_tier_source": {"const": "implicit-default"}}},
+         "then": {"properties": {"selected_tier": {"const": "default"}}}},
+    ]
+    for mode in ("exact-model", "model-effort"):
+        assert modes[mode]["properties"]["resolved_agy_model"] == {"type": "string", "minLength": 1}
+check_schema(schema)
 mutants = []
-mutant = copy.deepcopy(schema)
-mutant["additionalProperties"] = True
-mutants.append(mutant)
-mutant = copy.deepcopy(schema)
-mutant["oneOf"][4]["required"].remove("help_sha256")
-mutants.append(mutant)
-mutant = copy.deepcopy(schema)
-mutant["oneOf"][0]["not"]["anyOf"] = mutant["oneOf"][0]["not"]["anyOf"][1:]
-mutants.append(mutant)
-mutant = copy.deepcopy(schema)
-mutant["oneOf"][0]["allOf"] = mutant["oneOf"][0]["allOf"][:1]
-mutants.append(mutant)
-mutant = copy.deepcopy(schema)
-mutant["definitions"]["v2_version_relation"]["oneOf"][1]["properties"]["version_relation"]["const"] = "match"
-mutants.append(mutant)
-mutant = copy.deepcopy(schema)
-mutant["definitions"]["v2_version_relation"]["oneOf"][0]["required"] = []
-mutants.append(mutant)
+for kind in ("extra", "missing", "forbidden", "dependency", "binding", "lstat", "nested-lstat", "tier", "direct"):
+    mutant = copy.deepcopy(schema)
+    if kind == "extra": mutant["additionalProperties"] = True
+    elif kind == "missing": mutant["oneOf"][2]["required"].remove("user_effort_source")
+    elif kind == "forbidden": mutant["oneOf"][0]["not"]["anyOf"].pop()
+    elif kind == "dependency": mutant["dependencies"].pop("probed_executable")
+    elif kind == "binding": mutant["properties"]["probed_executable"]["required"].remove("content_sha256")
+    elif kind == "lstat": mutant["properties"]["probed_executable"]["properties"]["target_lstat"]["required"].remove("ctime_ns")
+    elif kind == "nested-lstat": mutant["properties"]["probed_executable"]["properties"]["components"]["items"]["properties"]["lstat"]["additionalProperties"] = True
+    elif kind == "tier": mutant["oneOf"][0]["allOf"].pop()
+    else: mutant["oneOf"][1]["properties"].pop("resolved_agy_model")
+    mutants.append(mutant)
 for mutant in mutants:
-    try:
-        assert_strict(mutant)
-    except (AssertionError, KeyError, TypeError):
-        continue
-    raise AssertionError("weakened selection schema mutant was accepted")
-PY
+    try: check_schema(mutant)
+    except (AssertionError, KeyError, TypeError): continue
+    raise AssertionError("weakened packaged selection schema was accepted")
+PYSCHEMA
 then
-    ok "selection schema derives v2 relation/status and rejects required, forbidden, conditional, and extra-field weakening"
+    ok "selection v4 schema preserves exact choice, provenance, executable pairing and closed fields"
 else
-    bad "selection schema derives v2 relation/status and rejects required, forbidden, conditional, and extra-field weakening"
-fi
-
-TAMPERED_PORTABLE="$TMP/tampered-portable-metadata"
-cp -R "$ROOT/skills/agy-worker" "$TAMPERED_PORTABLE"
-printf '9.9.9\n' > "$TAMPERED_PORTABLE/runtime/compat/agy-verified-version.txt"
-if ! cmp -s "$ROOT/compat/agy-verified-version.txt" \
-        "$TAMPERED_PORTABLE/runtime/compat/agy-verified-version.txt"; then
-    ok "portable metadata tampering breaks canonical byte identity"
-else
-    bad "portable metadata tampering breaks canonical byte identity"
-fi
-
-printf '%040d\n' 0 > "$TAMPERED_PORTABLE/runtime/compat/agy-upstream-head.txt"
-if ! cmp -s "$ROOT/compat/agy-upstream-head.txt" \
-        "$TAMPERED_PORTABLE/runtime/compat/agy-upstream-head.txt"; then
-    ok "portable source-revision tampering breaks canonical byte identity"
-else
-    bad "portable source-revision tampering breaks canonical byte identity"
+    bad "selection v4 schema preserves exact choice, provenance, executable pairing and closed fields"
 fi
 
 resolved="$(bash "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
@@ -2728,24 +2428,23 @@ PATH="$TMP/selector-bin:$PATH" NETWORK_MARKER="$TMP/network-called" \
     "$copied_pipeline/model-selection.sh" --model gemini-3.6-flash --effort high \
     > "$TMP/copied-selection.json" 2> "$TMP/copied-selection.err"
 rc=$?
-copied_selection_v2=0
+copied_selection_v4=0
 if python3 -B - "$TMP/copied-selection.json" <<'PY'
 import json
 import sys
 
 record = json.load(open(sys.argv[1], encoding="utf-8"))
-assert record["schema_version"] == 2
+assert record["schema_version"] == 4
 assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(record))
 PY
 then
-    copied_selection_v2=1
+    copied_selection_v4=1
 fi
 if [[ "$rc" == 0 ]] \
-        && grep -Fq '"resolved_agy_model": "gemini-3.6-flash-high"' \
+        && grep -Fq '"resolved_agy_model": "gemini-3.6-flash"' \
             "$TMP/copied-selection.json" \
-        && grep -Fq '"matrix_sha256": "aa68858376863c4f41e1482bd215b7f3696a8cec66174501846116dec1559592"' \
-            "$TMP/copied-selection.json" \
-        && [[ "$copied_selection_v2" == 1 ]] \
+        && grep -Fq '"user_effort": "high"' "$TMP/copied-selection.json" \
+        && [[ "$copied_selection_v4" == 1 ]] \
         && [[ ! -e "$TMP/network-called" ]]; then
     ok "skill-folder-only copy resolves an exact direct selector offline"
 else
@@ -2924,26 +2623,16 @@ if [[ -x "$ROOT/agy-worker.sh" ]] \
         && [[ ! -x "$TMP/installed/agy-worker/runtime/scripts/agy_dispatch_containment.py" ]] \
         && [[ -f "$TMP/installed/agy-worker/runtime/scripts/agy_dispatch_verification.py" ]] \
         && [[ ! -x "$TMP/installed/agy-worker/runtime/scripts/agy_dispatch_verification.py" ]] \
-        && [[ -x "$TMP/installed/agy-worker/runtime/scripts/doctor-metadata.py" ]] \
+        && [[ -x "$TMP/installed/agy-worker/runtime/scripts/model_selection.py" ]] \
         && grep -Fq '`"$PIPELINE/scripts/agy_dispatch.py"`' \
             "$TMP/installed/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && cmp -s "$ROOT/compat/agy-verified-version.txt" \
-            "$TMP/installed/agy-worker/runtime/compat/agy-verified-version.txt" \
-        && cmp -s "$ROOT/compat/agy-upstream-head.txt" \
-            "$TMP/installed/agy-worker/runtime/compat/agy-upstream-head.txt" \
-        && cmp -s "$ROOT/compat/agy-last-reviewed.txt" \
-            "$TMP/installed/agy-worker/runtime/compat/agy-last-reviewed.txt" \
-        && cmp -s "$ROOT/compat/agy-model-effort-matrix.json" \
-            "$TMP/installed/agy-worker/runtime/compat/agy-model-effort-matrix.json" \
-        && cmp -s "$ROOT/compat/model-effort-matrix.schema.json" \
-            "$TMP/installed/agy-worker/runtime/compat/model-effort-matrix.schema.json" \
-        && cmp -s "$ROOT/compat/agy-model-effort-matrix.sha256" \
-            "$TMP/installed/agy-worker/runtime/compat/agy-model-effort-matrix.sha256" \
+        && cmp -s "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" \
+            "$TMP/installed/agy-worker/runtime/scripts/model_selection.py" \
         && marketplace_installed_parity "$ROOT" "$TMP/installed/agy-worker" \
             "$TMP/tampered-installed-marketplace-skill"; then
     ok "root wrapper and installed skill preserve runtime authority, complete parity, and tamper evidence"
 else
-    bad "root wrapper and installed skill preserve runtime dispatcher authority and compatibility bytes"
+    bad "root wrapper and installed skill preserve runtime dispatcher authority and capability bytes"
 fi
 
 governance_clauses=(
@@ -3354,7 +3043,7 @@ suite_commands = [
 ]
 
 valid = (
-    len(suite_commands) == len(set(suite_commands)) == 31
+    len(suite_commands) == len(set(suite_commands)) == 18
     and "/usr/bin/python3 -I -S -B scripts/ci_stages.py --list" in contributing
     and {command for command in suite_commands if command in contributing}
     == {"/usr/bin/python3 -I -S -B tests/test-agy-worker-remediation.py"}
@@ -3378,7 +3067,7 @@ PY
 if governance_docs_contract \
         && grep -Fq 'The canonical offline stages' "$ROOT/docs/OPERATIONS.md" \
         && grep -Fq 'all registered offline stages' "$ROOT/CONTRIBUTING.md" \
-        && grep -Fq '`tests/test-update-notifier.py` (89 offline fake-control cases)' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-update-notifier.py` with offline fake controls' "$ROOT/docs/REPO_MAP.md" \
         && [[ -x "$ROOT/update-notifier.sh" ]] \
         && grep -Fq 'Google/Gemini' "$ROOT/PRIVACY.md" \
         && grep -Fq 'logs/' "$ROOT/PRIVACY.md" \
@@ -3389,20 +3078,9 @@ else
     bad "governance keeps one canonical PR gate, targeted diagnostics, and public policy boundaries"
 fi
 
-if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
-        "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'matrix-version match proceeds mechanically after that structural probe.' \
-            "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq "version drift requires the driver's explicit" \
-            "$ROOT/docs/INSTALLATION.md" \
-        && ! grep -Fq 'only when its raw C-locale help SHA-256 is retained' "$ROOT/docs/INSTALLATION.md" \
-        && ! grep -Fq 'An unseen exact-version digest, or compatible version drift' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq "LC_ALL=C agy --help 2>&1 | /usr/bin/python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'" \
-            "$ROOT/docs/INSTALLATION.md" \
-        && ! grep -Fq 'shasum -a 256' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'controller help prose is data, never availability inference' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'model availability is' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq '`not_assessed`' "$ROOT/docs/INSTALLATION.md" \
+if grep -Fq '## AGY capability requirements' "$ROOT/docs/INSTALLATION.md" \
+        && grep -Fq 'Model and effort are forwarded as caller-selected values.' "$ROOT/docs/INSTALLATION.md" \
+        && grep -Fq 'version text is diagnostic only' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Only current state and command formats load' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'retired dispatch formats are rejected before projection or mutation' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'preserve semantic-v1 candidate snapshots' "$ROOT/docs/REPO_MAP.md" \
@@ -3429,10 +3107,9 @@ if grep -Fq '`--compatibility-disposition proceed --approve-help-sha SHA256`' \
             "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Every emitted action or stale-approval rerun command uses' \
             "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && [[ "$(grep -Fc '`tests/test-agy-worker.sh` (291 cases)' "$ROOT/docs/REPO_MAP.md")" == 1 ]] \
-        && grep -Fq 'EXPECTED_CHECKS = 117' "$ROOT/tests/test-agy-worker-remediation.py" \
-        && grep -Fq '`tests/test-agy-worker-remediation.py` (117 focused cases)' "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-doctor.sh` (208 cases)' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-agy-worker.sh`' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-agy-worker-remediation.py`' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq '`tests/test-doctor.sh`' "$ROOT/docs/REPO_MAP.md" \
         && grep -Fq 'Do not pin exact suite counts in this instruction file' "$ROOT/AGENTS.md" \
         && grep -Fq '`docs/REPO_MAP.md` owns focused-suite inventory' "$ROOT/AGENTS.md" \
         && grep -Fq '`scripts/ci_stages.py` owns the' "$ROOT/AGENTS.md" \
@@ -3447,208 +3124,19 @@ else
     bad "dispatcher docs describe mode-bound selection, source-owned lifecycle state, no-bytecode imports, and registered focused coverage"
 fi
 
-bootstrap_preflight_line="$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, '$ROOT/scripts'); import ci_stages; print([i for i, s in enumerate(ci_stages.STAGES) if s.id == 'version-bootstrap-preflight'][0])")"
-bootstrap_suite_line="$(python3 -c "import sys; from pathlib import Path; sys.path.insert(0, '$ROOT/scripts'); import ci_stages; print([i for i, s in enumerate(ci_stages.STAGES) if s.id == 'version-bootstrap-runner'][0])")"
-if grep -Fq 'tests/test-version-attestation-runner.py` (165 cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-version-attestation-harness.py` (60 cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-models-attestation-runner.py` (116 cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-models-capture-runner.py` (84 fake-account cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-version-bootstrap-runner.py` (139 synthetic cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-version-initial-bootstrap-runner.py` (43 synthetic cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-models-capture-profile.py` (121 synthetic cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq '`tests/test-version-manifest-engine.py` (30 offline cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'previous 1.2.7, 1.2.6, 1.2.2, 1.1.27, and 1.1.26 permit only generic version-evidence/profile/capture' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'historical 1.1.24, 1.1.16, and 1.1.12 permit no executable operation' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Fixed 1.1.22 suites: version evidence 45, profile 30, runner 63, classifier 24, reprofile 88 offline cases' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'tests/test-agy-1-1-22-activation.py` (25 active cases)' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && [[ -n "$bootstrap_preflight_line" ]] \
-        && [[ -n "$bootstrap_suite_line" ]] \
-        && (( bootstrap_preflight_line < bootstrap_suite_line )) \
-        && grep -Fq 'sys.implementation.name == \"cpython\"' "$CI_STAGES" \
-        && grep -Fq 'sys.version_info[:2] == (3, 9)' "$CI_STAGES" \
-        && grep -Fq 'sys.flags.isolated == 1' "$CI_STAGES" \
-        && grep -Fq 'sys.flags.no_site == 1' "$CI_STAGES" \
-        && grep -Fq 'sys.flags.dont_write_bytecode == 1' "$CI_STAGES" \
-        && grep -Fq 'sys.flags.ignore_environment == 1' "$CI_STAGES" \
-        && ci_stage_registered '/usr/bin/python3 -I -S -B tests/test-version-bootstrap-runner.py'; then
-    ok "bootstrap and manifest-driven compatibility measured counts stay synchronized"
-else
-    bad "bootstrap and manifest-driven compatibility measured counts stay synchronized"
-fi
-
-retired_version_surfaces_absent=1
-for retired_surface in \
-        scripts/models_capture_1_1_12_profile.py \
-        scripts/models_capture_1_1_12_runner.py \
-        scripts/version_recovery_1_1_12_runner.py \
-        tests/test-models-capture-1-1-12-profile.py \
-        tests/test-models-capture-1-1-12-runner.py \
-        tests/test-models-capture-1-1-12.py \
-        tests/test-version-recovery-1-1-12-runner.py \
-        scripts/models_capture_1_1_16_profile.py \
-        scripts/models_capture_1_1_16_runner.py \
-        scripts/models_capture_1_1_16_version_evidence.py \
-        tests/test-agy-1-1-16-activation.py \
-        tests/test-models-capture-1-1-16-profile.py \
-        tests/test-models-capture-1-1-16-runner.py \
-        tests/test-models-capture-1-1-16-version-evidence.py \
-        tests/test-models-capture-1-1-16.py; do
-    [[ ! -e "$ROOT/$retired_surface" ]] || retired_version_surfaces_absent=0
-done
-
-if [[ "$retired_version_surfaces_absent" == 1 ]] \
-        && [[ -x "$ROOT/scripts/models_capture_1_1_22_version_evidence.py" ]] \
-        && [[ -x "$ROOT/scripts/models_capture_1_1_22_profile.py" ]] \
-        && [[ -x "$ROOT/scripts/models_capture_1_1_22_runner.py" ]] \
-        && [[ -x "$ROOT/scripts/models_capture_1_1_22_reprofile.py" ]] \
-        && [[ -x "$ROOT/scripts/version_manifest_version_evidence.py" ]] \
-        && [[ -x "$ROOT/scripts/version_manifest_capture_profile.py" ]] \
-        && [[ -x "$ROOT/scripts/version_manifest_capture_runner.py" ]] \
-        && [[ -x "$ROOT/scripts/version_manifest_capture_classifier.py" ]] \
-        && [[ -x "$ROOT/scripts/version_manifest_reprofile.py" ]] \
-        && [[ -f "$ROOT/compat/agy-version-manifest.json" ]] \
-        && [[ -f "$ROOT/compat/version-manifest.schema.json" ]] \
-        && grep -Fq '"support_tier": "previous"' \
-            "$ROOT/compat/agy-version-manifest.json" \
-        && grep -Fq '"support_tier": "historical"' \
-            "$ROOT/compat/agy-version-manifest.json" \
-        && grep -Fq 'The retired 1.1.12/1.1.16 version-stamped algorithms are absent' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && [[ -f "$ROOT/compat/reviews/agy-1.1.12.md" ]] \
-        && ! [[ -e "$ROOT/compat/reviews/agy-1.1.12-decision.md" ]] \
-        && grep -Fq 'agy `1.1.12` baseline' "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && grep -Fq 'f7519c9084190ed421e89dd81c63970b5177c9ef' \
-            "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && grep -Fq 'df1cc77947e5562976d51f295b4f023c2c24ef25db6d0afe30976004311996bd' \
-            "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && grep -Fq '8d46bcac6b8f27995635d91dc6f5a0e549d351e707efe11a82d8b6593fe12daf' \
-            "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && grep -Fq 'db2a3529568b1ce4bb112d4cb9a0c31a4f3d1b32bd787728d224894ec6db133c' \
-            "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && grep -Fq 'a36ead9a39715bb2380b3c36cbd8ae8e6e570e4147a4a4c7dc92f78e82e691a0' \
-            "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && grep -Fq '7aed92cc79154691407324f6d3bd75f335b67ab8ecc04cad89a60b5d15c03b3d' \
-            "$ROOT/compat/reviews/agy-1.1.12.md" \
-        && [[ -f "$ROOT/compat/reviews/agy-1.1.16-interface.md" ]] \
-        && grep -Fq 'efa16f096dc02fb654b7e86958d268195284d014' \
-            "$ROOT/compat/reviews/agy-1.1.16-interface.md" \
-        && grep -Fq 'No `agy models`, `agy agents`, plugin, prompt, authentication, or' \
-            "$ROOT/compat/reviews/agy-1.1.16-interface.md" \
-        && [[ -f "$ROOT/compat/reviews/agy-1.1.16.md" ]] \
-        && grep -Fq '04f9cf2d18c14635689630c7bb50437151f2b0eb1d414d0d943212fe12c7a20e' \
-            "$ROOT/compat/reviews/agy-1.1.16.md" \
-        && grep -Fq '3f34e6f6bfcf7b7e65951e02f92580c2858f32016f115866160f279d2d3a2747' \
-            "$ROOT/compat/reviews/agy-1.1.16.md" \
-        && grep -Fq 'a586927552d90295529f3059989a2a8c36c234d41b8f79d61c1c89edbf829e00' \
-            "$ROOT/compat/reviews/agy-1.1.16.md" \
-        && grep -Fq 'same fourteen exact slugs' "$ROOT/compat/reviews/agy-1.1.16.md" \
-        && [[ -f "$ROOT/compat/reviews/agy-1.1.22-activation.md" ]] \
-        && grep -Fq '626623c2c7b3b126efc2161c36554ecfa7fad3ce46e9dfcee8419c685ccaf2e3' \
-            "$ROOT/compat/reviews/agy-1.1.22-activation.md" \
-        && [[ -f "$ROOT/compat/reviews/agy-1.1.22.md" ]] \
-        && grep -Fq 'cab32a092e67b5199c1777e45f65623f703a94812b75a0732e7b3156302e9f77' \
-            "$ROOT/compat/reviews/agy-1.1.22.md" \
-        && grep -Fq 'failure_classified: false' \
-            "$ROOT/compat/reviews/agy-1.1.22.md" \
-        && grep -Fq 'does **not** activate 1.1.22' \
-            "$ROOT/compat/reviews/agy-1.1.22.md" \
-        && ! grep -Fq 'same fourteen' "$ROOT/compat/reviews/agy-1.1.22.md" \
-        && [[ -f "$ROOT/compat/reviews/codex-0.148.0.md" ]] \
-        && grep -Fq '3ba0f711642a888aec92a611a3f3b2211157ff89' \
-            "$ROOT/compat/reviews/codex-0.148.0.md" \
-        && grep -Fq 'At its 2026-08-20 review, Codex `0.148.0` was accepted as the observational' \
-            "$ROOT/compat/reviews/codex-0.148.0.md" \
-        && grep -Fq 'It is superseded by the separately reviewed `0.150.1` record.' \
-            "$ROOT/compat/reviews/codex-0.148.0.md" \
-        && [[ -f "$ROOT/compat/reviews/codex-0.150.1.md" ]] \
-        && grep -Fq '90854393966b21e9ebfd21b122334eb09a20c93d' \
-            "$ROOT/compat/reviews/codex-0.150.1.md" \
-        && grep -Fq 'Codex `0.150.1` is accepted as the current observational compatibility baseline.' \
-            "$ROOT/compat/reviews/codex-0.150.1.md" \
-        && grep -Fq 'does not gate agy dispatch' \
-            "$ROOT/compat/reviews/codex-0.150.1.md" \
-        && grep -Fq 'add Codex as a second worker backend' \
-            "$ROOT/compat/reviews/codex-0.150.1.md" \
-        && ! grep -Fqr 'models_capture_1_1_12' "$ROOT/skills/agy-worker/runtime"; then
-    ok "historical and active compatibility records preserve the activation boundary"
-else
-    bad "historical and active compatibility records preserve the activation boundary"
-fi
-
-if [[ -x "$ROOT/scripts/version_bootstrap_runner.py" ]] \
-        && [[ -x "$ROOT/tests/test-version-bootstrap-runner.py" ]] \
-        && ! grep -Fq 'skills/agy-worker/runtime/version_bootstrap_runner.py' \
-            "$ROOT/docs/INSTALLATION.md" "$ROOT/docs/USAGE.md" \
-            "$ROOT/docs/PROJECT_WORKFLOW.md" "$ROOT/docs/OPERATIONS.md"; then
-    ok "bootstrap remains an executable repository-only surface"
-else
-    bad "bootstrap remains an executable repository-only surface"
-fi
-
-if [[ -x "$ROOT/scripts/version_initial_bootstrap_runner.py" ]] \
-        && [[ -x "$ROOT/tests/test-version-initial-bootstrap-runner.py" ]] \
-        && ! grep -Fq 'account_home' "$ROOT/scripts/version_initial_bootstrap_runner.py" \
-        && ! grep -Fq 'version_initial_bootstrap_runner.py' "$ROOT/skills/agy-worker/runtime" -r; then
-    ok "initial bootstrap remains a separate HOME-inert repository-only surface"
-else
-    bad "initial bootstrap remains a separate HOME-inert repository-only surface"
-fi
-
-if [[ ! -e "$ROOT/scripts/version_recovery_1_1_12_runner.py" ]] \
-        && [[ ! -e "$ROOT/tests/test-version-recovery-1-1-12-runner.py" ]] \
-        && grep -Fq '"support_tier": "historical"' "$ROOT/compat/agy-version-manifest.json" \
-        && grep -Fq '"allowed_operations": []' "$ROOT/compat/agy-version-manifest.json" \
-        && [[ -f "$ROOT/compat/reviews/agy-1.1.12.md" ]]; then
-    ok "fixed 1.1.12 recovery execution is retired while historical evidence remains"
-else
-    bad "fixed 1.1.12 recovery retirement and historical evidence boundary"
-fi
-
-profile_builder_identity="$(/usr/bin/python3 -I -S -B - "$ROOT/scripts/models_capture_profile.py" <<'PY'
-import ast
-import hashlib
-import os
-import stat
+if python3 -B - "$ROOT" <<'PYRETIRED'
+from pathlib import Path
 import sys
-
-path = sys.argv[1]
-data = open(path, "rb").read()
-tree = ast.parse(data.decode("utf-8"))
-for node in tree.body:
-    if (
-        isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "MODULE_AST_SHA256"
-    ):
-        node.value = ast.Constant(value="PINNED-MODULE-AST")
-        break
-print(
-    "%o|%s|%s|%s" % (
-        stat.S_IMODE(os.stat(path).st_mode),
-        len(data),
-        hashlib.sha256(data).hexdigest(),
-        hashlib.sha256(ast.dump(tree, include_attributes=False).encode("utf-8")).hexdigest(),
-    )
-)
-PY
-)"
-if [[ "$profile_builder_identity" == "755|44660|f934c48857c286665a1cad91450a87419bdb3286fb66e1b0c4a6b5b87aa180cb|798fd1b42d4b45e0e0687f25e8fbaaa19f412e4975e50f4ae7ecfe22e9e58d1b" ]]; then
-    ok "capture-profile builder reviewed identity is independently pinned"
-else
-    bad "capture-profile builder reviewed identity changed"
+root = Path(sys.argv[1])
+for path in (root / "compat", root / "skills/agy-worker/runtime/compat"):
+    assert not path.exists() or not any(p.is_file() for p in path.rglob("*")), path
+for pattern in ("scripts/version_*.py", "scripts/models_*.py", "tests/test-version-*.py", "tests/test-models-*.py"):
+    assert not list(root.glob(pattern)), pattern
+assert not (root / ".github/workflows/compatibility-watch.yml").exists()
+assert (root / "skills/agy-worker/runtime/scripts/model_selection.py").is_file()
+PYRETIRED
+then ok "retired attestation assets are absent while the shared capability probe remains packaged"
+else bad "retired attestation assets are absent while the shared capability probe remains packaged"
 fi
 
 if grep -Fq 'same-UID processes' "$ROOT/docs/CONFORMANCE.md" \
@@ -4162,34 +3650,15 @@ else
     bad "repository has one canonical skill source"
 fi
 
-if grep -Fq '24 quota exhausted' "$ROOT/skills/agy-worker/runtime/agy-worker.sh" \
-        && grep -Fq 'exact agy `1.1.13` terminal quota response' \
-            "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
-        && grep -Fq 'terminal phases are `completed` or `blocked`; exact Codex driver decisions/dispositions' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Controller terminal phases are `completed` or' \
-            "$ROOT/docs/lessons_learned.md" \
-        && grep -Fq '1.1.13 shape with no report, it records `provider_quota_exhausted`, exit `24`, and' \
-            "$ROOT/compat/reviews/agy-1.1.13-quota-terminal.md" \
-        && grep -Fq 'are `invalid_envelope`, exit `4`, and `failure_stage=missing_structured_output`.' \
-            "$ROOT/compat/reviews/agy-1.1.13-quota-terminal.md" \
-        && grep -Fq 'Wrong-version or altered quota terminals without a' \
-            "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
-        && grep -Fq 'Classify authentication, quota, timeout, or provider failures only from reviewed' \
-            "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'Before every reviewed direct' "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'dispatch, including an exact-version match, the driver must inspect current bounded raw' \
-            "$ROOT/docs/INSTALLATION.md" \
-        && grep -Fq 'Before every' "$ROOT/skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md" \
-        && grep -Fq 'reviewed direct dispatch, including an exact-version match, the driver must inspect' \
-            "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
-        && grep -Fq 'The driver inspects current bounded raw help before every reviewed direct dispatch' \
-            "$ROOT/docs/REPO_MAP.md" \
-        && grep -Fq 'Exact-version structural acceptance is only mechanical' \
-            "$ROOT/docs/lessons_learned.md"; then
-    ok "package documents the narrow version-bound quota terminal contract"
+if grep -Fq 'There is no version-specific quota countdown or automatic retry.' \
+        "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
+        && grep -Fq 'terminal phases are `completed` or `blocked`; exact Codex driver decisions/dispositions' "$ROOT/docs/REPO_MAP.md" \
+        && grep -Fq 'Controller terminal phases are `completed` or' "$ROOT/docs/lessons_learned.md" \
+        && grep -Fq 'strict terminal' "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md" \
+        && grep -Fq 'private `stderr_path`' "$ROOT/skills/agy-worker/references/TROUBLESHOOTING.md"; then
+    ok "package documents version-independent failures and private preflight diagnostics"
 else
-    bad "package quota terminal documentation contract"
+    bad "package documents version-independent failures and private preflight diagnostics"
 fi
 
 echo

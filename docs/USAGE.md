@@ -52,8 +52,8 @@ Use initial `--allow-scoped-repair` for approved multi-turn scoped work. One exa
 upfront approval may cover predictable same-scope repairs and mechanical digest/state
 refresh; provider-launch notices are status, not repeated permission requests. New scope,
 content exposure, destination, isolation, permissions or budget still require authority.
-Preserve required current raw-help/semantic version preflight on each launch; add no cache
-or alternate controller. Codex generates current state and candidate approval hashes as it works; these
+Probe required capabilities before each launch and recheck the executable immediately
+before starting it; add no cache or alternate controller. Codex generates current state and candidate approval hashes as it works; these
 mechanical bindings do not themselves require another human approval. Ask again
 only when an action exceeds the approved content, permissions, destination, or budget,
 or the user reserved that decision. Preserve Goal as an ordinary-use opt-in, not a
@@ -336,9 +336,8 @@ prove the worker's architecture prose or completeness.
 | `--max-cycles 1..5` | — | `project` attempt budget; default `5`. |
 | `--mode plan|accept-edits` | `AGY_WORKER_MODE` | Raw compatibility mode; explicit workflows constrain it. |
 | `--tier cheap|bulk|hard|hardest|default` | `AGY_WORKER_TIER` | Legacy named tier or agy-owned default. |
-| `--model EXACT_MODEL` | `AGY_WORKER_MODEL` | Reviewed exact slug or adjustable base used with effort. |
-| `--effort low|medium|high` | `AGY_WORKER_EFFORT` | Requires an adjustable base and resolves to one exact slug. |
-| `--literal-model EXACT_SLUG` | — | CLI-only unreconciled caller-owned pass-through. |
+| `--model EXACT_MODEL` | `AGY_WORKER_MODEL` | Caller-owned literal model value. |
+| `--effort VALUE` | `AGY_WORKER_EFFORT` | Requires `--model`; forwards the literal effort separately. |
 | `--workdir DIR` | — | Source worktree. Without `--provider-scope`, treat all content as worker-readable and potentially transmissible. |
 | `--add-dir DIR` | — | Repeatable file-tool root for explicit whole-worktree dispatch; it does not narrow provider reads and conflicts with scoped mode. |
 | `--provider-scope FILE` | — | Recommended closed read/write policy for bounded jobs; stages selected content only and requires `--approve-transmission-sha`. |
@@ -382,28 +381,23 @@ Legacy named tiers currently resolve as follows:
 | `hardest` | `claude-opus-4-6-thinking` |
 | `default` | no `--model`; let agy choose |
 
-These constants predate the current compatibility matrix. During version drift they
-remain best-effort labels, not verified claims about price, difficulty, provider,
-availability, or behavioral equivalence.
+These constants are convenience labels, not verified claims about price, difficulty,
+provider, availability, or behavioral equivalence.
 
-Reviewed `--model` and `--effort` inputs resolve through the current checked-in
-matrix to one exact slug. Fixed, compound, literal, and already-compound slugs do not
-accept an invented effort or thinking flag. Selector sources have no silent
-precedence: repeated selectors, CLI/environment duplicates, tier plus direct
-selection, effort without an adjustable model, and unsupported pairs fail before
-dispatch.
+`--model` and an optional `--effort` are forwarded unchanged as separate AGY options.
+There is no model/effort matrix or inferred compound slug. AGY decides whether a
+pair is supported; rejection does not trigger a different model or effort. Selector
+sources have no silent precedence: repeated selectors, CLI/environment duplicates,
+tier plus direct selection, and effort without a model fail before dispatch.
 
-`--literal-model` is a narrow, CLI-only caller-owned pass-through for a closed slug.
-It performs no matrix lookup and records
-`compatibility_status: unreconciled-pass-through`. It makes no compatibility, cost,
-provider, availability, or routing claim; agy or the provider may reject it.
+`--literal-model` is retired; use `--model` for a caller-owned literal choice.
 
 Every provider attempt reuses the caller-owned frozen selection for that job. A
 model recommendation can report advice but cannot dispatch, change state, apply
 itself, or turn permission, authentication, path-policy, or human-required failures
 into a reason for higher model spend. See
-[installation and compatibility](INSTALLATION.md#version-drift-and-direct-model-selection)
-for the drift preflight boundary.
+[capability requirements](INSTALLATION.md#agy-capability-requirements)
+for the launch preflight boundary.
 
 Request advisory JSON before dispatch or after a driver-owned gate result:
 

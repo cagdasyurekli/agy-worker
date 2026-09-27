@@ -86,9 +86,9 @@ Keep these hard boundaries regardless of workflow:
   tools, or apply updates without the applicable explicit user approval.
 - Do not overstate results: offline tests prove the exercised mechanism, while a green
   gate is stronger verification for a candidate but not a general correctness claim.
-- Do not complete a compatibility goal from a non-activating version observation.
-  If baseline activation needs new evidence or authority, keep the goal active and
-  report that exact blocker instead of silently narrowing the requested outcome.
+- Required AGY capabilities gate each provider launch; version text is diagnostic only.
+  Help acceptance does not establish authentication, model availability, or task quality.
+  Preserve independent driver verification and report live evidence only when exercised.
 
 Before external agy dispatch, confirm approval for the exact mode and content. Whole-worktree
 transmission requires its explicit `launch_approval_sha256` approval. Scoped mode requires the exact reviewed policy
@@ -129,8 +129,9 @@ multi-turn scoped work; the controller binds permitted candidate evolution to th
 scope, model, conversation, and budget. One exact upfront approval may cover predictable
 same-scope repairs and mechanical digest/state refresh; provider-launch notices are status,
 not repeated permission requests. New scope, content exposure, destination, isolation,
-permissions or budget still require authority. Preserve required current raw-help/semantic
-version preflight on each launch; add no cache or alternate controller.
+permissions or budget still require authority. Run the bounded capability probe before
+every provider launch and recheck the same executable immediately before starting it;
+add no cache or alternate controller. Do not require exact-version activation or help-SHA approval.
 
 Do not describe agy's interface from memory. Run `./ground-truth.sh` and inspect
 `agy --help` before changing agy-facing flags or claims. agy can return exit 0 with

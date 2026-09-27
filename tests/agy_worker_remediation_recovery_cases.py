@@ -1359,7 +1359,7 @@ def run(context: dict[str, object]) -> None:
                 MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
                 state, _state_sha = MODULE.create_state(job, "initial", resume=False)
                 persisted = json.loads((job / MODULE.STATE_NAME).read_text(encoding="utf-8"))
-                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14, label
+                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 15, label
                 assert state["worktree_snapshot_algorithm"] == MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM, label
                 assert state["worktree_baseline"] is not None, label
                 assert state["worktree_root_identity"] is not None, label
@@ -2151,7 +2151,7 @@ def run(context: dict[str, object]) -> None:
         job, state, _sha, _envelope = current_candidate_fixture(
             "current-inside-worktree", inside_worktree=True,
         )
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 15
         state["continue_available"] = True
         before, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
         state, loaded_raw, loaded_sha = MODULE.load_state(job)
@@ -3410,7 +3410,8 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
         assert "agy-worker.sh restart --job-id JOB --approve-state-sha SHA [--format json|text]" in help_text
         assert "agy-worker.sh resume --job-id JOB --approve-state-sha STATE_SHA" in help_text
         assert "agy-worker.sh restart --job-id JOB --approve-state-sha STATE_SHA" in help_text
-        assert "--compatibility-disposition proceed --approve-help-sha SHA256" in help_text
+        assert "[--model MODEL [--effort EFFORT]]" in help_text
+        assert not any(flag in help_text for flag in ("--compatibility-disposition", "--approve-help-sha", "--literal-model"))
         assert "agy-worker.sh finalize --job-id JOB --approve-state-sha SHA" in help_text
         assert "--approve-migration-sha" not in help_text
 
@@ -3505,7 +3506,7 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
     def current_sanitized_outer_terminal_disposition_contracts() -> None:
         """Sanitized outer terminal disposition on the current complete state."""
         job, state, state_sha, _envelope = current_candidate_fixture("current-terminal-disposition")
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 15
         assert state["provider_terminal_status"] == "unknown"
 
         # 1. State validation bounds on provider_terminal_status enum

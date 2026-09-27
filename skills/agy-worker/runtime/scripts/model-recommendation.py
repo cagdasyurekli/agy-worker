@@ -11,7 +11,7 @@ import sys
 
 sys.dont_write_bytecode = True
 
-from model_selection import CallerError, EvidenceUnavailable, ReviewRequired, resolve_selection  # noqa: E402 -- sibling imports follow startup isolation/path setup
+from model_selection import CallerError, resolve_selection  # noqa: E402 -- sibling imports follow startup isolation/path setup
 from recommendation_record import (  # noqa: E402 -- sibling imports follow startup isolation/path setup
     NAMED_TIERS,
     POST_GATE_EVIDENCE,
@@ -169,10 +169,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         except CallerError as exc:
             parser.error(str(exc))
-        except ReviewRequired as exc:
-            parser.error(f"compatibility review required: {exc}")
-        except EvidenceUnavailable as exc:
-            parser.error(f"compatibility evidence unavailable: {exc}")
     evidence_code = one(parser, args.evidence, "--evidence")
 
     if selection is None and not SAFE_TIER.fullmatch(selected_tier_value):
@@ -195,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "model-tier-recommendation",
         "stage": stage,
         "recommendation_only": True,
@@ -214,9 +210,6 @@ def main(argv: list[str] | None = None) -> int:
         if "user_effort" in selection:
             result["user_effort"] = selection["user_effort"]
         result["resolved_agy_model"] = selection["resolved_agy_model"]
-        result["matrix_sha256"] = selection["matrix_sha256"]
-        result["matrix_agy_version"] = selection["matrix_agy_version"]
-        result["matrix_source_revision"] = selection["matrix_source_revision"]
     try:
         validate_recommendation_record(result)
     except RecommendationRecordError as exc:

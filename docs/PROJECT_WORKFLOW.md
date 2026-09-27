@@ -47,8 +47,8 @@ Use initial `--allow-scoped-repair` for approved multi-turn scoped work. One exa
 upfront approval may cover predictable same-scope repairs and mechanical digest/state
 refresh; provider-launch notices are status, not repeated permission requests. New scope,
 content exposure, destination, isolation, permissions or budget still require authority.
-Preserve required current raw-help/semantic version preflight on each launch; add no cache
-or alternate controller. Preserve Goal as an ordinary-use opt-in, not a prerequisite.
+Probe required capabilities before each launch and recheck the same executable
+immediately before starting it; add no cache or alternate controller. Preserve Goal as an ordinary-use opt-in, not a prerequisite.
 
 ## Primary facade and advanced recovery
 
@@ -111,19 +111,16 @@ workflow records must use the current explicit or facade format, defined by
 [`workflow.py`](../skills/agy-worker/runtime/scripts/workflow.py). The separately
 versioned workflow status output is not a persisted workflow record.
 
-Command V12 removes Boost and persona support. **Every V11 command is retired,
-including jobs that used neither feature.** Personas were embedded in prompt text
-without a separate selection record, so the runtime cannot reliably distinguish
-those jobs. Dispatcher state and workflow record formats are unchanged by this
-command-format change.
+Current dispatch records use state V15 and command V13, and selection records use
+V4. Earlier formats are retired, including ordinary jobs that used no removed
+feature. The new formats bind capability-based selection without a version registry.
+Workflow record formats retain their existing version constants.
 
 Older records fail closed before partial projection, migration, or job mutation.
 This includes status, result, and finalization as well as provider-launch actions.
 The runtime neither rewrites nor deletes old job artifacts.
-Finish or discard an older job with the release that created it; v0.22.0 is the last
-documented release with legacy-schema support. Preserve its job artifacts and use
-that release's existing approvals. The v0.22.0 reference does not mean it can read
-every later V11 job; use the actual creating release. The new runtime does not migrate
+Finish or discard an older job with the actual release that created it. Preserve
+its job artifacts and use that release's existing approvals. The new runtime does not migrate
 the job or grant new provider, cleanup, or publication authority.
 
 The following surfaces were removed after v0.22.0:
@@ -133,6 +130,8 @@ The following surfaces were removed after v0.22.0:
 | `workflow.sh run --approve-preview-sha` and `--legacy-preview-approval` | `--approve-whole-worktree`, or `--provider-scope` with `--approve-transmission-sha`, bound to a fresh reviewed preview |
 | `workflow.sh verify-finalize --approve-state-sha` | `--approve-dispatch-sha` copied from facade status |
 | Advanced dispatcher `--approve-migration-sha` | Finish or discard the old-format job with the release that created it; there is no in-place migration |
+| `--literal-model` | `--model` forwards the caller-owned literal value; optional `--effort` remains separate |
+| `--compatibility-disposition` and `--approve-help-sha` | Required capabilities are checked locally before every launch; no version or help-SHA approval bypass exists |
 | `--boost`, `--approve-boost-risk-sha`, and `--persona` | Use an ordinary workflow with the task instructions in its prompt; these flags fail with “removed after v0.22.0” and grant no replacement authority |
 
 Advanced dispatcher and job lifecycle commands still use `--approve-state-sha`.

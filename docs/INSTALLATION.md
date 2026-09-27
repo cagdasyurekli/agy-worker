@@ -22,24 +22,16 @@ intend to delegate:
 ./doctor.sh --repo /absolute/path/to/target --format json
 ```
 
-The doctor is deterministic and read-only. It checks the bundled runtime, Bash 3.2,
-Python 3, git and worktree support, the target Git worktree, exact semantic
-`agy --version`, and checked-in compatibility records. It invokes no provider,
-network client, updater, dispatch, authentication probe, or personal-config scan,
-and it repairs nothing.
+The doctor is read-only. It checks the bundled runtime, Bash, Python, Git/worktree
+support, the target repository, and the installed AGY interface through bounded local
+version/help probes. It makes no provider call, account inspection, network request,
+update, or repair. Version text is diagnostic only; readiness requires the capabilities
+used by the worker. Doctor reports a bounded readiness category; dispatch names a
+missing capability before provider launch.
 
-| Exit | Overall | Meaning |
-|---:|---|---|
-| `0` | `ready` | All offline prerequisites match the checked-in evidence. |
-| `3` | `review-required` | Prerequisites work, but the agy version drifted or review is due. |
-| `3` | `not-ready` | A prerequisite, repository, bundle, or metadata check failed. |
-| `64` | no report | Invocation or format is invalid. |
-
-`ready` does not certify authentication, provider availability, host/agy sandbox
-permission, task quality, or a future dispatch. `review-required` never updates
-metadata and is not a blanket dispatch lock: agy's own default and an explicitly
-approved literal-model pass-through remain separate caller-owned surfaces.
-`not-ready` blocks dispatch.
+`ready` does not certify authentication, provider availability, native containment,
+task quality, or a future dispatch. Fix a `not-ready` prerequisite before dispatch.
+An invalid invocation exits `64`; an unavailable prerequisite exits `3`.
 
 ## Choose an installation path
 
@@ -192,70 +184,51 @@ also needs network access. Do not use dangerous permission or approval bypass fl
 
 ## Refused actions and report paths
 
-For exact AGY 1.1.27, 1.2.2, and 1.2.11, a valid result containing `denied_actions` stops with
-`permission_required`. A valid candidate remains available for review and
-finalization; the worker does not automatically continue past a permission denial.
-The field's payload shape is not interpreted.
+The response policy is independent of the AGY version. A strictly parsed terminal
+result containing `denied_actions` stops with `permission_required` (exit `6`), even
+when the value is empty or malformed. Its payload is never interpreted as authority.
+A separately validated candidate remains available for driver review and finalization;
+same-conversation resume and continuation are blocked. A future CLI that always emits
+an empty denial list will also stop conservatively.
 
-For observed AGY 1.2.2, 1.2.6, and exact 1.2.7 (with static/offline partial-timeout warning recognition), the reviewed partial-output timeout warning stops provider
-success even when the process exits zero. A valid candidate remains available for
-independent review; an invalid report does not become a candidate. The warning must
-match the job's bound duration. Under exact AGY 1.2.7, live canary qualification confirmed
-native permission refusal (`permission_required` exit 6 with `denied_actions`), controller
-hard-deadline timeout (`hard_deadline_exceeded` exit 16 at 8 seconds with no candidate or
-resume authority; terminal ERROR exit 1 with no `AGY_ERROR` or provider print-timeout warning),
-and 44-stage offline CI; explicitly no live 1.2.7 warning sample or exit-3 sample was observed.
-AGY 1.2.11 is the current local compatibility binding, supported by the
-[bounded activation evidence](../compat/reviews/agy-1.2.11-activation.md). Its live
-qualification covers a session edit and planned same-conversation refinement.
-Native and effective accept-edits semantics remain unqualified
-for 1.2.11; earlier native results apply only to their recorded versions.
+Without a valid structured report, denial metadata creates no candidate. Invalid JSON,
+framing, or schema never becomes a successful result. An exact partial-output timeout
+warning must match the job's bound duration; it stops provider success while preserving
+a valid candidate. A nonzero provider exit with an otherwise valid `SUCCESS` report
+also remains a failure, with the candidate available for review.
+
+Binding, cancellation, and output-limit failures retain their safety precedence.
+When a valid terminal denial coincides with a hard deadline, `permission_required`
+remains the stopping reason while the elapsed time and limit kind retain the deadline
+facts. A deadline without denial remains `hard_deadline_exceeded`. None of these
+outcomes authorizes automatic retries or changes the driver's verification duty.
 
 File tools use absolute workspace paths. Final `files_changed` reports should use
 workspace-relative paths. Scoped reconciliation also accepts canonical absolute
 paths beneath that attempt's exact staged root, subject to the same observed
 mutation and scope checks; paths elsewhere remain invalid.
 
-## Version drift and direct model selection
+## AGY capability requirements
 
-The accepted model/effort mapping, exact agy version, and evidence digests live in the
-current [activation record](../compat/reviews/agy-1.2.11-activation.md). AGY 1.2.11 is the
-current local compatibility binding from candidate-bound qualification, not a general
-live-provider guarantee. Historical observations remain history; they do not override the
-current source and checked-in matrix. Codex compatibility evidence is observational and
-grants neither dispatch nor model-selection authority.
+Every provider launch runs a bounded local `agy --version` and `agy --help` probe,
+including default/tier selection and resumed, continued, or restarted jobs. The version
+is diagnostic text; no exact-version registry, model inventory, or help-SHA approval
+gates launch. The controller rechecks the probed executable's identity and contents
+immediately before starting that same executable. Missing, malformed, oversized, or
+timed-out interface output fails closed before provider execution.
 
-Every reviewed direct selection first checks a safe executable with bounded semantic
-`agy --version` and a strict critical `agy --help` structure probe. An exact
-matrix-version match proceeds mechanically after that structural probe. Compatible
-version drift requires the driver's explicit
-`--compatibility-disposition proceed --approve-help-sha SHA256`; a structurally
-incompatible interface blocks reviewed direct selection.
+Required flags are `--add-dir`, `--conversation`, `--disable-slash-commands`, `--effort`,
+`--json-schema`, `--mode`, `--model`, `--output-format`, `--print`, `--print-timeout`, and
+`--sandbox`. Help must expose `plan` and `accept-edits` modes and `stream-json` output.
+The whole supported surface is checked even when one job does not use every flag.
+This can reject an older CLI lacking `--effort` for a model-only job.
 
-To review compatible drift without disclosing an executable pathname, inspect the
-bounded local `agy --help` bytes and calculate their raw SHA-256:
+Model and effort are forwarded as caller-selected values. AGY may reject them; help
+capability checks do not certify a model catalog, authentication, backend identity,
+cost, availability, or quality. No selector leaves AGY's default unchanged. See
+[model and effort selection](USAGE.md#model-and-effort-selection).
 
-```bash
-LC_ALL=C agy --help 2>&1 | /usr/bin/python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
-```
-
-Compare that digest with the sanitized `raw_help_sha256` review output, then retry the
-same caller-selected `--model`/`--effort` request with
-`--compatibility-disposition proceed --approve-help-sha` set to the matching digest.
-A mismatch, changed help, or unavailable probe needs a fresh review; never reuse an
-older digest.
-
-Structural acceptance is not semantic approval. Before every reviewed direct
-dispatch, including an exact-version match, the driver must inspect current bounded raw
-`agy --help` and stop if the exact caller-selected model or effort cannot be honored.
-The caller's resolved slug remains unchanged, model availability is
-`not_assessed`, and controller help prose is never availability evidence.
-
-Model and effort choices belong to the caller. With no selector, leave agy's default
-unchanged. The narrow `--literal-model` surface is an unreconciled caller-owned
-pass-through; it makes no compatibility, cost, provider, availability, or quality
-claim. See [the usage guide](USAGE.md#model-and-effort-selection) for the public
-selection boundary.
+Last provider-tested AGY: **1.2.11**, in a bounded session edit and same-conversation refinement; native and effective `accept-edits` semantics were not qualified. This historical observation is informational and does not gate launches or qualify later versions.
 
 ## agy interface cautions
 
@@ -269,8 +242,8 @@ account-owned agy state such as models, agents, plugins, and local permissions.
   through its bounded structured envelope.
 - In explicit native mode, agy's sandbox shell tools run in its scratch directory rather than the target
   repository. Worker prompts use file tools; the driver owns repository commands.
-- Classify authentication, quota, timeout, or provider failures only from reviewed
-  exact signatures. Never turn free-form error prose into an automatic retry.
+- Use bounded structured evidence for provider failures. Never turn free-form error
+  prose, quota text, or a retry hint into automatic retry authority.
 - The terminal answer is in `result.structured_output`.
   `result.json_schema` is the echoed schema, not the answer.
 - Unknown agy subcommands may print usage and exit 0; do not probe support by exit
@@ -290,8 +263,8 @@ account-owned agy state such as models, agents, plugins, and local permissions.
 3. Confirm the process has the approved host permissions; for a sandboxed CLI
    session, check both settings above.
 4. Run `./ground-truth.sh` before interpreting an agy interface change.
-5. For reviewed direct selection, inspect current raw help and handle drift without
-   changing the caller's model or effort.
+5. Resolve the named missing capability or executable-binding failure without
+   changing the caller's model, effort, scope, or permissions.
 6. If local prerequisites pass but a provider call fails, preserve the sanitized
    result and follow the [project workflow](PROJECT_WORKFLOW.md); do not add a shell
    retry loop.

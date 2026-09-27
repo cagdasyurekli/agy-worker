@@ -19,15 +19,11 @@ missing.
 partial runtime or edit `.pipeline-root` by hand. A standalone marker must be an
 absolute path to a complete installation.
 
-## Doctor reports `review-required` or `not-ready`
+## Doctor reports `not-ready`
 
-`review-required` means reviewed matrix resolution is unavailable or stale. It does
-not block the provider-owned default or an explicitly approved literal model, but it
-does require the documented compatibility review before a reviewed direct selection.
-
-`not-ready` is a dispatch blocker. Fix the named local prerequisite, then rerun the
-offline doctor. Do not claim that a later live dispatch will work merely because the
-doctor becomes `ready`; it does not test authentication, provider availability, or
+Fix the named local prerequisite or missing AGY capability, then rerun the read-only
+doctor. Version drift does not require activation or help-SHA approval. A `ready`
+result does not test authentication, provider availability, native containment, or
 task quality.
 
 ## Transmission preview fails
@@ -54,11 +50,15 @@ permissions, authentication, scope, and task unchanged while classifying the loc
 failure. A model change cannot repair a permission, missing executable, invalid
 worktree, approval, environment, quota, or human-decision blocker.
 
-Before every reviewed direct dispatch, including an exact-version match, the driver must inspect current bounded raw `agy --help` evidence. Structural acceptance is not proof
-that the caller-selected model or effort is semantically available. On installed
-version drift, review the bounded help bytes and approve their exact SHA only when
-the selection can still be honored. A final selection reprobe failure does not permit
-same-job resume or restart; create a new job only after the evidence is reviewed.
+Every provider launch checks the required AGY capabilities and immediately rechecks
+the same executable. A missing flag, malformed help or changed binary stops before
+the task starts. The version is diagnostic only; no compatibility-disposition or
+help-SHA approval can bypass a failed probe. Preserve the caller's selection and
+resolve the named prerequisite before starting new work.
+For a lifecycle attempt, status keeps `selection_preflight_failed` (exit `26`);
+inspect the existing private `stderr_path` for the missing capability names. That
+diagnostic contains fixed flag names, not raw help output. Initial CLI preflight
+reports the missing names directly.
 
 ## agy exits zero but ordinary output is empty
 
@@ -75,11 +75,11 @@ permissions. A file-tool-only prompt does not guarantee the worker avoids comman
 Classify only from reviewed, bounded evidence. Do not infer account health, billing,
 model acceptance, or provider availability from local controller state.
 
-An exact agy `1.1.13` terminal quota response can produce exit `24` with a sanitized
-`retry_after_seconds`. Treat it as a stop and explicit-resume decision: do not sleep,
-retry, restart, or change the selected model automatically. Wrong-version or altered quota terminals without a
-recognized report remain `invalid_envelope`, exit `4`, with
-`failure_stage=missing_structured_output`; never generalize the narrow classifier.
+There is no version-specific quota countdown or automatic retry. A strict terminal
+`denied_actions` field, including an empty or malformed value, stops provider reuse.
+A valid candidate remains reviewable; a missing report does not become a candidate.
+An exact duration-bound partial-timeout signal or nonzero provider exit also prevents
+successful completion. Follow the recorded reason and available actions.
 
 For a candidate-free failure, consult `available_actions`. A mechanically eligible
 `resume` keeps the exact stored conversation; a fresh `restart` requires explicit user
@@ -127,9 +127,10 @@ job lifecycle commands still use their own `--approve-state-sha` flag.
 This agy-worker release accepts only current dispatch and workflow job
 formats. Finish or discard an older job using the release that created it; the last
 documented release with legacy-schema support is v0.22.0. Preserve its artifacts;
-do not rewrite a schema number to bypass rejection. Command V12 rejects all V11 jobs,
-including jobs that used neither Boost nor a persona. Use the actual creating release;
-v0.22.0 is not a universal reader for later V11 jobs. There is no in-place migration.
+do not rewrite a schema number to bypass rejection. Current dispatch records use
+state V15 and command V13, and selection records use V4. Earlier formats reject,
+including ordinary jobs that used no removed feature. Use the actual creating release.
+There is no in-place migration.
 `--boost`, `--approve-boost-risk-sha`, and `--persona` were removed after v0.22.0;
 start new work through the ordinary workflow with task instructions in the prompt.
 Use current explicit transmission approvals instead of facade `--approve-preview-sha`

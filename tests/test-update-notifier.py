@@ -60,44 +60,6 @@ class Fixture(unittest.TestCase):
             notifier.install(self.paths)
         return notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
 
-    def legacy_v08_installation(self) -> dict[str, object]:
-        """Turn the fixture into the exact 18-key v0.8 ledger contract."""
-        shutil.rmtree(self.paths.state, ignore_errors=True)
-        try:
-            self.paths.plist.unlink()
-        except FileNotFoundError:
-            pass
-        ledger = self.installed()
-        legacy_manifest = {
-            relative: ledger["manifest"][relative]  # type: ignore[index]
-            for relative in notifier.LEGACY_V08_SOURCE_FILES
-        }
-        for relative in set(notifier.SOURCE_FILES) - set(notifier.LEGACY_V08_SOURCE_FILES):
-            os.unlink(self.paths.snapshot / relative)
-        ledger["manifest"] = legacy_manifest
-        self.paths.ledger.write_bytes(notifier._canonical_json(ledger))
-        os.chmod(self.paths.ledger, 0o600)
-        return ledger
-
-    def legacy_v08_tombstone_phase(self, phase: str) -> dict[str, object]:
-        """Create one durable authenticated legacy-uninstall recovery point."""
-        ledger = self.legacy_v08_installation()
-        if phase in {"plist-processed", "files-processed", "completed"}:
-            os.unlink(self.paths.plist)
-        if phase in {"files-processed", "completed"}:
-            for relative in notifier.LEGACY_V08_SOURCE_FILES:
-                os.unlink(self.paths.snapshot / relative)
-            os.unlink(self.paths.launcher)
-            os.unlink(self.paths.shim)
-        if phase == "completed":
-            ledger["phase"] = "uninstalled"
-            self.paths.ledger.write_bytes(notifier._canonical_json(ledger))
-            os.chmod(self.paths.ledger, 0o600)
-        self.paths.tombstone.write_bytes(
-            notifier._canonical_json(notifier._tombstone_payload(ledger, phase, []))
-        )
-        os.chmod(self.paths.tombstone, 0o600)
-        return ledger
 
 
 class HomeAndSourceTests(Fixture):
@@ -129,7 +91,7 @@ class HomeAndSourceTests(Fixture):
         manifest = notifier.source_manifest(self.source)
         self.assertEqual(set(manifest), set(notifier.SOURCE_FILES))
         self.assertIn("scripts/compatibility_probe.py", manifest)
-        self.assertIn("skills/agy-worker/runtime/scripts/compatibility.py", manifest)
+        self.assertEqual(len(manifest), 6)
 
     def test_probe_mutation_is_source_drift(self) -> None:
         ledger = self.installed()
@@ -302,7 +264,7 @@ class PrivateStateAndLockTests(Fixture):
 class ChildProtocolTests(Fixture):
     def fake_launcher(self, ack: bytes, delay: float = 0.0) -> None:
         self.paths.state.mkdir(parents=True, mode=0o700)
-        program = f'''import os,sys,time\n# argv: --run update shim repo gitdir sentinel ack output status\ntime.sleep({delay!r})\nos.write(int(sys.argv[7]), {ack!r})\nfd=os.open(sys.argv[8],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.write(fd,b"compatibility result: drift-review\\n");os.close(fd)\nfd=os.open(sys.argv[9],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.write(fd,b"3\\n");os.close(fd)\n'''
+        program = f'''import os,sys,time\n# argv: --run update shim repo gitdir sentinel ack output status\ntime.sleep({delay!r})\nos.write(int(sys.argv[7]), {ack!r})\nfd=os.open(sys.argv[8],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.write(fd,b"tool update: different release commit\\n");os.close(fd)\nfd=os.open(sys.argv[9],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600);os.write(fd,b"3\\n");os.close(fd)\n'''
         self.paths.launcher.write_text(program); os.chmod(self.paths.launcher, 0o500)
 
     def test_nested_ack_delayed_but_complete(self) -> None:
@@ -343,7 +305,7 @@ class ChildProtocolTests(Fixture):
         update = self.paths.snapshot / "update.sh"
         update.write_text(
             '#!/bin/bash\n"$(dirname "$0")/../shim/python3" -I -B "$(dirname "$0")/scripts/compatibility_probe.py" fake\n'
-            'echo "compatibility result: drift-review"\nexit 3\n'
+            'echo "tool update: different release commit"\nexit 3\n'
         )
         # update.sh normally finds python3 on PATH. The explicit shim path above
         # keeps this fake entirely local while exercising the same shim protocol.
@@ -353,7 +315,7 @@ class ChildProtocolTests(Fixture):
         self.assertEqual(fake_link.resolve(), self.paths.shim.parent.resolve())
         status, stdout, ack = notifier._run_child(self.paths)
         self.assertEqual(status, 3)
-        self.assertIn(b"drift-review", stdout)
+        self.assertIn(b"different release commit", stdout)
         self.assertEqual(ack, b"SA")
 
     def test_child_launcher_unblocks_terminal_signals(self) -> None:
@@ -502,311 +464,113 @@ class NotificationTests(Fixture):
         self.assertRegex(notifier._timestamp(), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
-class RefreshTests(Fixture):
-    def test_legacy_v08_manifest_is_literal_18_key_contract(self) -> None:
-        self.assertEqual(len(notifier.LEGACY_V08_SOURCE_FILES), 18)
-        self.assertEqual(
-            notifier.LEGACY_V08_SOURCE_FILES,
-            (
-                "update-notifier.sh", "scripts/update_notifier.py", "scripts/update_notifier_child.py",
-                "update.sh", "scripts/compatibility.py", "skills/agy-worker/runtime/scripts/compatibility.py",
-                "scripts/compatibility_probe.py", "scripts/official_github.py", "scripts/official_distribution.py",
-                "compat/agy-distribution-manifest.json", "compat/agy-last-reviewed.txt",
-                "compat/agy-model-effort-matrix.json", "compat/agy-upstream-head.txt",
-                "compat/agy-verified-version.txt", "compat/codex-last-reviewed.txt",
-                "compat/codex-upstream-head.txt", "compat/codex-verified-version.txt",
-                "compat/model-effort-matrix.schema.json",
-            ),
+class RetiredFormatTests(Fixture):
+    def test_retired_records_reject_before_all_effects(self) -> None:
+        # Both historical inventories are fixtures, never accepted cleanup contracts.
+        old_extra = (
+            "scripts/compatibility.py", "skills/agy-worker/runtime/scripts/compatibility.py",
+            "scripts/official_distribution.py", "compat/agy-distribution-manifest.json",
+            "compat/agy-last-reviewed.txt", "compat/agy-model-effort-matrix.json",
+            "compat/agy-upstream-head.txt", "compat/agy-verified-version.txt",
+            "compat/codex-last-reviewed.txt", "compat/codex-upstream-head.txt",
+            "compat/codex-verified-version.txt", "compat/model-effort-matrix.schema.json",
         )
+        for additions in (old_extra, old_extra + (
+            "compat/agy-model-effort-matrix.sha256", "compat/agy-models-inventory-binding.json",
+            "compat/agy-models-inventory-binding.sha256",
+        )):
+            for phase in ("loaded", "uninstalled", "started", "completed"):
+                for operation in (notifier.install, notifier.status, notifier.run,
+                                  notifier.refresh, notifier.uninstall):
+                    with self.subTest(inventory=len(additions), phase=phase, operation=operation.__name__):
+                        shutil.rmtree(self.paths.state, ignore_errors=True)
+                        self.paths.plist.unlink(missing_ok=True)
+                        ledger = self.installed()
+                        manifest = {relative: ledger["manifest"][relative] for relative in (
+                            "update-notifier.sh", "scripts/update_notifier.py", "scripts/update_notifier_child.py",
+                            "update.sh", "scripts/compatibility_probe.py", "scripts/official_github.py",
+                        )}
+                        for relative in additions:
+                            target = self.paths.snapshot / relative
+                            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                            if target.exists():
+                                target.chmod(0o600)
+                            target.write_bytes(b"historical source\n")
+                            target.chmod(0o400)
+                            manifest[relative] = hashlib.sha256(target.read_bytes()).hexdigest()
+                        ledger["manifest"] = manifest
+                        ledger["phase"] = "uninstalled" if phase in ("uninstalled", "completed") else "loaded"
+                        self.paths.ledger.write_bytes(notifier._canonical_json(ledger))
+                        if phase != "loaded":
+                            tombstone_phase = "completed" if phase in ("uninstalled", "completed") else "started"
+                            notifier._atomic_write(self.paths.tombstone, notifier._canonical_json(
+                                notifier._tombstone_payload(ledger, tombstone_phase, [])
+                            ))
+                        # No lock exists: an old-record rejection must not recreate it.
+                        (self.paths.state / "lock").unlink()
+                        def snapshot() -> dict[str, object]:
+                            result = {}
+                            for path in [self.home, *sorted(self.home.rglob("*"))]:
+                                info = path.lstat()
+                                result[str(path)] = (info.st_dev, info.st_ino, info.st_mode,
+                                    info.st_size, info.st_mtime_ns,
+                                    path.read_bytes() if path.is_file() else None)
+                            return result
+                        before = snapshot()
+                        with mock.patch.object(notifier, "_launchctl") as launchctl, mock.patch.object(
+                            notifier, "loaded_state"
+                        ) as loaded, mock.patch.object(notifier, "_run_child") as child, mock.patch.object(
+                            notifier, "_run_notification"
+                        ) as notification, mock.patch.object(notifier, "lifecycle_lock") as lock:
+                            with self.assertRaisesRegex(notifier.NotifierError,
+                                    "retired notifier format; use the creating release at its authenticated source location"):
+                                operation(self.paths)
+                        for effect in (launchctl, loaded, child, notification, lock):
+                            effect.assert_not_called()
+                        self.assertEqual(snapshot(), before)
+                        shutil.rmtree(self.paths.state)
+                        self.paths.plist.unlink()
 
-    def test_refresh_migrates_authenticated_v08_ledger_to_fresh_current_install(self) -> None:
-        self.legacy_v08_installation()
-        states = iter(["loaded", "unloaded", "unloaded", "unloaded", "loaded"])
-        with mock.patch.object(notifier, "loaded_state", side_effect=lambda _uid: next(states)), mock.patch.object(
-            notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-        ) as launchctl:
-            notifier.refresh(self.paths)
-        ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        self.assertEqual(set(ledger["manifest"]), set(notifier.SOURCE_FILES))
-        self.assertEqual(ledger["phase"], "loaded")
-        self.assertFalse(self.paths.tombstone.exists())
-        self.assertEqual(launchctl.call_args_list[0].args[0][0], "bootout")
-        self.assertEqual(launchctl.call_args_list[-1].args[0][0], "bootstrap")
-
-    def test_refresh_resumes_completed_authenticated_v08_uninstall_as_fresh_install(self) -> None:
-        legacy = self.legacy_v08_installation()
-        with mock.patch.object(notifier, "loaded_state", return_value="unloaded"):
-            notifier._uninstall_legacy_refresh_locked(self.paths)
-        states = iter(["unloaded", "loaded"])
-        with mock.patch.object(notifier, "loaded_state", side_effect=lambda _uid: next(states)), mock.patch.object(
-            notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-        ) as launchctl:
-            notifier.refresh(self.paths)
-        self.assertEqual(notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)["phase"], "loaded")
-        launchctl.assert_called_once()
-        self.assertEqual(legacy["manifest"], {key: legacy["manifest"][key] for key in notifier.LEGACY_V08_SOURCE_FILES})
-
-    def test_legacy_refresh_resumes_each_authenticated_tombstone_phase(self) -> None:
-        for phase in ("started", "unloaded", "plist-processed", "files-processed", "completed"):
-            with self.subTest(phase=phase):
-                self.legacy_v08_tombstone_phase(phase)
-                states = (
-                    ["unloaded", "loaded"]
-                    if phase == "completed"
-                    else ["unloaded", "unloaded", "unloaded", "loaded"]
-                )
-                with mock.patch.object(notifier, "loaded_state", side_effect=states), mock.patch.object(
-                    notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-                ):
-                    notifier.refresh(self.paths)
-                ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-                self.assertEqual(ledger["phase"], "loaded")
-                self.assertEqual(set(ledger["manifest"]), set(notifier.SOURCE_FILES))
-                self.assertFalse(self.paths.tombstone.exists())
-                shutil.rmtree(self.paths.state)
-                self.paths.plist.unlink()
-
-    def test_legacy_refresh_resumes_after_snapshot_unlink_failure(self) -> None:
-        self.legacy_v08_installation()
-        victim = self.paths.snapshot / "update.sh"
-        real_unlink = os.unlink
-
-        def fail_victim(path: object, *args: object, **kwargs: object) -> None:
-            if Path(path) == victim:
-                raise OSError("injected legacy snapshot unlink failure")
-            real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(notifier, "loaded_state", return_value="unloaded"), mock.patch.object(
-            os, "unlink", side_effect=fail_victim
-        ):
-            with self.assertRaisesRegex(OSError, "legacy snapshot unlink failure"):
-                notifier.refresh(self.paths)
-        tombstone = notifier._load_json(self.paths.tombstone, notifier.MAX_LEDGER)
-        self.assertEqual(tombstone["phase"], "plist-processed")
-        self.assertFalse(self.paths.plist.exists())
-        with mock.patch.object(notifier, "loaded_state", side_effect=["unloaded", "unloaded", "unloaded", "loaded"]), mock.patch.object(
-            notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-        ):
-            notifier.refresh(self.paths)
-        ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        self.assertEqual(ledger["phase"], "loaded")
-        self.assertEqual(set(ledger["manifest"]), set(notifier.SOURCE_FILES))
-
-    def test_legacy_completed_uninstall_keeps_authority_until_current_preparing_ledger(self) -> None:
-        legacy = self.legacy_v08_tombstone_phase("completed")
-        real_write = notifier._atomic_write
-
-        def fail_current_preparing(path: Path, payload: bytes, mode: int = 0o600) -> None:
-            if path == self.paths.ledger and b'"phase":"preparing"' in payload:
-                raise OSError("injected current preparing write failure")
-            real_write(path, payload, mode)
-
-        with mock.patch.object(notifier, "loaded_state", return_value="unloaded"), mock.patch.object(
-            notifier, "_atomic_write", side_effect=fail_current_preparing
-        ):
-            with self.assertRaisesRegex(OSError, "current preparing write failure"):
-                notifier.refresh(self.paths)
-        retained = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        self.assertEqual(set(retained["manifest"]), set(notifier.LEGACY_V08_SOURCE_FILES))
-        self.assertEqual(retained["phase"], "uninstalled")
-        tombstone = notifier._load_json(self.paths.tombstone, notifier.MAX_LEDGER)
-        notifier._validate_tombstone(tombstone, retained)
-        self.assertEqual(tombstone["phase"], "completed")
-        self.assertEqual(retained["secret"], legacy["secret"])
-        with mock.patch.object(notifier, "loaded_state", side_effect=["unloaded", "loaded"]), mock.patch.object(
-            notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-        ):
-            notifier.refresh(self.paths)
-        self.assertEqual(notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)["phase"], "loaded")
-
-    def test_legacy_completed_uninstall_never_drops_authority_before_fsync(self) -> None:
-        self.legacy_v08_tombstone_phase("completed")
-        real_fsync = notifier._fsync_dir
-
-        def fail_after_ledger_unlink(path: Path) -> None:
-            if not self.paths.ledger.exists():
-                raise OSError("injected fsync failure after legacy ledger unlink")
-            real_fsync(path)
-
-        with mock.patch.object(notifier, "_fsync_dir", side_effect=fail_after_ledger_unlink), mock.patch.object(
-            notifier, "loaded_state", side_effect=["unloaded", "loaded"]
-        ), mock.patch.object(notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
-            notifier.refresh(self.paths)
-        ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        self.assertEqual(ledger["phase"], "loaded")
-        self.assertFalse(self.paths.tombstone.exists())
-
-    def test_legacy_refresh_loaded_state_keeps_authenticated_recovery(self) -> None:
-        legacy = self.legacy_v08_installation()
-        with mock.patch.object(notifier, "loaded_state", side_effect=["loaded", "loaded"]), mock.patch.object(
-            notifier, "_launchctl", return_value=subprocess.CompletedProcess([], 0, b"", b"")
-        ) as launchctl:
-            with self.assertRaisesRegex(notifier.NotifierError, "launchd state is loaded or unknown"):
-                notifier.refresh(self.paths)
-        retained = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        tombstone = notifier._load_json(self.paths.tombstone, notifier.MAX_LEDGER)
-        notifier._validate_tombstone(tombstone, retained)
-        self.assertEqual(tombstone["phase"], "started")
-        self.assertEqual(retained["secret"], legacy["secret"])
-        launchctl.assert_called_once_with(["bootout", f"gui/{os.getuid()}/{notifier.LABEL}"])
-
-    def test_legacy_refresh_unknown_launchd_state_keeps_authenticated_recovery(self) -> None:
-        legacy = self.legacy_v08_installation()
-        with mock.patch.object(notifier, "loaded_state", return_value="unknown"), mock.patch.object(
-            notifier, "_launchctl"
-        ) as launchctl:
-            with self.assertRaisesRegex(notifier.NotifierError, "launchd state is loaded or unknown"):
-                notifier.refresh(self.paths)
-        retained = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        tombstone = notifier._load_json(self.paths.tombstone, notifier.MAX_LEDGER)
-        notifier._validate_tombstone(tombstone, retained)
-        self.assertEqual(tombstone["phase"], "started")
-        self.assertEqual(retained["secret"], legacy["secret"])
-        launchctl.assert_not_called()
-
-    def test_legacy_contract_is_refresh_only(self) -> None:
-        for operation in (notifier.install, notifier.uninstall, notifier.run):
-            with self.subTest(operation=operation.__name__):
-                self.legacy_v08_installation()
-                with mock.patch.object(notifier, "_launchctl") as launchctl:
-                    with self.assertRaisesRegex(notifier.NotifierError, "malformed"):
-                        operation(self.paths)
-                launchctl.assert_not_called()
-                shutil.rmtree(self.paths.state)
-                self.paths.plist.unlink()
-        self.legacy_v08_installation()
-        with mock.patch.object(notifier, "loaded_state", return_value="loaded"), mock.patch("builtins.print") as output:
+    def test_current_status_revalidates_under_lock(self) -> None:
+        self.installed()
+        real_validate = notifier._validate_ledger_binding
+        with mock.patch.object(notifier, "_validate_ledger_binding", wraps=real_validate) as validate, mock.patch.object(
+            notifier, "loaded_state", return_value="loaded"
+        ), mock.patch("builtins.print") as output:
             notifier.status(self.paths)
-        output.assert_called_with("update notifier: loaded; source drifted-or-invalid")
+        self.assertGreaterEqual(validate.call_count, 1)
+        output.assert_called_with("update notifier: loaded; source unchanged")
 
-    def test_legacy_unknown_subset_extra_bad_digest_and_identity_fail_before_launchctl(self) -> None:
-        mutations = {
-            "unknown": lambda ledger: ledger["manifest"].update({"unknown": "0" * 64}),  # type: ignore[index]
-            "subset": lambda ledger: ledger["manifest"].pop("update.sh"),  # type: ignore[index]
-            "bad-digest": lambda ledger: ledger["manifest"].update({"update.sh": "not-a-digest"}),  # type: ignore[index]
-            "identity": lambda ledger: ledger.update({"source": "/wrong/source"}),
-        }
-        for name, mutate in mutations.items():
-            with self.subTest(name=name):
-                self.legacy_v08_installation()
-                ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-                mutate(ledger)
-                self.paths.ledger.write_bytes(notifier._canonical_json(ledger)); os.chmod(self.paths.ledger, 0o600)
-                before = self.paths.ledger.read_bytes()
-                with mock.patch.object(notifier, "_launchctl") as launchctl:
-                    with self.assertRaises(notifier.NotifierError):
-                        notifier.refresh(self.paths)
+    def test_status_retired_swap_under_lock_never_queries_launchd(self) -> None:
+        self.installed()
+        with mock.patch.object(notifier, "reject_retired_format"), mock.patch.object(
+            notifier, "_validate_ledger_binding", side_effect=notifier.RetiredFormatError("retired notifier format")
+        ), mock.patch.object(notifier, "loaded_state") as loaded:
+            with self.assertRaisesRegex(notifier.RetiredFormatError, "retired notifier format"):
+                notifier.status(self.paths)
+        loaded.assert_not_called()
+
+    def test_unsafe_ledger_rejects_without_lock_or_launchctl(self) -> None:
+        self.installed()
+        self.paths.ledger.unlink()
+        self.paths.ledger.symlink_to(self.source / "update.sh")
+        (self.paths.state / "lock").unlink()
+        for operation in (notifier.install, notifier.status, notifier.run, notifier.refresh, notifier.uninstall):
+            with self.subTest(operation=operation.__name__), mock.patch.object(notifier, "_launchctl") as launchctl:
+                with self.assertRaisesRegex(notifier.NotifierError, "symlink"):
+                    operation(self.paths)
                 launchctl.assert_not_called()
-                self.assertEqual(self.paths.ledger.read_bytes(), before)
+                self.assertFalse((self.paths.state / "lock").exists())
 
-    def test_legacy_refresh_rejects_schema_and_uid_type_confusion_before_launchctl(self) -> None:
-        mutations = {
-            "schema-bool": lambda ledger: ledger.update({"schema": True}),
-            "schema-float": lambda ledger: ledger.update({"schema": 1.0}),
-            "uid-float": lambda ledger: ledger.update({"uid": float(os.getuid())}),
-        }
-        for name, mutate in mutations.items():
-            with self.subTest(name=name):
-                self.legacy_v08_installation()
-                ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-                mutate(ledger)
-                self.paths.ledger.write_bytes(notifier._canonical_json(ledger)); os.chmod(self.paths.ledger, 0o600)
-                before = self.paths.ledger.read_bytes()
-                victim = self.paths.snapshot / "update.sh"
-                with mock.patch.object(notifier, "_launchctl") as launchctl:
-                    with self.assertRaisesRegex(notifier.NotifierError, "malformed"):
-                        notifier.refresh(self.paths)
-                launchctl.assert_not_called()
-                self.assertEqual(self.paths.ledger.read_bytes(), before)
-                self.assertTrue(victim.exists())
-                shutil.rmtree(self.paths.state)
-                self.paths.plist.unlink()
 
-    def test_current_and_legacy_ledgers_require_exact_json_integer_types(self) -> None:
-        current = self.installed()
-        legacy = dict(current)
-        legacy["manifest"] = {
-            relative: current["manifest"][relative]  # type: ignore[index]
-            for relative in notifier.LEGACY_V08_SOURCE_FILES
-        }
-        contracts = (
-            ("current", current, notifier.SOURCE_FILES),
-            ("legacy", legacy, notifier.LEGACY_V08_SOURCE_FILES),
-        )
-        for contract, ledger, source_files in contracts:
-            with self.subTest(contract=contract, case="valid-integers"):
-                self.assertIs(type(ledger["schema"]), int)
-                self.assertIs(type(ledger["uid"]), int)
-                notifier._validate_ledger_shape(ledger, source_files)
-            mutations = {
-                "schema-bool": ("schema", True, None),
-                "schema-float": ("schema", 1.0, None),
-                "uid-float": ("uid", float(os.getuid()), None),
-                "uid-bool": ("uid", True, 1),
-            }
-            for case, (field, replacement, mocked_uid) in mutations.items():
-                with self.subTest(contract=contract, case=case):
-                    candidate = dict(ledger)
-                    candidate[field] = replacement
-                    uid_context = (
-                        mock.patch.object(notifier.os, "getuid", return_value=mocked_uid)
-                        if mocked_uid is not None
-                        else mock.patch.object(notifier.os, "getuid", wraps=os.getuid)
-                    )
-                    with uid_context, self.assertRaisesRegex(notifier.NotifierError, "malformed"):
-                        notifier._validate_ledger_shape(candidate, source_files)
-
-    def test_legacy_refresh_records_each_installed_replacement_before_reinstall(self) -> None:
-        targets = {
-            "snapshot": (self.paths.snapshot / "update.sh", "source:update.sh"),
-            "launcher": (self.paths.launcher, "launcher"),
-            "shim": (self.paths.shim, "shim"),
-            "plist": (self.paths.plist, "plist"),
-        }
-        for name, (target, replacement_label) in targets.items():
-            with self.subTest(name=name):
-                self.legacy_v08_installation()
-                os.chmod(target, 0o600); target.write_bytes(b"replacement"); os.chmod(target, 0o500 if name != "plist" else 0o600)
-                with mock.patch.object(notifier, "loaded_state", return_value="unloaded"), mock.patch.object(
-                    notifier, "_launchctl"
-                ) as launchctl:
-                    with self.assertRaisesRegex(notifier.NotifierError, "preserved replacement files"):
-                        notifier.refresh(self.paths)
-                launchctl.assert_not_called()
-                ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-                tombstone = notifier._load_json(self.paths.tombstone, notifier.MAX_LEDGER)
-                notifier._validate_tombstone(tombstone, ledger)
-                self.assertEqual(ledger["phase"], "uninstalled")
-                self.assertEqual(tombstone["replacements"], [replacement_label])
-                shutil.rmtree(self.paths.state)
-                self.paths.plist.unlink(missing_ok=True)
-        self.legacy_v08_installation()
-        self.paths.tombstone.write_bytes(notifier._canonical_json({
-            "schema": 1, "label": notifier.LABEL, "phase": "started", "replacements": [], "authentication": "0" * 64,
-        }))
-        os.chmod(self.paths.tombstone, 0o600)
-        with mock.patch.object(notifier, "_launchctl") as launchctl:
-            with self.assertRaisesRegex(notifier.NotifierError, "unauthenticated"):
-                notifier.refresh(self.paths)
-        launchctl.assert_not_called()
-
-    def test_legacy_refresh_preserves_replacement_and_blocks_reinstall(self) -> None:
-        self.legacy_v08_installation()
-        replacement = self.paths.snapshot / "update.sh"
-        os.chmod(replacement, 0o600); replacement.write_bytes(b"replacement"); os.chmod(replacement, 0o500)
-        with mock.patch.object(notifier, "loaded_state", return_value="unloaded"), mock.patch.object(
-            notifier, "_launchctl"
-        ) as launchctl:
-            with self.assertRaisesRegex(notifier.NotifierError, "preserved replacement files"):
-                notifier.refresh(self.paths)
-        launchctl.assert_not_called()
-        self.assertEqual(replacement.read_bytes(), b"replacement")
-        ledger = notifier._load_json(self.paths.ledger, notifier.MAX_LEDGER)
-        tombstone = notifier._load_json(self.paths.tombstone, notifier.MAX_LEDGER)
-        notifier._validate_tombstone(tombstone, ledger)
-        self.assertEqual(ledger["phase"], "uninstalled")
-        self.assertEqual(tombstone["phase"], "completed")
-        self.assertEqual(tombstone["replacements"], ["source:update.sh"])
+class RefreshTests(Fixture):
+    def test_current_ledgers_require_exact_json_integer_types(self) -> None:
+        ledger = self.installed()
+        for field, value in (("schema", True), ("schema", 1.0), ("uid", float(os.getuid()))):
+            with self.subTest(field=field, value=value):
+                candidate = {**ledger, field: value}
+                with self.assertRaisesRegex(notifier.NotifierError, "malformed"):
+                    notifier._validate_ledger_shape(candidate)
 
     def test_refresh_rebinds_safe_current_source_through_uninstall_install(self) -> None:
         self.installed()
@@ -949,7 +713,7 @@ class UninstallTests(Fixture):
         ledger["manifest"] = manifest
         self.paths.ledger.write_bytes(notifier._canonical_json(ledger)); os.chmod(self.paths.ledger, 0o600)
         outside = self.paths.state / "outside"; outside.write_bytes(b"preserve"); os.chmod(outside, 0o600)
-        with self.assertRaisesRegex(notifier.NotifierError, "installed state is malformed"):
+        with self.assertRaisesRegex(notifier.NotifierError, "retired notifier format"):
             notifier.uninstall(self.paths)
         self.assertEqual(outside.read_bytes(), b"preserve")
 

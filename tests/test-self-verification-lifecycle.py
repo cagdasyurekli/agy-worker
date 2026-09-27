@@ -158,7 +158,55 @@ class SelfVerificationLifecycle(unittest.TestCase):
                         0,
                     )
                     state, _raw, _sha = DISPATCH.load_state(job)
-                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (14, 1))
+                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (15, 1))
+
+    def test_denial_deadline_stays_nonreusable_after_verification_and_recovery(self):
+        # The controller collision test establishes this persisted reason from
+        # real terminal bytes. Here every later producer must keep its meaning.
+        with tempfile.TemporaryDirectory() as temporary:
+            for phase in ("manual", "self-verification", "interrupted-self-verification"):
+                with self.subTest(phase=phase):
+                    job, _sha, _worktree = self.fixture(str(Path(temporary) / phase))
+                    state, _raw, _sha = DISPATCH.load_state(job)
+                    state.update(status="failed", reason="permission_required", exit_code=6,
+                                 limit_kind="hard", elapsed_seconds=1.0,
+                                 continue_available=False, resume_available=False)
+                    _raw, sha = DISPATCH.write_atomic(job, DISPATCH.STATE_NAME, state)
+                    if phase == "self-verification":
+                        self.assertEqual(self.invoke(job, sha, [DISPATCH.SELF_VERIFICATION.CheckResult(
+                            "required", "passed", 0, 0, 0, 0)]), 0)
+                    elif phase == "interrupted-self-verification":
+                        state.update(phase="self-verifying", self_verification_run=state["attempt"],
+                                     self_verification_started_epoch=100.0,
+                                     self_verification_return_phase="awaiting-verification")
+                        DISPATCH.write_atomic(job, DISPATCH.STATE_NAME, state)
+                        with mock.patch.object(DISPATCH.time, "time", return_value=100.1), \
+                                contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
+                            self.assertEqual(DISPATCH.command_status(job, "text"), 0)
+                    state, _raw, sha = DISPATCH.load_state(job)
+                    self.assertEqual((state["reason"], state["exit_code"], state["limit_kind"]),
+                                     ("permission_required", 6, "hard"))
+                    self.assertTrue(state["result_available"])
+                    DISPATCH._bound_current_candidate(job, state)
+                    self.assertFalse(state["resume_available"] or state["continue_available"])
+                    self.assertFalse(DISPATCH._continue_from_facts(state, 101.0))
+                    self.assertFalse(DISPATCH._resume_is_eligible(state, 101.0))
+                    self.assertFalse({"resume", "continue"} & {
+                        item["action"] for item in DISPATCH.public_status(state, sha, job=job)["available_actions"]})
+                    feedback = DISPATCH.SELF_VERIFICATION.advisory_feedback(state["result_sha256"], [])
+                    with mock.patch.object(DISPATCH, "_verification_from_stdin", return_value=feedback), \
+                            self.assertRaises(DISPATCH.DispatchError):
+                        DISPATCH.command_continue(job, sha)
+                    if phase == "self-verification":
+                        with self.assertRaises(DISPATCH.DispatchError):
+                            DISPATCH.command_continue(job, sha, use_self_verification=True)
+                    with self.assertRaises(DISPATCH.DispatchError):
+                        DISPATCH.spawn(job, "conversation-resume", resume=True,
+                                       foreground=False, approve_sha=sha)
+                    projected = DISPATCH._terminal_projection(
+                        {**state, "attempt_origin": "conversation-continue"},
+                        status="failed", reason="permission_required", exit_code=6)
+                    self.assertFalse(projected["continue_available"])
 
     def test_attempt_is_single_use_default_off_and_unknown_ids_blocked(self):
         with tempfile.TemporaryDirectory() as temporary:

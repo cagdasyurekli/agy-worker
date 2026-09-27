@@ -268,8 +268,8 @@ CURRENT_STATE_FIELDS = {
     'worktree_snapshot_algorithm',
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
-CURRENT_STATE_SCHEMA = 14
-CURRENT_COMMAND_SCHEMA = 12
+CURRENT_STATE_SCHEMA = 15
+CURRENT_COMMAND_SCHEMA = 13
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
 CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -312,26 +312,6 @@ EXIT_BY_REASON = {
     "interrupted": 143,
 }
 
-# These are exact, version-scoped observations.  Unknown text remains unclassified;
-# no broad substring or prose inference may decide auth/provider state.
-# Populated only from retained, version-bound observations.  There is currently no
-# reviewed 1.1.12 stderr evidence in the repository, so every provider diagnostic
-# remains deliberately unclassified.
-EXACT_FAILURE_LINES: dict[str, dict[bytes, str]] = {"1.1.12": {}}
-
-# agy 1.1.13 emitted this exact provider-owned terminal error shape in three
-# retained same-conversation observations. The reset duration is the only
-# variable part. Do not broaden this to free-form quota/message matching or to
-# another agy version without separately reviewed evidence.
-QUOTA_ERROR_1_1_13_RE = re.compile(
-    r"rpc error: Individual quota reached\. Contact your administrator to enable "
-    r"overages\. Resets in (?P<hours>[0-9]{1,3})h"
-    r"(?P<minutes>[0-9]{2})m(?P<seconds>[0-9]{2})s\."
-)
-QUOTA_RESULT_FIELDS = {
-    "conversation_id", "status", "response", "error", "duration_seconds",
-    "num_turns", "json_schema", "usage",
-}
 MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
 
@@ -708,15 +688,10 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         raise DispatchError("dispatch command is not canonical")
     if value["kind"] != "agy-worker-dispatch-command":
         raise DispatchError("dispatch command version is invalid")
-    if (
-        not isinstance(value["agy_version"], str)
-        or re.fullmatch(
-            r"(?:0|[1-9][0-9]{0,4})\.(?:0|[1-9][0-9]{0,4})\."
-            r"(?:0|[1-9][0-9]{0,4})",
-            value["agy_version"],
-        ) is None
-    ):
-        raise DispatchError("dispatch agy version is invalid")
+    version = value["agy_version"]
+    if (not isinstance(version, str) or not version or len(version.encode("utf-8")) > 128
+            or any(ord(c) < 32 or ord(c) == 127 for c in version)):
+        raise DispatchError("dispatch agy diagnostic version is invalid")
     if not isinstance(value["job_id"], str) or JOB_RE.fullmatch(value["job_id"]) is None:
         raise DispatchError("dispatch command job ID is invalid")
     if not isinstance(value["argv"], list) or not value["argv"] or any(
@@ -1830,22 +1805,10 @@ def _lifecycle_mutation_bindings(
 
 
 def _selection_launch_is_authorized(record: dict[str, Any] | None) -> bool:
-    """Allow exact-match V2 or explicitly approved V3 direct provenance."""
-    if record is None or record.get("selection_mode") not in {
-        "exact-model", "model-effort",
-    }:
-        return True
-    if not MODEL_SELECTION.has_current_probed_executable_binding(record.get("probed_executable")):
-        return False
-    if record.get("schema_version") == 3:
-        return True
-    return (
-        record.get("schema_version") == 2
-        and record.get("version_relation") == "match"
-        and record.get("compatibility_status") == "reviewed-version-match"
+    return record is None or (
+        record.get("schema_version") == MODEL_SELECTION.SELECTION_SCHEMA
+        and MODEL_SELECTION.has_current_probed_executable_binding(record.get("probed_executable"))
     )
-
-
 
 
 def _available_actions(
@@ -3301,9 +3264,9 @@ def _load_bound_selection(
     try:
         # A direct selection is an immutable dispatch input.  Its raw bytes and
         # identity have just been compared to the command/state bindings; do
-        # not reapply a mutable current compatibility matrix to it here.
+        # not reopen or substitute the caller selection here.
         record = MODEL_SELECTION.decode_selection_record(raw, frozen=True)
-    except (MODEL_SELECTION.CallerError, MODEL_SELECTION.ReviewRequired, MODEL_SELECTION.EvidenceUnavailable) as exc:
+    except (MODEL_SELECTION.CallerError, MODEL_SELECTION.EvidenceUnavailable) as exc:
         raise DispatchError("dispatch selection is invalid") from exc
     return record
 
@@ -3423,37 +3386,26 @@ def _bound_lifecycle_inputs(
 
 def _reprobe_direct_selection(
     command: dict[str, Any], state: dict[str, Any], argv: list[str],
-) -> tuple[str, dict[str, Any]] | None:
-    """Prove direct selection compatibility immediately before provider launch."""
-
+) -> tuple[str, dict[str, Any]]:
+    """Probe every provider launch and bind exact caller model/effort arguments."""
     record = _load_bound_selection(command, state)
-    if record is None:
-        return None
-    mode = record["selection_mode"]
-    if mode not in {"exact-model", "model-effort"}:
-        return None
-    if not _selection_launch_is_authorized(record):
-        # A current exact-version V2 record is mechanically sufficient.  V2
-        # drift remains historical evidence only; drift needs a bound V3 Codex
-        # disposition before any provider-causing lifecycle.
-        raise DispatchError("dispatch direct selection lacks approved compatibility disposition")
-    if argv.count("--model") != 1:
-        raise DispatchError("dispatch direct selection model argument is invalid")
-    model_index = argv.index("--model")
-    if model_index + 1 >= len(argv) or argv[model_index + 1] != record["resolved_agy_model"]:
-        raise DispatchError("dispatch direct selection model argument drifted")
-    # The worker does not support an effort flag; selection resolves effort into
-    # one immutable compound model slug.  A new one would be a fallback surface.
-    if "--effort" in argv:
-        raise DispatchError("dispatch direct selection effort fallback is invalid")
+    if record is not None:
+        if not _selection_launch_is_authorized(record):
+            raise DispatchError("dispatch selection has no current executable binding")
+        for flag, key in (("--model", "resolved_agy_model"), ("--effort", "user_effort")):
+            expected = record.get(key)
+            if expected is None:
+                if flag in argv:
+                    raise DispatchError("dispatch selection argument drifted: " + flag)
+            elif argv.count(flag) != 1 or argv.index(flag) + 1 >= len(argv) or argv[argv.index(flag) + 1] != expected:
+                raise DispatchError("dispatch selection argument drifted: " + flag)
     try:
-        # Keep both facts through the subsequent bounded worktree scan.  The
-        # final confirmation belongs after that scan, immediately before the
-        # provider process is created; otherwise an A->B replacement can make
-        # a successfully probed A authorize an unprobed B.
-        return MODEL_SELECTION.reprobe_selection_record(record)
-    except (MODEL_SELECTION.CallerError, MODEL_SELECTION.ReviewRequired, MODEL_SELECTION.EvidenceUnavailable) as exc:
-        raise SelectionPreflightError("dispatch direct selection reprobe failed") from exc
+        if record is not None:
+            return MODEL_SELECTION.reprobe_selection_record(record)
+        executable, binding, _version = MODEL_SELECTION.probe_capabilities()
+        return executable, binding
+    except (MODEL_SELECTION.CallerError, MODEL_SELECTION.EvidenceUnavailable) as exc:
+        raise SelectionPreflightError("dispatch capability preflight failed") from exc
 
 
 def _terminate(process: subprocess.Popen[bytes]) -> int:
@@ -3602,7 +3554,7 @@ def _reviewed_provider_timeout_lines(version: str, seconds: object) -> set[bytes
     wrapper always supplies a positive integer number of seconds.  Accept only
     those two equivalent spellings for that exact bound value.
     """
-    if version not in {"1.2.2", "1.2.6", "1.2.7"} or type(seconds) not in (int, float):
+    if type(seconds) not in (int, float):
         return set()
     # The exact-type guard above excludes bool and all non-numeric objects.
     seconds = cast("int | float", seconds)
@@ -3662,7 +3614,7 @@ def _classify_stderr(
             return "agy_failed_unclassified"
         if not m_line.startswith(b"AGY_ERROR: "):
             return "agy_failed_unclassified"
-        if version not in {"1.2.6", "1.2.7", "1.2.10", "1.2.11"} or returncode != 3:
+        if returncode != 3:
             return "agy_failed_unclassified"
         payload = parse_agy_error(m_line)
         if payload is None:
@@ -3671,10 +3623,6 @@ def _classify_stderr(
         if expected_timeout and bool(expected_timeout.intersection(raw_lines)):
             return "agy_failed_unclassified"
         if any(b"permission that headless mode cannot prompt for" in line for line in raw_lines):
-            return "agy_failed_unclassified"
-        stripped_lines = {line.strip() for line in raw_lines if line.strip()}
-        signatures = EXACT_FAILURE_LINES.get(version, {})
-        if any(sig in stripped_lines for sig in signatures):
             return "agy_failed_unclassified"
         return "provider_terminal_error"
 
@@ -3687,16 +3635,9 @@ def _classify_stderr(
     if returncode == 0:
         return "empty_output"
 
-    # 4. Legacy permission
+    # Preserve the existing nonzero headless-permission restriction.
     if any(b"permission that headless mode cannot prompt for" in line for line in raw_lines):
         return "permission_required"
-
-    # 5. Exact failure signatures
-    stripped_lines = {line.strip() for line in raw_lines if line.strip()}
-    signatures = EXACT_FAILURE_LINES.get(version, {})
-    matched_reasons = {r for sig, r in signatures.items() if sig in stripped_lines}
-    if len(matched_reasons) == 1:
-        return matched_reasons.pop()
 
     return "agy_failed_unclassified"
 
@@ -3766,104 +3707,10 @@ def _terminal_result(stream: Path, *, strict: bool = False) -> dict[str, Any] | 
     return result
 
 
-def _quota_terminal_failure(stream: Path, version: str) -> tuple[str, int | None] | None:
-    if version != "1.1.13":
-        return None
+def _has_denied_actions(stream: Path) -> bool:
+    """Opaque denial-key presence restricts reuse only after strict framing."""
     result = _terminal_result(stream, strict=True)
-    if result is None or set(result) != QUOTA_RESULT_FIELDS:
-        return None
-    if result.get("status") != "ERROR" or result.get("response") != "":
-        return None
-    conversation = result.get("conversation_id")
-    if not isinstance(conversation, str) or CONVERSATION_RE.fullmatch(conversation) is None:
-        return None
-    if (
-        type(result.get("duration_seconds")) not in (int, float)
-        or not math.isfinite(result["duration_seconds"])
-        or result["duration_seconds"] < 0
-    ):
-        return None
-    if type(result.get("num_turns")) is not int or result["num_turns"] < 0:
-        return None
-    if not isinstance(result.get("usage"), dict) or not isinstance(result.get("json_schema"), dict):
-        return None
-    error = result.get("error")
-    if not isinstance(error, str) or len(error) > 256:
-        return None
-    match = QUOTA_ERROR_1_1_13_RE.fullmatch(error)
-    if match is None:
-        return None
-    hours = int(match.group("hours") or 0)
-    minutes = int(match.group("minutes") or 0)
-    seconds = int(match.group("seconds") or 0)
-    retry: int | None = hours * 3600 + minutes * 60 + seconds
-    if minutes >= 60 or seconds >= 60 or not (1 <= cast(int, retry) <= MAX_PROVIDER_RETRY_SECONDS):
-        retry = None
-    return "provider_quota_exhausted", retry
-
-
-def _has_reviewed_denied_actions(stream: Path, version: str) -> bool:
-    """Recognize only reviewed exact-version top-level denial signals.
-
-    Its payload is provider-owned and deliberately never interpreted or copied
-    into public state. Call this only after the terminal envelope has passed
-    schema validation, so presence cannot turn an invalid report into a candidate.
-    """
-    if version not in {"1.1.27", "1.2.2", "1.2.11"}:
-        return False
-    result = _terminal_result(stream, strict=True)
-    return isinstance(result, dict) and "denied_actions" in result
-
-
-REFUSAL_RESULT_FIELDS_1_2_6 = {
-    "conversation_id", "denied_actions", "duration_seconds",
-    "json_schema", "num_turns", "response", "status", "usage",
-}
-REFUSAL_RESULT_FIELDS_1_2_7 = REFUSAL_RESULT_FIELDS_1_2_6
-
-
-def _has_reviewed_terminal_refusal(stream: Path, version: str) -> bool:
-    """Recognize only reviewed exact-shape headless refusal results.
-
-    The observed native refusal returns exit 0, terminal status SUCCESS, empty
-    response, exact result keys (no structured_output), valid conversation,
-    finite nonnegative duration, int nonnegative turns, dict json_schema/usage,
-    and a nonempty bounded list of denied_actions with exact action/display_name keys.
-    Any deviation or unknown shape fails closed.
-    """
-    if version not in {"1.2.6", "1.2.7", "1.2.11"}:
-        return False
-    result = _terminal_result(stream, strict=True)
-    if result is None or set(result) != REFUSAL_RESULT_FIELDS_1_2_6:
-        return False
-    if result.get("status") != "SUCCESS" or result.get("response") != "":
-        return False
-    conversation = result.get("conversation_id")
-    if not isinstance(conversation, str) or CONVERSATION_RE.fullmatch(conversation) is None:
-        return False
-    duration = result.get("duration_seconds")
-    if type(duration) not in (int, float) or cast("int | float", duration) < 0:
-        return False
-    if isinstance(duration, float) and not math.isfinite(duration):
-        return False
-    turns = result.get("num_turns")
-    if type(turns) is not int or turns < 0:
-        return False
-    if not isinstance(result.get("json_schema"), dict) or not isinstance(result.get("usage"), dict):
-        return False
-    denied = result.get("denied_actions")
-    if not isinstance(denied, list) or len(denied) != 1:
-        return False
-    item = denied[0]
-    if not isinstance(item, dict) or set(item) != {"action", "display_name"}:
-        return False
-    action = item["action"]
-    display_name = item["display_name"]
-    if not isinstance(action, str) or not (1 <= len(action) <= 256) or "\n" in action or "\r" in action:
-        return False
-    if not isinstance(display_name, str) or not (1 <= len(display_name) <= 256) or "\n" in display_name or "\r" in display_name:
-        return False
-    return True
+    return isinstance(result, dict) and isinstance(result.get("status"), str) and result["status"] in {"SUCCESS", "ERROR", "CANCELLED", "CANCELED"} and "denied_actions" in result
 
 
 AGY_ERROR_PAYLOAD_FIELDS = {
@@ -4659,9 +4506,18 @@ def _launch_controller_provider(
         execution.stop_signal = exc.signal_number
         outcome.reason = "interrupted"
         execution.returncode = 128 + exc.signal_number
-    except SelectionPreflightError:
+    except SelectionPreflightError as exc:
         outcome.reason = "selection_preflight_failed"
         outcome.failure_stage = "selection_preflight"
+        cause = exc.__cause__
+        if isinstance(cause, MODEL_SELECTION.MissingCapabilities):
+            diagnostic = (cause.diagnostic() + "\n").encode("ascii")
+            try:
+                if os.write(streams.stderr_fd, diagnostic) != len(diagnostic):
+                    raise OSError("short capability diagnostic write")
+            except OSError:
+                outcome.reason = "status_unavailable"
+                outcome.failure_stage = "binding_failure"
         execution.returncode = EXIT_BY_REASON[outcome.reason]
     except WorktreeBaselineError as exc:
         outcome.reason = "resolve_undo_present" if isinstance(exc, ResolveUndoPresentError) else "status_unavailable"
@@ -4942,20 +4798,6 @@ def _observe_controller_terminal(
     # frozen deadline.  Cancellation and binding failures retain their
     # existing fail-closed precedence and do not enter this path.
     if outcome.reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:
-        if outcome.reason is None:
-            terminal_failure = _quota_terminal_failure(
-                streams.stream_path,
-                binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
-            )
-            if terminal_failure is not None:
-                outcome.reason, outcome.provider_retry_after = terminal_failure
-                outcome.outer_status = "ERROR"
-                # The exact 1.1.13 quota terminal has a valid outer ERROR
-                # fact but intentionally carries no structured report.
-                # Preserve both facts without treating quota as a report.
-                outcome.failure_stage = "missing_structured_output"
-                if outcome.provider_retry_after is not None:
-                    outcome.provider_retry_observed = time.time()
         if outcome.reason in {None, "hard_deadline_exceeded"} and streams.sizes["stdout"] == 0:
             if outcome.reason is None:
                 outcome.reason = (
@@ -4975,35 +4817,21 @@ def _observe_controller_terminal(
                     streams.stream_path, streams.envelope_path, binding.schema_paths[0], binding.schema_paths[1],
                     stage_dir=launch.stage_dir,
                 )
-                if outcome.result_binding is None and outcome.reason is None:
-                    if (
-                        outcome.failure_stage == "missing_structured_output"
-                        and execution.returncode == 0
-                        and _has_reviewed_terminal_refusal(
-                            streams.stream_path,
-                            binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
-                        )
-                    ):
-                        outcome.reason, outcome.limit_kind = "permission_required", None
-                        outcome.failure_stage = None
-                    else:
-                        outcome.reason = "invalid_envelope"
-                elif (
-                    outcome.result_binding is not None
-                    and outcome.reason != "hard_deadline_exceeded"
-                    and _has_reviewed_denied_actions(
-                        streams.stream_path,
-                        binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
-                    )
-                ):
-                    outcome.reason, outcome.limit_kind = "permission_required", None
+                if outcome.failure_stage == "binding_failure":
+                    outcome.reason = "status_unavailable"
+                    outcome.result_binding = None
+                elif _has_denied_actions(streams.stream_path):
+                    # Keep hard-limit diagnostics and persist the reuse prohibition.
+                    outcome.reason = "permission_required"
+                    if outcome.limit_kind not in {"hard", "max-runtime"}:
+                        outcome.limit_kind = None
+                elif outcome.result_binding is None and outcome.reason is None:
+                    outcome.reason = "invalid_envelope"
                 elif (
                     outcome.result_binding is not None
                     and outcome.reason != "hard_deadline_exceeded"
                     and _has_reviewed_provider_timeout(
-                        streams.stderr_path,
-                        binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
-                        binding.command["max_seconds"],
+                        streams.stderr_path, binding.command["agy_version"], binding.command["max_seconds"],
                     )
                 ):
                     outcome.reason, outcome.limit_kind = "provider_timeout", None
@@ -5011,6 +4839,8 @@ def _observe_controller_terminal(
                     outcome.reason = "provider_terminal_error"
                 elif outcome.reason is None and outcome.outer_status == "CANCELLED":
                     outcome.reason = "provider_terminal_cancelled"
+                elif outcome.reason is None and execution.returncode != 0:
+                    outcome.reason = "agy_failed_unclassified"
             except DispatchError:
                 # A binding/schema failure is security-relevant even
                 # when a deadline was observed.  Do not preserve a
@@ -5693,7 +5523,7 @@ def create_state(
                 raise DispatchError("dispatch job directory cannot be inside the target workdir")
             command, state = _bound_lifecycle_inputs(job, state, command)
             if not _selection_launch_is_authorized(_load_bound_selection(command, state)):
-                raise DispatchError("dispatch direct selection lacks approved compatibility disposition")
+                raise DispatchError("dispatch selection has no current executable binding")
             if origin == "conversation-continue":
                 if (
                     verification is None
@@ -5934,6 +5764,7 @@ def _terminal_projection(
         and state["attempt"] < state["max_cycles"]
         and float(state["elapsed_seconds"]) < _provider_max_seconds(state)
         and status == "failed"
+        and reason not in {"permission_required", "selection_preflight_failed"}
         and allow_continue
         and not candidate_unavailable
     )
@@ -5962,6 +5793,7 @@ def _terminal_projection(
     else:
         resume_eligible = bool(
             status == "failed" and state["conversation_id"]
+            and reason not in {"permission_required", "selection_preflight_failed"}
             and state["attempt_origin"] != "conversation-continue"
         )
         updates.update({

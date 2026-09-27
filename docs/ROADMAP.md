@@ -5,12 +5,26 @@ verified limitations remain in [README.md](../README.md). An item explicitly mar
 implemented has code, adversarial tests, and documentation in its isolated slice; it
 is not a released/public capability until that slice is reviewed and merged.
 
-Compatibility reconciliation remains a prerequisite for model/effort selection and
-portable receipt work. The offline starter proof depends only on the maintained gate
+Capability checks precede provider launches; selection remains caller-owned and
+receipts bind driver evidence. The offline starter proof depends only on the maintained gate
 and can remain an independent slice. Each slice must stay within applicable approved
 scope; reuse existing authority when it covers the work. This roadmap does not itself
 authorize code, commit, push, pull-request, merge,
 release, live model use, or another external action.
+
+## Unreleased — capability-based AGY integration
+
+The candidate checks required local AGY capabilities before every provider launch,
+rechecks the bound executable immediately before starting it, and treats the version
+string as diagnostic. It removes version registries, model matrices, capture and
+attestation tools, and help-SHA approval. Model and effort pass through as caller
+choices. [Capability and response rules](INSTALLATION.md#agy-capability-requirements)
+state the limits; passing help checks does not qualify authentication or task quality.
+Project update checks remain, while old notifier formats require authenticated
+uninstall with their creating release, owner archiving of the confirmed inert recovery
+record, and an explicit new install. Existing old
+records, snapshots, and schedules are not rewritten or deleted. These changes are
+unreleased.
 
 ## Unreleased — smaller core surface
 
@@ -26,9 +40,8 @@ it does not describe a full marketplace download or promise pruning of older ins
 This development candidate makes a breaking change for in-flight jobs written in
 retired dispatch or workflow formats: readers reject them without projection or
 migration. Finish or discard those jobs with the release that created them;
-v0.22.0 is the last documented release with legacy-schema support. Current formats
-include command V12: all V11 jobs are retired, including those that never used
-Boost or a persona. Old job artifacts remain untouched. Current formats are defined
+Current dispatcher formats are state V15 and command V13, with selection V4.
+All earlier formats are retired, including ordinary jobs that used no removed feature. Old job artifacts remain untouched. Current formats are defined
 by the runtime constants linked from the
 [recovery guide](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
@@ -68,7 +81,7 @@ policies for both effects. These changes have not been released.
 
 ## v0.22.0 — AGY 1.2.11 compatibility and workflow usability
 
-The v0.22.0 version manifest records AGY 1.2.11 as the current active compatibility binding. The exact unchanged 14-slug model matrix, its SHA-256, reviewed release revision, inventory binding, and bounded behavior limits live in `../compat/reviews/agy-1.2.11-activation.md`. The official 1.2.11 release page identifies commit `6dadd6227a49905f475d22b7f0afe59493229595`. 1.2.7 is now the previous historical binding.
+v0.22.0 recorded an AGY compatibility baseline. Its retained release commit owns the historical version and model evidence; the unreleased capability-based integration no longer carries that registry.
 
 This release also exposes advisory delegation decisions through the ordinary workflow, fixes finalization through the public dispatcher wrapper, rejects repeated model/effort/tier options, and clarifies checkout freshness and ignored-cache diagnostics. Bounded live session editing and same-conversation refinement were verified; native and effective accept-edits semantics remain unqualified for AGY 1.2.11.
 
@@ -93,18 +106,14 @@ commit; marketplace visibility is a separate external state.
 Official v0.19.0 publication is bound to commit `412831c`. It activated AGY 1.2.2 after
 bounded session and native normal and same-conversation repair qualification. It recognizes
 refused actions and observed partial-output timeouts, preserves useful candidates, repairs
-native conversation persistence, and shortens the skill's main instructions. The unchanged
-fourteen-slug model mappings and caller-owned selection remain intact. The
-[activation record](../compat/reviews/agy-1.2.2-activation.md) owns the evidence and
-limits. The stable implementation passed all 44 offline CI stages and independent
+native conversation persistence, and shortens the skill's main instructions. Its release commit retains the historical compatibility evidence and limits. The stable implementation passed all 44 offline CI stages and independent
 acceptance. Release publication and installation are verified separately against
 the exact public commit; marketplace visibility is a separate external state.
 
 ## v0.18.0 — released
 
 v0.18.0 established the prior AGY 1.1.27 normal-session compatibility baseline.
-Its [historical activation record](../compat/reviews/agy-1.1.27-activation.md) retains
-the accepted cases and their qualification limits. Marketplace visibility
+Its release commit retains the accepted cases and their qualification limits. Marketplace visibility
 is verified separately from the GitHub release.
 
 ## v0.17.0 — released
@@ -112,8 +121,8 @@ is verified separately from the GitHub release.
 [v0.17.0](https://github.com/cagdasyurekli/codex-agy-worker/releases/tag/v0.17.0)
 made normal AGY session access the default, retained optional native isolation,
 and improved workspace reconciliation and scoped repair without repeated approval
-for mechanical digest refreshes. Its AGY 1.1.26 qualification remains in the
-[historical activation record](../compat/reviews/agy-1.1.26-activation.md).
+for mechanical digest refreshes. Its release commit retains the historical AGY
+qualification limits.
 
 ## Product direction
 
@@ -199,40 +208,6 @@ Every roadmap slice must preserve all of these rules:
     conformance fixtures may remain outside the public skill when documented as such.
 12. External data transmission, live provider use, destructive cleanup, and GitHub
     or release actions keep separate explicit approval gates.
-
-## Current agy inventory correction
-
-The accepted agy `1.2.2` reconciliation combines documented `--effort` and
-machine-readable `models` surfaces with one separately authorized, version-bound JSON
-model capture. The exact unchanged 14-slug list, its SHA-256, reviewed release
-revision, inventory binding, and bounded behavior limits live in
-[`../compat/reviews/agy-1.2.2-activation.md`](../compat/reviews/agy-1.2.2-activation.md).
-The earlier [`1.1.22` observation](../compat/reviews/agy-1.1.22.md) remains a
-non-activating historical failed-capture record, and the
-[`1.1.12` reconciliation](../compat/reviews/agy-1.1.12.md) remains historical evidence.
-Agent and plugin
-catalogs were not part of that bounded review and remain outside this contract.
-
-This advances the binding without turning advertised flags or historical failure
-behavior into broader agy `1.2.2` promises:
-
-- Do not expose `--effort` before G0 reconciles official releases/source/docs with a
-  sandbox-correct inventory and bounded behavior tests. G1 may then expose the same
-  vocabulary as a wrapper input; it must not infer effort, invent a thinking-level
-  flag, or imply that both agy selectors are forwarded.
-- Do not add dynamic model discovery from help text alone.
-- Do not infer authentication from a single failure or invent `agy auth`. Probe only
-  documented commands and validate their expected semantic output; neither an unknown
-  subcommand's exit code nor generic usage text is compatibility evidence.
-- Do not assume agy's separate `--model` and `--effort` flags compose safely.
-  The current bounded `1.2.2` JSON inventory advertises the compound slugs.
-  The official release and documentation were human-reconciled, but
-  this repository has not yet completed evidence that establishes dual-selector
-  composition or precedence. G1 therefore resolves a verified base/effort pair to
-  one exact advertised slug and sends one `--model`.
-- Any exposure of newly advertised agy behavior remains a separate slice requiring
-  official docs, official source, a sandbox-correct live inventory, a bounded real
-  job, paired offline tests, and explicit approval.
 
 ## Release groups and slices
 
@@ -371,34 +346,12 @@ may be reconsidered. Deferral did not weaken the then-active agy `1.1.10` baseli
 advance the unreconciled `1.1.11` evidence, or claim live provider or cleanup
 behavior.
 
-### G0 — Compatibility Reconciliation & Watch
+### G0 — Historical compatibility reconciliation
 
-**Current status:** Daily hosted observation, the optional local notifier, privacy-
-Codex `0.148.0` reconciliation, bounded GitHub
-transport hardening, the historical agy `1.1.12` reconciliation, gate-envelope intake, lifecycle
-Git stdout, Actions checkout credentials, and the progress-aware per-job lifecycle are
-implemented and offline-verified in the published v0.4.0 release. This remains an
-offline and bounded-lifecycle claim, not a live-provider guarantee.
-The published v0.6.0 release scope added the human-reconciled Gemini 3.7 Flash
-low/medium/high mappings plus capture-child mode and dispatch-state snapshot hardening.
-The v0.7.0 usability-first project workflow, v0.8.0 maintenance/diagnostics slice,
-v0.9.0 agy 1.1.16 compatibility work, and v0.10.0 lifecycle, recovery, verification,
-and Codex-owned assurance scope are published. Immutable historical v0.10.0 tag bytes
-cannot be rewritten; this source alignment establishes repository truth without
-retroactively altering that published tag.
-Read-only project/agy/Codex observations use
-exact fixed GitHub REST paths with no ambient proxy or redirect path, and a bounded
-process-group supervisor also contains installed version probes. Check/watch makes no
-Git network request. The explicit `apply` fetch remains a separately authorized
-ambient-Git transport path and is not claimed hardened by this slice. The agy
-`1.2.11` reconciliation is the current local compatibility binding (retaining `1.2.7`
-as previous/historical); see the [activation record](../compat/reviews/agy-1.2.11-activation.md) for its bounded session evidence.
-The first authorized 1.1.22 JSON capture remains historical failed evidence; its later
-accepted capture established the prior baseline, and the separately accepted 1.1.24
-capture advanced the fourteen-slug inventory from Gemini 3.5 Flash to Gemini 3.8 Flash.
-P2-B/P2-C remain deferred. Ordinary agy-owned default
-dispatch and explicitly approved literal pass-through remain operational during
-future version drift; reviewed model/effort resolution stays fail-closed.
+The exact-version reconciliation, capture, attestation, and scheduled compatibility
+watch surfaces are retired by the unreleased capability-based integration. Their
+historical release commits retain the corresponding evidence. Current local probes
+and explicit project updates are documented in [operations](OPERATIONS.md).
 
 ### Usability-first project workflow
 
@@ -416,480 +369,23 @@ as a command or allow agy to self-assign quality. A useful unresolved candidate 
 preserved for review instead of being silently retried, discarded, or presented as
 complete.
 
-### Maintenance, version drift, and quota diagnostics
+### Project maintenance and caller-owned selection
 
-**Current status:** The maintenance/notifier and quota-diagnostic work was published
-in v0.8.0. The agy 1.1.16 active-baseline reconciliation was published in v0.9.0.
-The legacy notifier refresh migration, bounded lifecycle recovery, driver-owned
-verification, and Codex-owned assurance scope were published in v0.10.0.
+Maintenance and the notifier were published in v0.8.0; bounded lifecycle recovery,
+driver-owned verification, and Codex-owned assurance were published in v0.10.0.
+The project updater resolves a bounded annotated tag to its commit. A current-format
+notifier snapshot with changed source bytes reports `maintenance-required` and waits
+for explicit owner `refresh`; malformed or unsafe state remains inert.
 
-The project updater resolves one bounded annotated project tag to a commit. A valid
-notifier snapshot whose source bytes changed reports `maintenance-required` and waits
-for an explicit owner `refresh`; malformed or unsafe state remains inert. The earlier
-agy 1.1.16 interface observation remains a historical non-activating record; the later
-exact capture, inventory binding, and human reconciliation activated the historical
-1.1.16 baseline and unchanged 14-slug matrix. The first 1.1.22 failed capture remains
-non-activating historical evidence; a later accepted single-call capture and separate
-human reconciliation activated that historical baseline. The accepted 1.1.24 capture
-and reconciliation now supply the active version, release, inventory, and matrix
-binding. Codex
-0.150.1 is an observational baseline
-with no agy authority. For Issue #59, only the exact
-reviewed agy 1.1.13
-quota terminal is classified as exit 24 with a bounded countdown. No raw error text is
-public, and no retry, restart, model change, provider call, or metadata activation is
-automatic.
+Project updates and the optional local notifier remain explicit maintenance tools;
+see [operations](OPERATIONS.md). The notifier does not apply updates. Old source
+manifest formats require the creating release's authenticated uninstall, owner
+archiving of the confirmed inert recovery record, and an explicit current install; there is no legacy manifest reader or in-place migration.
 
-**Published v0.10.0 scope — legacy notifier refresh migration:** v0.9.0
-expanded the notifier's closed source manifest from the v0.8.0 18-file set to 21
-files. In v0.10.0, `refresh` recognizes only that explicitly allowlisted immediately-prior
-ledger shape, validates its account/source/Git binding and installed bytes with the
-matching historical manifest, completes the serialized authenticated uninstall, and
-installs the current manifest without manual private-state editing. Current install,
-status, run, and uninstall paths remain strict. Offline coverage includes the positive
-18→21 migration and negative unknown-key, digest, identity, replacement-file,
-tombstone, launchd-state, and refresh-only cases. No generic schema relaxation or
-silent ledger rewrite is accepted.
-
-The provider-independent inventory parser is also implemented offline. It treats
-each line as one semantic inventory entry, requires complete one-time coverage of the
-14 exact reviewed slugs, and rejects unknown reviewed-provider tokens,
-generic-regex aliases, or prefix matches. In
-particular, `gpt-oss` is accepted only as display text on the same line as
-`gpt-oss-120b-medium`. Synthetic tests pin the corrected canonical-slug hash without
-checking provider output into the repository. The parser alone cannot activate
-metadata; the accepted `1.1.16` version/source, capture, and human reconciliation
-provide that separate binding.
-
-The provider-independent version-attestation prerequisite now has one canonical
-fixed-profile runner plus its persistent mutation harness. The runner owns the exact
-snapshot-backed version-only Popen path and a synthetic-only self-test; the harness
-binds its exact source bytes and digest before import. Their 165- and 60-case suites
-replace one-off inline runners with bounded process-group ownership, inode-bound
-durable publication, atomic lifecycle completion, and paired weakened controls. They
-invoke no agy, provider, network, or private production evidence. This closes the
-offline version provenance prerequisite only.
-
-The implemented bootstrap slice is a separate repository-only closed-profile runner,
-not a new recovery mode. It validates one retained accepted recovery binding, builds
-one fresh disjoint recovery input from held bytes, binds every created inode before
-publication or rollback, revalidates empty unchanged private scratch after group
-closure, and has 139 synthetic offline cases. Transient staging/final hard links are
-recorded as one exact `nlink=2` inode and normalized before durability hooks or signal
-polls. The production CLI now owns the process:
-checkpointed signal choice uses fixed HUP/INT/TERM priority; signals stay unblocked
-through copies, provisional publication, validation, durability, and the flushed
-success line. One blocked completion snapshot then precedes the committed
-`os._exit(0)` path without Python restoration. The restoring API is
-test-only and hands post-snapshot signals to its caller. Userspace hash/copy chunks are
-bounded to 1 MiB, not the duration of a kernel syscall. Its exact production graph guard is
-reviewed-source drift detection under the reviewed-source/interpreter/local-owner/
-same-UID/OS-admin TCB, not hostile-source proof. It performs no live-account,
-provider, network, Git, or metadata action.
-Its production and test entrypoints require the selected CPython 3.9
-`/usr/bin/python3 -I -S -B`; exact implementation, major/minor, and flag preflight
-rejects before production AST parsing, lifecycle acquisition, or mutation.
-
-The current-source initial-bootstrap prerequisite is now implemented as a separate
-repository-only bridge, rather than changing retained-recovery bootstrap semantics.
-It accepts a closed canonical profile with a fresh owner-private root, exact current
-source path/full identity, fixed `1.1.12` / source-SHA expectations, and its own
-exact `1.1.12` stdout authority; it has no account-HOME input or inspection. It holds the source twice, makes independent source
-and snapshot copies, performs one bounded snapshot-backed `--version` observation,
-and emits only a structurally accepted `snapshot-version-only` prior/profile. Its
-durable `recovery_runner_version_reconciled:false` limitation made Phase 2 recovery
-execution STOP/deferred at publication time: the then-unchanged canonical recovery
-runner remained pinned to `1.1.11` and could not execute this profile before the
-later, separately reviewed reconciliation recorded below.
-It never reads historical recovery evidence or performs model/login/provider/network/
-Git/routing/retry/metadata work. Offline tests cover source/path/identity rejection,
-two-copy production, process/scratch rollback, signals, source-pin mutation, and
-recovery compatibility. Its real observation required separate authorization and is
-recorded below.
-
-The separate fixed `scripts/version_recovery_1_1_12_runner.py` is the next Phase 1
-recovery surface. Before lifecycle acquisition or source parsing, it accepts only
-the exact retained 990-byte profile and binding instance, then requires the reviewed
-1.1.12 source SHA, source/snapshot identities, exact stdout, one prior version call,
-and durable false reconciliation limitation. It revalidates the complete retained
-evidence after its one static snapshot-backed Popen, and validates a descriptor-held
-output root with empty scratch and exact durable artifacts before publishing only
-`snapshot-version-recovery`. The binding records the consumed profile digest. This evidence is
-non-authorizing: it cannot feed models, capture, inventory, metadata, selection, or
-routing. Phase 2 remained STOP/deferred until the separate models reconciliation and
-explicit authorization of its one real call recorded below; this runner alone still
-supplies neither.
-
-The adjacent signal-handoff slice is now implemented without expanding provider or
-metadata authority. Version, models, capture, and profile production entrypoints own
-their process through flushed success output and one final blocked completion
-snapshot, then use `os._exit`; inherited ignored and caller-blocked signals remain
-outside their owned sets. Checkpoints select accumulated HUP/INT/TERM by fixed
-priority, not claimed chronology, while preboundary signals or output failures roll
-back provisional markers/profiles. Embedded APIs restore only through explicit
-caller handoff, and the mutation harness exposes that return path only to tests. The
-byte-pin chain is version to models to capture, with independent version-harness and
-profile pins. All coverage remains synthetic and offline.
-
-A separate canonical models-inventory runner now binds one exact `models` Popen to
-an accepted version binding and the same attested snapshot. Its 116-case offline suite
-uses synthetic executables only, pins the exact 14-line semantic parser and corrected
-normalized hash, enforces 25-second/64-KiB bounds and private detached publication,
-and kills mutations of the executable override, logical argv, private cwd, stream
-wiring, exact closed environment, bounds, parser, version-binding digest, and
-completion marker. Its child always receives fresh private empty HOME/TMP/XDG roots;
-it never inherits or copies caller credentials or Python startup state. The accepted
-`1.1.11` binding proves only the version snapshot/source/argv observation. An
-auth-required inventory therefore rejects without an accepted marker and cannot
-advance checked-in metadata or the fail-closed matrix.
-
-A separate capture-only runner/profile is now implemented and offline-tested in 84
-runner and 121 builder cases with fake account roots. It binds an explicit account
-HOME identity, the accepted version
-binding, and retained snapshot. After group closure its private scratch/cache/cwd must
-be unchanged and empty; any bounded exit-zero stdout/stderr is otherwise captured
-without inventory or error interpretation. It can publish only a private `captured`
-record plus `models.capture.sha256`; it cannot accept inventory or advance metadata.
-Its existence does not authorize or perform a real-account call. That future action
-still requires explicit authorization for the exact account HOME/profile and one
-call. The external CLI may read, write, mutate, or cache within that HOME; the runner
-cannot detect or revert those changes, and residuals can remain after rejection. The
-account HOME/local owner and same-UID processes, reviewed source/interpreter, and OS
-admins are trusted, and the runner does not validate HOME contents or claim same-user
-tamper resistance. It is neither a fallback nor a retry in the auth-isolated runner.
-
-The separate `models_capture_profile.py` preparation tool is process-inert and
-offline-tested. It derives the existing ten-field canonical capture profile only from
-explicit stdin paths plus no-follow account/source/snapshot/version-evidence
-descriptors, and publishes a mode-0600 no-overwrite file with rollback on failure or
-interruption. It does not enumerate HOME, read ambient configuration, invoke agy or
-any provider, interpret inventory, or grant authorization for the future capture.
-
-The independent fixed `1.1.12` bridge stays outside those historical surfaces: its
-profile builder binds only the recovered source, snapshot, and version evidence, and
-its runner records one bounded, separately authorized call as `captured` evidence.
-It cannot accept inventory, update metadata, route, retry, or inspect account-HOME
-contents.
-
-The separate post-v0.8.0 `1.1.16` chain is implemented, offline-tested, and was used
-for one separately authorized no-retry capture: a
-version-only source/snapshot evidence runner, a process-inert profile builder, and a
-capture-only runner with one no-retry process group, a 25-second wall, independent
-64-KiB streams, and fail-closed descendant cleanup. It preserves the 1.1.12 evidence
-history. The runner cannot authorize an account call, accept inventory, or advance
-metadata; strict offline normalization and the separate human reconciliation accepted
-the unchanged fourteen-slug inventory and activated the 1.1.16 bindings.
-
-The fixed `1.1.22` chain repeats the same reviewed design with exact
-version/release/distribution and self-pins. The first separately authorized account
-capture launched exactly one child and exited `1`; its private streams and sanitized
-unclassified failure record remain historical. After process-inert reprofiling, a
-later separately authorized single-call capture completed with exit `0`, one Popen,
-and the exact fourteen-slug inventory. Offline normalization plus a separate human
-reconciliation activated the 1.1.22 bindings without changing any mapping.
-
-A separate process-inert reprofile adapter
-(`scripts/models_capture_1_1_22_reprofile.py`) accepts an already-validated prior
-1.1.22 capture profile and prepares a new profile reflecting exactly one permitted
-change: `account_home_identity.nlink`. It reuses the fixed 1.1.22 profile module's
-derivation and bounded validation of the explicitly supplied recovery root's fixed
-artifact and scratch allowlists, and follows its publication pattern. It never enumerates
-or reads account HOME contents and has no subprocess, network, capture, inventory
-acceptance, routing, or activation authority.
-
-The historical authorized no-retry `1.1.12` capture established eleven slugs. A later
-separately authorized no-retry capture completed with child exit `0`, one Popen,
-empty post-child scratch, and an exact marker/record digest chain. Strict offline
-parsing retained those eleven and added Gemini 3.7 Flash low/medium/high, for a
-14-slug normalized inventory; Google documentation establishes the base levels but
-the exact agy compound slugs come from capture. Gemini 3.7 `minimal` is unsupported.
-An earlier rejected capture remains non-authoritative and was not reconstructed or
-retried. The successful capture does not prove provider backend, pricing, or routing
-authority; it is accepted only through the separate human reconciliation record.
-P2-B/P2-C stay deferred.
-
-Startup rejection now emits one capped canonical, path-redacted diagnostic line from
-the same evaluator that owns the boolean decision. This is evidence for reconciling a
-runner-image mismatch; it does not make that environment trusted or satisfy the gate.
-The fixed `/usr/bin/python3 -I -S -B` boundary explicitly trusts the selected reviewed
-Apple interpreter, hosted image, local owner, and OS administrators. Canonical
-family/component shape, alias/target identity, executable/no-setid mode, and no
-world-writable directory or resolved executable remain enforced; UID/GID and
-owner/group writability are diagnostics only. This is not same-user or hostile-PR
-tamper resistance, binary
-provenance, code-signing verification, or OS attestation.
-
-- **User job:** Learn that Codex or agy has drifted before a normal dispatch breaks,
-  while keeping every check read-only and requiring a human to reconcile behavior.
-- **Intended surface:** Extend the fixed-source compatibility contract in `update.sh`,
-  `compat/sources.md`, and dependency-free metadata from agy to both agy and Codex.
-  Use one explicit version, reviewed upstream revision, and last-reviewed date per
-  tool; migrate the current shared `compat/last-reviewed.txt` to unambiguous per-tool
-  records. Add a human-reviewed, dependency-free model/effort resolution matrix bound
-  to the exact verified agy version and source revision. Each adjustable input pair
-  maps to one exact advertised compound slug; fixed/no-level entries are recorded as
-  non-adjustable. Add
-  `.github/workflows/compatibility-watch.yml` as a separate daily and
-  `workflow_dispatch` macOS workflow. It is observational and is not a required pull
-  request check.
-- **Local check contract:** `./update.sh check` reports the installed version, the
-  repository's human-verified baseline, official stable release/source drift, and
-  official documentation-review age separately for agy and Codex. It exits `0` only
-  when all required evidence is available and unchanged, `3` when evidence establishes
-  drift or review is due, and `2` when network or source evidence is unavailable or
-  malformed. Exit `2` is **inconclusive**, never green. The command changes no file,
-  pulls nothing, applies nothing, and does not update its own baseline.
-- **Read-only transport contract:** Project, agy, and Codex observations use only
-  fixed `api.github.com` repository REST paths through a proxyless, redirect-rejecting,
-  strict bounded JSON client. A fixed-profile supervisor incrementally caps both
-  streams, applies a hard timeout, sanitizes output, and kills/reaps the entire child
-  process group. Installed version probes use the same boundary. Mutation-sensitive
-  offline controls prove that ambient Git URL rewrites, credentials, and proxies
-  cannot redirect check/watch, which performs no Git network query. This does not
-  make the explicit apply-time `git fetch` independent of ambient Git configuration.
-- **Watch workflow contract:** The compatibility workflow runs only on `macos-latest`, declares
-  `permissions: contents: read`, uses no secrets, installs no package or CLI, invokes
-  no model, and performs no apply, pull, issue, PR, commit, or baseline write. A
-  bounded GitHub Step Summary identifies each fixed source as unchanged, review-due,
-  or evidence-unavailable without dumping fetched pages. Its command preserves the
-  same `0`/`3`/`2` meanings; the workflow may surface nonzero status for maintainers
-  but cannot open or modify anything. Scheduling it does not add it to the protected
-  branch's required `test` check.
-- **CI cost and continuity:** The protected `test` job runs the full macOS offline
-  suite only for pull requests and exact-SHA manual dispatch. Strict up-to-date PR
-  protection plus unchanged squash-merge trees avoids a duplicate post-merge suite;
-  same-PR concurrency cancels superseded work. `scripts/ci-offline.sh` is the local
-  fail-fast static/all-suite fallback when a private fork has no Actions quota. Its
-  evidence is never a substitute for the required GitHub check; exact manual dispatch
-  remains required before publication after service availability returns.
-- **Local notifier contract:** An optional owner-private macOS LaunchAgent runs the
-  same watch daily from hash-bound snapshots. It derives HOME from the account
-  database, binds the complete transitive behavior source set, serializes lifecycle
-  commands, reconciles ambiguous launchctl results, supervises nested groups with a
-  parent-death acknowledgement, preserves fixed signal exits, and makes uninstall
-  resumable. It does not apply updates or gain independent network/Git/provider
-  authority. A changed sanitized result fingerprint triggers one notification attempt;
-  the same fingerprint is suppressed.
-- **Fixed primary sources:** agy reconciliation binds the official
-  [Antigravity source](https://github.com/google-antigravity/antigravity-cli),
-  [releases](https://github.com/google-antigravity/antigravity-cli/releases),
-  [changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md),
-  and official CLI overview/usage pages already recorded in `compat/sources.md`.
-  Codex reconciliation binds the official
-  [Codex source and releases](https://github.com/openai/codex/releases),
-  [Codex changelog](https://developers.openai.com/codex/changelog), and
-  [Codex CLI reference](https://developers.openai.com/codex/cli/reference). Production
-  URLs, review intervals, release channels, and upstream repositories remain fixed in
-  the runtime and are not environment-overridable.
-- **Official distribution canary:** The agy evidence set also observes the fixed
-  official `darwin_arm64` updater manifest. The stdlib-only checker disables proxies,
-  rejects redirects and oversized or malformed responses, validates the exact
-  version/archive URL/SHA-512 tuple, and never requests the archive. Its checked-in
-  tuple is an observational same-version change detector, not a verified release,
-  source revision, signature, or baseline. Official release, source, documentation,
-  and distribution evidence are non-activating review inputs; the separately accepted
-  1.2.7 capture and human reconciliation (retaining 1.2.2 as historical), not the canary,
-  advance the active baseline and G1 matrix.
-- **Baseline advancement:** A maintainer may advance either verified baseline only
-  after reconciling official docs, release notes, and available release evidence;
-  regenerating the local
-  `./ground-truth.sh` evidence for agy and equivalent documented Codex CLI inventory;
-  running every offline suite and syntax/compile/diff check; and recording the exact
-  reviewed revisions. If behavior affecting dispatch changed, a bounded job against
-  an explicit public fixture is a separate live-data approval, not part of the watch.
-  The watch never performs this reconciliation. agy `1.2.11` is the current local
-  compatibility binding (with `1.2.7` previous/historical). Its capture, strict
-  inventory, and bounded session edit and planned refinement were separately
-  reconciled; the [activation record](../compat/reviews/agy-1.2.11-activation.md) states
-  the limits. Native and effective accept-edits semantics remain
-  unqualified for this version. Any later version
-  or release movement returns the result to
-  drift-review until another reconciliation is accepted.
-- **Resolution-matrix rule:** G0 derives model-specific effort support and its single
-  exact output slug from the verified `agy models` inventory, agy docs/release, and
-  bounded CLI behavior—not from a provider API table or a model-name guess. The
-  matrix records its agy version and release revision. Any agy version/release drift
-  makes it stale and keeps effort resolution disabled until human reconciliation.
-  The verified `1.2.2` inventory exposes compound slugs: Gemini 3.8 Flash, Gemini 3.7
-  Flash, and Gemini 3.6 Flash have low/medium/high. Gemini 3.7 `minimal` is outside the
-  reviewed inventory. Official Gemini 3.1 Pro supports medium effort, but the accepted
-  account inventory has no reviewed `gemini-3.1-pro-medium` compound slug, so the
-  wrapper's single-compound-slug route does not expose that pair.
-  Sonnet is no-level; the advertised Opus thinking slug and GPT medium-labelled slug
-  are fixed model choices, not adjustable effort pairs. G0 binds those exact entries
-  as compatibility metadata; the wrapper does not consume the mappings until G1.
-- **Current-behavior correction:** Implementation updates README and AGENTS guidance
-  to say that probes must validate documented commands and expected semantic content,
-  never an unknown subcommand's exit or usage output. It also records that agy has a
-  real `--effort`, while this wrapper exposes no effort control until G1. The official
-  release and CLI evidence were reviewed, but the public release repository contains
-  no implementation source and the reconciliation did not prove dual-selector
-  composition: production code sends one resolved model slug and cannot combine an
-  effort-bearing slug with agy's separate effort flag without a later, separately
-  approved evidence gate.
-- **Model option decision gate:** `gemini-3.6-flash-high` is already selectable as a
-  raw custom `--tier` label. It remains unranked and non-escalating; no `bulk`/`hard`
-  mapping changes and no effort flag are part of G0. Google's official
-  [model catalog](https://ai.google.dev/gemini-api/docs/models) describes Gemini 3.6
-  Flash as a speed/intelligence balance and Gemini 3.1 Pro as the advanced model for
-  complex reasoning and coding. The official
-  [thinking guide](https://ai.google.dev/gemini-api/docs/thinking)
-  shows real but model-specific effort levels, and
-  [pricing](https://ai.google.dev/gemini-api/docs/pricing) distinguishes model and
-  thinking usage. Those API facts must not be copied into the agy resolution matrix;
-  they do not prove the agy CLI composition, relative quality, or effective
-  subscription cost for this wrapper. A discoverable `flash-high` alias is a later
-  isolated decision after G0/G1 compatibility tests; changing a default or
-  recommendation order additionally requires reviewed comparative evidence.
-- **Dependencies:** Existing read-only `update.sh check`, fixed compatibility metadata,
-  `ground-truth.sh`, Bash 3.2, Python 3 standard library, git, and GitHub-hosted macOS.
-  No runtime dependency, provider credential, or paid quota is introduced.
-- **Trust boundary:** Release names, help text, provider prose, and worker output are
-  signals for review, not permission to update code or metadata. Missing network
-  evidence cannot be collapsed into unchanged. The watcher cannot authorize model
-  selection, acceptance, baseline advancement, dispatch, or an external action.
-- **Minimum accept tests:** Fixed fake official sources unchanged return `0`; installed
-  versus verified differences and stale review dates are reported separately and
-  return `3`; unavailable network returns `2` with an inconclusive label; absent
-  future-version evidence retains current local binding `1.2.11` (with `1.2.7`
-  previous/historical) and AMBER; version-bound resolution
-  fixtures reproduce every documented pair-to-compound-slug mapping, preserve fixed
-  no-level/thinking/medium-labelled entries, and mark drift stale; a raw
-  `gemini-3.6-flash-high` selection remains pass-through, unranked, recommendation-only,
-  and non-escalating; workflow fixtures prove daily/manual triggers, macOS, read-only
-  permission, bounded summary, and no mutation; fixed-manifest fixtures pair exact
-  transport/schema/URL/hash acceptance with redirect, timeout, oversize,
-  duplicate/extra/malformed field, archive-policy, and same-version build/hash
-  rejection while proving that no archive request occurs.
-- **Minimum reject tests:** Green on missing evidence; automatic baseline edits;
-  environment-overridden source/review policy; malformed or future-dated metadata;
-  treating unknown-command exit/usage as support; secret access, installation, model
-  calls, `apply`, `pull`, GitHub writes, or required-PR-check coupling in the watcher;
-  automatic issue/PR creation; tier remapping; alias creation; or an effort flag.
-  Reject manifest redirects, missing or conflicting length/type metadata, invalid
-  UTF-8/JSON/schema/SemVer/SHA-512, unexpected archive origins or paths, test/runtime
-  source overrides, and any archive request.
-  Reject a matrix with an unbound/mismatched version or revision, an unsupported pair,
-  a provider-table-only claim, an inferred capability for an unknown model, a missing
-  exact output slug, or an adjustable effort entry for a fixed/no-level model.
-  Reject alternate GitHub repositories or endpoint shapes, redirects, proxies,
-  duplicate/oversized/malformed REST evidence, unbounded version output, timeout,
-  descendant pipe retention, or swallowed HUP/INT/TERM status in read-only probes.
-- **Docs and AGENTS impact:** README compatibility semantics and limitations,
-  `compat/sources.md`, REPO_MAP ownership/data flow, lessons learned on inconclusive
-  evidence, and concise durable AGENTS probing rules. Run `agents-md-auditor` before
-  and after those future guidance edits.
-- **Size:** M.
-- **Done/exit criteria:** Both tools have fixed, human-reviewed baselines; all three
-  outcomes are adversarially tested; the macOS watcher is read-only and separately
-  observable; all existing suites stay green; docs do not claim live compatibility
-  beyond evidence; and an independent verifier confirms zero write/escalation path.
-- **Success measures:** Zero false-green results when official evidence is unavailable;
-  compatibility drift is classified by the next daily run; each baseline advance
-  links exact primary evidence and completed gates; and no watcher run changes a file,
-  opens an item, invokes a model, or changes required branch checks.
-
-### G1 — Explicit Model & Effort Selection
-
-**Status:** Implemented, offline-verified, and published in v0.2.0.
-
-- **User job:** Select an exact advertised agy model or a verified base-model/effort
-  pair directly, without disguising the choice as a tier or allowing a recommendation
-  to change it.
-- **Sequence gate:** Start only after G0 has reconciled the exact agy `1.1.22` (or
-  later explicitly verified) CLI/source behavior. G1 precedes any `flash-high` alias,
-  performance ranking, or default/recommendation remap and must be its own pull request.
-- **Intended surface:** Add wrapper CLI `--model MODEL` and
-  `--effort low|medium|high`, using agy's real vocabulary but never inventing
-  `--thinking-level`. These are wrapper inputs, not a promise to forward both agy
-  flags. Preserve explicit `--tier` named values and raw-label pass-through, make the
-  no-option path the agy-owned no-model default, and add a CLI-only `--literal-model`
-  unreconciled pass-through for explicit caller-owned future slugs. Add
-  `AGY_WORKER_MODEL` and `AGY_WORKER_EFFORT` only with the strict conflict contract
-  below. Canonical runtime, root compatibility wrapper, public skill copy, validators,
-  recommendation schemas/renderers, and later receipt/report schemas carry the same
-  resolved selection contract.
-- **Selection and precedence contract:** There is no silent precedence. Each option
-  may be supplied by CLI or its matching environment variable, never both—even when
-  the values match. Any explicit tier source (`--tier` or `AGY_WORKER_TIER`) is mutually
-  exclusive with every explicit model/effort source. With no explicit selector, the
-  implicit selection uses `default` and sends no downstream model. Direct reviewed
-  mode uses one exact model source;
-  effort always requires a base-model input. Duplicate CLI occurrences, empty values,
-  unknown effort values, and cross-source conflicts fail before dispatch with usage
-  exit `64`.
-- **Resolution and dispatch safety:** Exact advertised compound/no-level slugs supplied
-  through `--model` alone remain allowed and unranked; agy receives one
-  `--model EXACT_SLUG`. A base-model plus effort is allowed only when the G0 matrix for
-  the installed verified agy version maps that exact pair to one exact advertised
-  compound slug; agy again receives only `--model RESOLVED_SLUG`. The globally accepted
-  effort spelling does not imply every model accepts all three values: verify Flash
-  low/medium/high separately and Pro low/high separately; Pro medium remains outside
-  the route only because no reviewed compound slug exists in the accepted inventory.
-  Sonnet no-level, Opus thinking-labelled, and GPT medium-labelled slugs are fixed
-  exact-model choices and reject any effort input. Compound slug plus effort, unknown
-  model/version, unsupported pair, stale matrix, missing mapping, or ambiguous form
-  fails before dispatch with no fallback, slug surgery, normalization, or base-model
-  guess.
-- **Version-independent literal boundary:** `--literal-model` accepts one exact
-  lowercase CLI slug, performs no matrix lookup, and sends that slug exactly once with
-  `compatibility_status: unreconciled-pass-through`. A bounded non-gating runtime
-  version observation may support exact diagnostics but never changes or rejects the
-  literal selection. It has no
-  environment source and conflicts with tier/model/effort. It carries no compatibility,
-  provider, cost, routing, recommendation, or fallback authority.
-- **Dual-selector evidence gate:** G1 never forwards agy's `--effort`. Passing both
-  `--model` and `--effort` to agy requires a later isolated slice with official source
-  or a separately approved bounded test proving exact composition, precedence, failure
-  semantics, and explicit continuation behavior for the pinned version. That future evidence cannot
-  silently replace the safe single-selector mapping.
-- **Persistence and evidence:** Resolve selection once before attempt one and retain
-  the exact tier or user model/effort provenance, matrix revision, and resolved agy
-  slug across every user-authorized resume or restart. Pre-dispatch and post-gate recommendations, Evidence Receipt
-  v1, and the Human Report represent selected tier, user model, user effort, and
-  resolved agy model as distinct optional fields. A custom model or effort remains
-  unranked; recommendation output stays `recommendation_only: true`, `applied: false`,
-  and cannot alter or redispatch the selection.
-- **Non-escalatable outcomes:** Permission, authentication, scope-policy,
-  invalid-contract, untrusted-claim, and human-required failures remain
-  non-escalatable regardless of selected model or effort. Higher effort is never
-  proposed as a repair for those outcomes.
-- **Dependencies:** Completed G0 baseline and resolution matrix, existing dispatcher
-  parsing/model assembly, advisory recommender, and the schema/report surfaces present
-  when G1 starts. No new dependency or provider lookup.
-- **Minimum accept tests:** Legacy named tiers and raw `--tier` labels remain explicit;
-  implicit default emits no model; a literal slug remains exact when its bounded
-  version observation is available or unavailable; each reviewed advertised slug reaches agy as one exact
-  `--model`; every matrix-admitted base/effort pair has its own test and reaches agy as
-  one exact resolved compound `--model`; fixed Sonnet/Opus/GPT choices remain exact and
-  non-adjustable; explicit continuation attempts preserve the same matrix revision and resolved slug;
-  recommendations and receipts/reports label user and resolved selection without
-  ranking or applying it.
-- **Minimum reject tests:** CLI/env duplicates; tier plus model or effort across any
-  source; repeated selector; empty/invalid model or effort; effort without a base
-  model; compound/fixed/no-level slug plus effort; unsupported pair (including Pro
-  medium); adjustable Sonnet, Opus, or GPT; unknown model or version; stale/unbound
-  matrix; missing exact output; inferred capability; dual-selector forwarding;
-  invented thinking flag; fallback to a nearby level/model; continuation-attempt mutation;
-  recommendation-driven change; or escalation of a non-escalatable failure. Assert
-  that fake agy is never invoked for every preflight rejection.
-- **Docs and AGENTS impact:** README option/precedence tables and examples, public
-  skill SKILL.md, REPO_MAP data flow, lessons learned on single-slug resolution and
-  unproven dual selectors, compatibility metadata, and a concise AGENTS rule forbidding
-  inferred effort, silent override, and unverified two-argument composition.
-  Run `agents-md-auditor` before and after those future guidance edits.
-- **Size:** M.
-- **Done/exit criteria:** Exact G0-backed single-slug mappings and conflict behavior are
-  documented and adversarially tested on macOS Bash 3.2; all prior suites stay green;
-  raw tier compatibility remains; agy receives no separate effort argument; no
-  recommendation changes selection; and independent verification confirms no
-  ambiguous, automatic, fallback, or dual-selector model/effort path.
-- **Later alias/ranking gate:** A named `flash-high` alias can be proposed only after
-  G0/G1 prove its exact agy composition. Mapping `bulk`/`hard`, recommending Flash-high
-  over Pro-high, or changing a default additionally requires a pre-registered bounded
-  comparison using fixed public fixtures, identical scope and verifier, pinned tool
-  versions, equal attempts, captured latency/provider telemetry, and explicit live-use
-  approval. Official model descriptions or a one-off result are not a ranking.
+Direct model and effort values remain caller-owned. The capability probe checks the
+interface the runtime dispatches, not model availability or account entitlement.
+Selection provenance binds the exact choice through repair and receipt validation;
+recommendations remain advisory. See [usage](USAGE.md#common-options).
 
 ### P0 — make the evidence boundary visible and usable
 
@@ -926,7 +422,7 @@ provenance, code-signing verification, or OS attestation.
   digests; actual gate exit/outcome; a verdict restricted to `gate-passed`, `rejected`,
   or `routed`; optional caller-selection object with exactly one resolved mode,
   distinct tier/user-model/user-effort values, CLI/environment/default provenance,
-  matrix revision when used, and exact resolved agy model slug under the accepted G1
+  exact caller model/effort choice and executable binding under the current selection
   contract; optional validated pre-dispatch advisory retaining its
   rationale, controlled driver evidence, relative cost impact,
   `recommendation_only: true`, `applied: false`, and `stage: pre-dispatch`;
@@ -964,7 +460,7 @@ provenance, code-signing verification, or OS attestation.
   initial/final state digests; the wrapper returns `0`. Each normal gate result
   `10`–`14` durably publishes verdict `rejected`, result `15` publishes `routed`, and
   the wrapper returns that exact gate exit. A valid pre-dispatch advisory is bound
-  without changing the selected input, matrix revision, resolved agy slug, or gate
+  without changing the selected input, executable binding, or gate
   result. The tests never call a candidate accepted before human review. Direct
   `qa-gate.sh` calls without the internal evidence capability retain their
   current stdout/stderr and exit contract.
@@ -974,7 +470,7 @@ provenance, code-signing verification, or OS attestation.
   symlink target, in-repository output, unknown schema version, inconsistent receipt,
   separately bound artifact/digest mismatch, malformed or duplicate handoff, envelope
   snapshot/base/state/outcome/exit mismatch, post-gate or cross-stage advisory input,
-  selected-input/matrix/resolved-slug mismatch, ambiguous selector provenance, or an
+  selected-input or executable-binding mismatch, ambiguous selector provenance, or an
   advisory that claims it was applied. Wrapper/gate
   preflight `64`, unknown exit, signal, missing evidence, internal `70`, and durable
   publication `74` paths publish no receipt; injected validation, `fsync`, rename, and
@@ -1036,10 +532,9 @@ remains intentionally outside the Doctor contract.
 - **Intended surface:** Add canonical `doctor.sh [--repo DIR]
   [--format text|json]` plus root wrapper. Default execution is offline and read-only.
 - **Checks:** Runtime resolution; Bash compatibility; Python 3 and git availability;
-  Git worktree support; agy presence and version against checked-in compatibility
-  metadata; target repository validity; and due/invalid compatibility review
-  metadata.
-- **Dependencies:** Existing resolver, compatibility metadata, and `ground-truth.sh`
+  Git worktree support; agy presence and required capabilities; target repository
+  validity; and safe executable binding. Version text is diagnostic only.
+- **Dependencies:** Existing resolver, shared capability probe, and `ground-truth.sh`
   facts. It is independent of Receipt v1.
 - **Trust boundary:** A green result means only that offline prerequisites passed. It
   does not certify authentication, provider availability, sandbox permission, task
@@ -1047,9 +542,8 @@ remains intentionally outside the Doctor contract.
   config inspection requires an explicit path; it does not scan home files silently.
 - **Minimum accept tests:** A fake compatible toolchain yields structured green output
   and a before/after filesystem snapshot is unchanged.
-- **Minimum reject tests:** Missing agy/Python/git, version drift, incomplete bundle,
-  invalid target repo, and invalid/due compatibility metadata fail or warn according
-  to a documented matrix; no `agy auth` or unknown-subcommand probing; no network or
+- **Minimum reject tests:** Missing agy/Python/git, missing required capabilities, incomplete bundle,
+  invalid target repo, and unsafe executable binding fail closed; no `agy auth` or unknown-subcommand probing; no network or
   configuration writes.
 - **Docs and AGENTS impact:** Add onboarding/troubleshooting to README and SKILL,
   ownership to REPO_MAP, and a durable no-auto-fix lesson. AGENTS receives only the

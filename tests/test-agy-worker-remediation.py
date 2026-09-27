@@ -46,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 117
+EXPECTED_CHECKS = 118
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -56,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 68, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 69, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -184,7 +184,43 @@ def report(**updates: object) -> dict:
     return value
 
 
+FAKE_CAPABILITY_HELP = """Usage of agy:
+  --add-dir  Directory
+  --conversation  Conversation
+  --disable-slash-commands  Disable expansion
+  --effort  Caller effort
+  --json-schema  Schema
+  --mode  Mode (accept-edits, plan)
+  --model  Caller model
+  --output-format  Format (text, json, stream-json)
+  --print  Prompt
+  --print-timeout  Deadline
+  --sandbox  Sandbox
+"""
+
+
+def equip_provider_fixture(bin_dir: Path) -> None:
+    """Add passive interface replies to result-only fakes, never interface fakes."""
+    fake = bin_dir / "agy"
+    if not fake.is_file() or fake.is_symlink():
+        return
+    source = fake.read_text()
+    if "--help" in source:
+        return
+    first, rest = source.split("\n", 1)
+    if "python" in first:
+        interface = ("import sys\n"
+                     "if sys.argv[1:] == ['--version']: print('fixture-build'); raise SystemExit(0)\n"
+                     f"if sys.argv[1:] == ['--help']: print({FAKE_CAPABILITY_HELP!r}, end=''); raise SystemExit(0)\n")
+    else:
+        interface = ("if [ \"$#\" = 1 ] && [ \"$1\" = --version ]; then printf 'fixture-build\\n'; exit 0; fi\n"
+                     "if [ \"$#\" = 1 ] && [ \"$1\" = --help ]; then printf '%s' "
+                     + shlex.quote(FAKE_CAPABILITY_HELP) + "; exit 0; fi\n")
+    fake.write_text(first + "\n" + interface + rest)
+
+
 def run_controller(job: Path, bin_dir: Path) -> int:
+    equip_provider_fixture(bin_dir)
     lock = job / MODULE.LOCK_NAME
     descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     os.fchmod(descriptor, 0o600)
@@ -424,6 +460,7 @@ def run_scoped_controller(
     native_containment: bool = True,
 ) -> int:
     """Run the historical execution path or native containment as command-bound."""
+    equip_provider_fixture(bin_dir)
     if native_containment and scoped_controller_uses_portable_fixture():
         return _run_scoped_controller_linux_fixture(job, bin_dir, fixture_kind=fixture_kind)
     if fixture_kind != "copy-drift":
@@ -2337,6 +2374,7 @@ with tempfile.TemporaryDirectory() as temporary:
         prior_path = os.environ.get("PATH", "")
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{prior_path}"
         try:
+            equip_provider_fixture(bin_dir)
             assert MODULE.controller(job, descriptor) == 25
             descriptor = -1
         finally:
@@ -2352,23 +2390,172 @@ with tempfile.TemporaryDirectory() as temporary:
 
     check("controller maps ERROR plus valid report to failed unreviewed exit 25", controller_preserves_outer_error_candidate)
 
+    def version_independent_terminal_policy_table() -> None:
+        absent = object()
+        timeout = b"[agy] print timeout after 20s with turn in progress; returning partial output"
+        # A parsed denial never outranks local binding/cancellation/output facts.
+        boundary_stream = root / "policy-boundary-stream"
+        boundary_stream.write_text(json.dumps({"event": "init", "init": {}}) + "\n" +
+            json.dumps({"event": "result", "result": {"status": "SUCCESS", "denied_actions": []}}) + "\n")
+        streams = MODULE._ControllerStreams(boundary_stream, root / "policy-stderr", root / "policy-envelope",
+            sizes={"stdout": boundary_stream.stat().st_size, "stderr": 0})
+        binding = MODULE._ControllerBinding(command={"workflow": "task", "max_seconds": 20,
+            "agy_version": "1.2.11", "agy_version_observed": True}, schema_paths=(provider, SCHEMA))
+        valid_binding = ("a" * 64, (1, 2, 3, 4, 5))
+        for prior, failure, expected in (
+            (None, "binding_failure", "status_unavailable"),
+            ("hard_deadline_exceeded", "binding_failure", "status_unavailable"),
+            (None, None, "permission_required"),
+            ("cancelled", None, "cancelled"), ("interrupted", None, "interrupted"),
+            ("output_oversized", None, "output_oversized"),
+            ("status_unavailable", None, "status_unavailable"),
+        ):
+            observed = MODULE._ControllerOutcome(reason=prior)
+            with mock.patch.object(MODULE.os, "fsync"), \
+                    mock.patch.object(MODULE, "_bound_schemas", return_value=binding.schema_paths), \
+                    mock.patch.object(MODULE, "_validate_terminal_envelope",
+                        return_value=(None if failure else valid_binding, "SUCCESS", failure)):
+                MODULE._observe_controller_terminal(binding, MODULE._ProviderExecution(), streams, MODULE._ScopedLaunch(), observed)
+            assert observed.reason == expected, (prior, failure, observed)
+            assert (observed.result_binding is not None) == (expected == "permission_required")
+        # label, denial payload, report kind, rc, stderr, framing, expected reason
+        cases = [
+            ("success", absent, "valid", 0, b"", "valid", None),
+            ("nonzero-success", absent, "valid", 7, b"", "valid", "agy_failed_unclassified"),
+            ("denied-list", [{"private": "never expose"}], "valid", 0, b"", "valid", "permission_required"),
+            ("denied-empty", [], "valid", 0, b"", "valid", "permission_required"),
+            ("denied-null", None, "valid", 0, b"", "valid", "permission_required"),
+            ("denied-scalar", 42, "valid", 7, b"", "valid", "permission_required"),
+            ("denied-object", {"unknown": True}, "valid", 0, b"", "valid", "permission_required"),
+            ("denied-missing", [], "missing", 0, b"", "valid", "permission_required"),
+            ("denied-invalid", [], "invalid", 0, b"", "valid", "permission_required"),
+            ("timeout", absent, "valid", 0, timeout, "valid", "provider_timeout"),
+            ("timeout-nonzero", absent, "valid", 7, timeout, "valid", "provider_timeout"),
+            ("timeout-empty", absent, "missing", 0, timeout, "empty", "provider_timeout"),
+            ("timeout-invalid", absent, "invalid", 0, timeout, "valid", "invalid_envelope"),
+            ("timeout-denied", [], "valid", 0, timeout, "valid", "permission_required"),
+            ("timeout-nearmiss", absent, "valid", 0, timeout + b".", "valid", None),
+            ("timeout-wrong-bound", absent, "valid", 0, timeout.replace(b"20s", b"21s"), "valid", None),
+            ("empty", absent, "missing", 0, b"", "empty", "empty_output"),
+            ("duplicate-key", [], "valid", 0, b"", "duplicate-key", "invalid_envelope"),
+            ("duplicate-terminal", [], "valid", 0, b"", "duplicate-terminal", "invalid_envelope"),
+            ("trailing", [], "valid", 0, b"", "trailing", "invalid_envelope"),
+            ("invalid-utf8", [], "valid", 0, b"", "invalid-utf8", "invalid_envelope"),
+            ("invalid-json", [], "valid", 0, b"", "invalid-json", "invalid_envelope"),
+            ("conversation-mismatch", [], "valid", 0, b"", "conversation-mismatch", "status_unavailable"),
+        ]
+        for label, denial, report_kind, provider_rc, stderr, framing, expected in cases:
+            repo = root / f"policy-{label}-repo"; repo.mkdir(); initialize_linked_fixture(repo)
+            job = root / f"policy-{label}-job"; job.mkdir(mode=0o700)
+            bin_dir = root / f"policy-{label}-bin"; bin_dir.mkdir()
+            terminal = {"conversation_id": "conversation-1", "status": "SUCCESS"}
+            if report_kind != "missing":
+                terminal["structured_output"] = report() if report_kind == "valid" else {"status": "invalid"}
+            if denial is not absent:
+                terminal["denied_actions"] = denial
+            if framing == "conversation-mismatch":
+                terminal["conversation_id"] = "conversation-other"
+            init = json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}).encode() + b"\n"
+            final = json.dumps({"event": "result", "result": terminal}).encode() + b"\n"
+            if framing == "duplicate-key":
+                final = final.replace(b'"status": "SUCCESS"', b'"status": "SUCCESS", "status": "SUCCESS"')
+            payload = init + final
+            if framing == "duplicate-terminal": payload += final
+            if framing == "trailing": payload += b'{"event":"step_update","step_update":{}}\n'
+            if framing == "invalid-utf8": payload = init + b'\xff\n' + final
+            if framing == "invalid-json": payload = init + b'{bad}\n' + final
+            if framing == "empty": payload = b""
+            fake = bin_dir / "agy"
+            fake.write_text("#!/usr/bin/env python3\nimport os\n" + f"os.write(1, {payload!r})\nos.write(2, {stderr!r})\nraise SystemExit({provider_rc})\n")
+            fake.chmod(0o700)
+            schema = root / f"policy-{label}-schema.json"; provider_schema(schema)
+            command = current_command_fixture({
+                "job_id": f"policy-{label}", "workdir": str(repo),
+                "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+                "agy_version": "1.1.26", "idle_seconds": 2, "hard_seconds": 3,
+                "max_seconds": 20,
+            })
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+            MODULE.create_state(job, "initial", resume=False)
+            expected_code = 0 if expected is None else MODULE.EXIT_BY_REASON[expected]
+            actual = run_controller(job, bin_dir)
+            state, _raw, sha = MODULE.load_state(job)
+            assert (actual, state["reason"]) == (expected_code, expected), (label, actual, state["reason"])
+            candidate = report_kind == "valid" and framing == "valid"
+            assert state["candidate_recognized"] == state["result_available"] == candidate, label
+            if candidate:
+                _command, raw = MODULE._bound_current_candidate(job, state)
+                assert json.loads(raw)["summary"] == report()["summary"]
+                assert state["driver_disposition"] == "unreviewed"
+            if expected == "permission_required":
+                assert not state["resume_available"] and not state["continue_available"]
+                actions = {x["action"] for x in MODULE.public_status(state, sha, job=job)["available_actions"]}
+                assert not {"resume", "continue"} & actions
+                assert "never expose" not in json.dumps(state)
+
+        for denial in (False, True):
+            label = "denied" if denial else "ordinary"
+            repo = root / f"collision-{label}-repo"; repo.mkdir(); initialize_linked_fixture(repo)
+            job = root / f"collision-{label}-job"; job.mkdir(mode=0o700)
+            bin_dir = root / f"collision-{label}-bin"; bin_dir.mkdir()
+            terminal = {"conversation_id": "conversation-1", "status": "SUCCESS", "structured_output": report()}
+            if denial: terminal["denied_actions"] = []
+            payload = b"".join(json.dumps(event).encode() + b"\n" for event in (
+                {"event": "init", "init": {}, "conversation_id": "conversation-1"},
+                {"event": "result", "result": terminal},
+            ))
+            fake = bin_dir / "agy"
+            fake.write_text("#!/usr/bin/env python3\nimport os, time\n" + f"os.write(1, {payload!r})\ntime.sleep(60)\n")
+            fake.chmod(0o700)
+            schema = root / f"collision-{label}-schema.json"; provider_schema(schema)
+            command = current_command_fixture({"job_id": f"collision-{label}", "workdir": str(repo),
+                "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+                "agy_version": "1.2.11", "idle_seconds": 1, "hard_seconds": 1, "max_seconds": 20})
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command); MODULE.create_state(job, "initial", resume=False)
+            assert run_controller(job, bin_dir) == (6 if denial else 16)
+            state, _raw, sha = MODULE.load_state(job)
+            assert state["reason"] == ("permission_required" if denial else "hard_deadline_exceeded")
+            assert state["limit_kind"] == "hard" and state["elapsed_seconds"] >= 1
+            assert state["candidate_recognized"] and state["result_available"]
+            if denial:
+                verification = {"schema_version": 2, "summary": "driver review", "passed_checks": [],
+                    "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
+                    "candidate_sha256": state["result_sha256"], "coverage": "partial",
+                    "verified_findings": 0, "unresolved_gaps": 1, "diff_review_complete": True}
+                for origin in ("conversation-resume", "conversation-continue"):
+                    with mock.patch.object(MODULE, "_verification_from_stdin", return_value=verification):
+                        try:
+                            if origin == "conversation-continue":
+                                MODULE.command_continue(job, sha)
+                            else:
+                                MODULE.spawn(job, origin, resume=True, foreground=False, approve_sha=sha)
+                        except MODULE.DispatchError:
+                            pass
+                        else:
+                            raise AssertionError("denied conversation was reused")
+                reloaded, _raw, _sha = MODULE.load_state(job)
+                assert reloaded["reason"] == "permission_required"
+                assert not reloaded["resume_available"] and not reloaded["continue_available"]
+
+    check("version independent terminal policy and denial deadline collision preserve candidate and block reuse", version_independent_terminal_policy_table)
+
     def reviewed_denial_signal_preserves_candidate_without_reuse() -> None:
         cases = [
             ("denial", "1.1.27", True, True, "failed", "permission_required", 6),
             ("ordinary", "1.1.27", False, True, "succeeded", None, 0),
             ("denial-1-2-2", "1.2.2", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-2", "1.2.2", False, True, "succeeded", None, 0),
-            ("denial-1-2-6", "1.2.6", True, True, "succeeded", None, 0),
+            ("denial-1-2-6", "1.2.6", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-6", "1.2.6", False, True, "succeeded", None, 0),
             ("denial-1-2-11", "1.2.11", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-11", "1.2.11", False, True, "succeeded", None, 0),
-            ("live-invalid-1-2-11", "1.2.11", True, False, "failed", "invalid_envelope", 4),
-            ("unreviewed-intermediate", "1.2.1", True, True, "succeeded", None, 0),
-            ("prior-version", "1.1.26", True, True, "succeeded", None, 0),
+            ("live-invalid-1-2-11", "1.2.11", True, False, "failed", "permission_required", 6),
+            ("unreviewed-intermediate", "arbitrary-build", True, True, "failed", "permission_required", 6),
+            ("prior-version", "1.1.26", True, True, "failed", "permission_required", 6),
             # The live 1.2.2 denial emitted this top-level key but no structured
             # report.  Presence cannot manufacture a candidate or supersede the
             # envelope validator's missing-structured-output classification.
-            ("live-invalid-1-2-2", "1.2.2", True, False, "failed", "invalid_envelope", 4),
+            ("live-invalid-1-2-2", "1.2.2", True, False, "failed", "permission_required", 6),
         ]
         for (
             label, version, include_denial, valid_candidate,
@@ -2427,7 +2614,7 @@ with tempfile.TemporaryDirectory() as temporary:
             assert state["failure_stage"] == (
                 None if valid_candidate else "missing_structured_output"
             )
-            if valid_candidate and include_denial and version in {"1.1.27", "1.2.2", "1.2.11"}:
+            if include_denial:
                 assert not state["resume_available"] and not state["continue_available"]
                 public = MODULE.public_status(state, sha, job=job)
                 actions = {item["action"] for item in public["available_actions"]}
@@ -2449,7 +2636,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Denied actions with 2 items fails closed:
             ("two-denied-actions", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
@@ -2458,123 +2645,123 @@ with tempfile.TemporaryDirectory() as temporary:
                     {"action": "command", "display_name": "RunCommand"},
                     {"action": "edit", "display_name": "EditFile"},
                 ],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Huge integer duration does not raise OverflowError:
             ("huge-int-duration", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 10**400, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Provider exit code 3 on refusal fails closed to invalid_envelope:
             ("refusal-exit-3", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 3, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 3, "success"),
             # Negative: extra unexpected key in result fails closed
             ("extra-key", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
                 "unrecognized_field": True,
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: non-empty response
             ("nonempty-response", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "denied",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: status is not SUCCESS
             ("error-status", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "ERROR", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "error"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "error"),
             # Negative: empty denied_actions list
             ("empty-denied-actions", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: non-list denied_actions
             ("non-list-denied", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": "not-a-list",
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: malformed denied_actions entry (missing display_name)
             ("malformed-denied-entry", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: multiline string in denied_actions action
             ("multiline-denied-action", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command\nmalicious", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: negative duration
             ("negative-duration", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": -1.0, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: non-integer turns
             ("non-int-turns", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.0, "num_turns": "1", "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: unobserved version does not trigger 1.2.6 refusal handling
             ("unobserved-version", "1.2.6", False, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Preserve 1.2.2 fail-closed missing_structured_output behavior on refusal shape
             ("preserve-1-2-2", "1.2.2", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Exact live 1.2.7 refusal canary:
             ("exact-refusal-1-2-7", "1.2.7", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             ("exact-refusal-1-2-11-command", "1.2.11", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             ("exact-refusal-1-2-11-mcp", "1.2.11", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "mcp", "display_name": "CallMcpTool"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # 1.2.7 unobserved version fails closed:
             ("unobserved-version-1-2-7", "1.2.7", False, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # 1.2.7 provider exit code 3 on refusal fails closed to invalid_envelope:
             ("refusal-exit-3-1-2-7", "1.2.7", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 3, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 3, "success"),
             # Future 1.2.8 version fails closed:
             ("future-1-2-8", "1.2.8", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
         ]
         for (
             label, version, version_observed, terminal,
@@ -2628,35 +2815,6 @@ with tempfile.TemporaryDirectory() as temporary:
                 assert status_payload["next_action"] == "restart"
                 actions = [item["action"] for item in status_payload["available_actions"]]
                 assert actions == ["restart"]
-
-        fake_stream = root / "refusal-126-stream.ndjson"
-        fake_stream.write_text(
-            json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}) + "\n"
-            + json.dumps({"event": "result", "result": {
-                "conversation_id": "conversation-1", "denied_actions": [],
-            }}) + "\n",
-            encoding="utf-8",
-        )
-        assert MODULE._has_reviewed_denied_actions(fake_stream, "1.2.7") is False
-        assert MODULE._has_reviewed_denied_actions(fake_stream, "1.2.6") is False
-        assert MODULE._has_reviewed_denied_actions(fake_stream, "1.2.2") is True
-
-        refusal_127_stream = root / "refusal-127-stream.ndjson"
-        refusal_127_stream.write_text(
-            json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}) + "\n"
-            + json.dumps({"event": "result", "result": {
-                "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
-                "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
-                "usage": {"prompt_tokens": 50},
-                "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }}) + "\n",
-            encoding="utf-8",
-        )
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.7") is True
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.6") is True
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.11") is True
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.8") is False
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.2") is False
 
     check(
         "exact 1.2.6 refusal canary yields permission_required without candidate and fails unknown shapes closed",
@@ -2781,9 +2939,9 @@ with tempfile.TemporaryDirectory() as temporary:
         assert MODULE._classify_stderr(fake_stderr, "1.2.6", returncode=2) == "agy_failed_unclassified"
         assert MODULE._classify_stderr(fake_stderr, "1.2.7", returncode=2) == "agy_failed_unclassified"
         # Wrong version remains unclassified
-        assert MODULE._classify_stderr(fake_stderr, "1.2.2", returncode=3) == "agy_failed_unclassified"
-        assert MODULE._classify_stderr(fake_stderr, "1.2.8", returncode=3) == "agy_failed_unclassified"
-        assert MODULE._classify_stderr(fake_stderr, "", returncode=3) == "agy_failed_unclassified"
+        assert MODULE._classify_stderr(fake_stderr, "1.2.2", returncode=3) == "provider_terminal_error"
+        assert MODULE._classify_stderr(fake_stderr, "1.2.8", returncode=3) == "provider_terminal_error"
+        assert MODULE._classify_stderr(fake_stderr, "", returncode=3) == "provider_terminal_error"
 
         # Stderr syntax negatives:
         raw_json_stderr = root / "raw-json-stderr.txt"
@@ -3004,9 +3162,9 @@ with tempfile.TemporaryDirectory() as temporary:
             b"[agy] print timeout after 7200s with turn in progress; returning partial output",
             b"[agy] print timeout after 2h0m0s with turn in progress; returning partial output",
         }
-        assert MODULE._reviewed_provider_timeout_lines("1.2.1", 20) == set()
-        assert MODULE._reviewed_provider_timeout_lines("1.2.8", 20) == set()
-        assert MODULE._reviewed_provider_timeout_lines("1.2.11", 20) == set()
+        assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
+        assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
+        assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
         timeout_line = next(iter(MODULE._reviewed_provider_timeout_lines("1.2.2", 20)))
 
         cases = [
@@ -3014,15 +3172,15 @@ with tempfile.TemporaryDirectory() as temporary:
             ("exact-1-2-6", "1.2.6", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("exact-1-2-7", "1.2.7", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("normal-1-2-11", "1.2.11", True, False, b"", report(summary="complete"), None, 0, True),
-            ("partial-1-2-11", "1.2.11", True, False, timeout_line, report(summary="partial"), None, 0, True),
+            ("partial-1-2-11", "1.2.11", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("empty-1-2-11", "1.2.11", True, False, b"", None, "invalid_envelope", 4, False),
             ("near-miss-1-2-7", "1.2.7", True, False, timeout_line + b".", report(summary="complete"), None, 0, True),
-            ("unobserved-version-1-2-7", "1.2.7", False, False, timeout_line, report(summary="complete"), None, 0, True),
+            ("unobserved-version-1-2-7", "1.2.7", False, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
             ("invalid-envelope-1-2-7", "1.2.7", True, False, timeout_line, None, "invalid_envelope", 4, False),
             ("timeout-and-denial", "1.2.2", True, True, timeout_line, report(summary="denied-partial"), "permission_required", 6, True),
             ("near-miss", "1.2.2", True, False, timeout_line + b".", report(summary="complete"), None, 0, True),
-            ("unreviewed-version", "1.2.1", True, False, timeout_line, report(summary="complete"), None, 0, True),
-            ("unobserved-version", "1.2.2", False, False, timeout_line, report(summary="complete"), None, 0, True),
+            ("unreviewed-version", "1.2.1", True, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
+            ("unobserved-version", "1.2.2", False, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
             ("invalid-envelope", "1.2.2", True, False, timeout_line, None, "invalid_envelope", 4, False),
         ]
         for (
@@ -3862,11 +4020,10 @@ with tempfile.TemporaryDirectory() as temporary:
             "--disable-slash-commands": "Disable slash commands", "--json-schema": "Schema path",
             "--mode": "Execution mode (accept-edits, plan)", "--model": "Select a model",
             "--output-format": "Format (text, json, stream-json)", "--print": "Run a prompt",
-            "--print-timeout": "Print timeout", "--sandbox": "Sandboxed",
+            "--print-timeout": "Print timeout", "--sandbox": "Sandboxed", "--effort": "Caller effort",
         }
         good = "\n".join(f"  {key}  {value}" for key, value in options.items()).encode() + b"\n"
-        capability, help_digest = MODULE.MODEL_SELECTION.parse_critical_help(good)
-        assert len(capability) == len(help_digest) == 64
+        MODULE.MODEL_SELECTION.parse_critical_help(good)
         for missing in options:
             candidate = "\n".join(
                 f"  {key}  {value}" for key, value in options.items() if key != missing
@@ -3879,9 +4036,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 raise AssertionError(f"missing {missing} was accepted")
         adversarial = (
             good.replace(b"(accept-edits, plan)", b"(accept-edits, no-plan)"),
-            good.replace(b"(accept-edits, plan)", b"(accept-edits, plan, unsupported)"),
             good.replace(b"(text, json, stream-json)", b"(text, json, stream-jsonish)"),
-            good.replace(b"(text, json, stream-json)", b"(text, json, stream-json, unsupported)"),
             good.replace(b"Execution mode (accept-edits, plan)", b"Execution mode supports accept-edits and plan"),
             good.replace(b"  --model  Select a model", b"  --model  Duplicate\n  --model  Select a model"),
             good.replace(b"  --model  Select a model", b" --model  Select a model"),
@@ -3981,43 +4136,30 @@ with tempfile.TemporaryDirectory() as temporary:
             return ("\n".join(f"  {key}  {value}" for key, value in rows.items()) + "\n").encode()
 
         good = help_bytes(options)
-        capabilities, help_sha = MODULE.MODEL_SELECTION.parse_critical_help(good, "1.2.11")
-        assert len(capabilities) == len(help_sha) == 64
-        # An unknown future version cannot inherit an unreviewed help contract.
-        MODULE.MODEL_SELECTION.parse_critical_help(
-            help_bytes({key: value for key, value in options.items() if key != "--effort"}),
-            "9.9.9",
-        )
+        MODULE.MODEL_SELECTION.parse_critical_help(good)
         for missing in options:
             try:
                 MODULE.MODEL_SELECTION.parse_critical_help(
-                    help_bytes({key: value for key, value in options.items() if key != missing}), "1.2.11",
+                    help_bytes({key: value for key, value in options.items() if key != missing}),
                 )
             except MODULE.MODEL_SELECTION.EvidenceUnavailable:
                 pass
             else:
                 raise AssertionError(f"1.2.11 help accepted missing {missing}")
-        for bad in ("(low|medium|high)", "(low|medium|high|max|unsafe)", "(low, medium, high, max)"):
-            try:
-                MODULE.MODEL_SELECTION.parse_critical_help(
-                    help_bytes({**options, "--effort": f"Reasoning effort {bad}"}), "1.2.11",
-                )
-            except MODULE.MODEL_SELECTION.EvidenceUnavailable:
-                pass
-            else:
-                raise AssertionError(f"1.2.11 help accepted {bad}")
+        # Effort domains remain caller-owned; only the option is required.
+        for detail in ("Reasoning effort (low|medium|high)", "Literal effort", "Effort (future)"):
+            MODULE.MODEL_SELECTION.parse_critical_help(help_bytes({**options, "--effort": detail}))
 
         record = {
-            "schema_version": 3, "selection_mode": "exact-model", "probed_executable": {},
-            "installed_agy_version": "1.2.11", "critical_capabilities_sha256": capabilities,
-            "help_sha256": help_sha,
+            "schema_version": MODULE.MODEL_SELECTION.SELECTION_SCHEMA, "selection_mode": "exact-model", "probed_executable": {},
+            "installed_agy_version": "arbitrary-build",
         }
         binding = {"current": True}
-        observed: list[tuple[str, str | None]] = []
+        observed: list[str] = []
 
-        def probe(executable: str, version: str | None = None) -> tuple[str, str]:
-            observed.append((executable, version))
-            return MODULE.MODEL_SELECTION.parse_critical_help(good, version)
+        def probe(executable: str) -> None:
+            observed.append(executable)
+            MODULE.MODEL_SELECTION.parse_critical_help(good)
 
         with contextlib.ExitStack() as stack:
             selection = MODULE.MODEL_SELECTION
@@ -4029,98 +4171,55 @@ with tempfile.TemporaryDirectory() as temporary:
             stack.enter_context(mock.patch.object(selection, "frozen_executable_binding_matches", return_value=True))
             stack.enter_context(mock.patch.object(selection, "executable_bindings_match", return_value=True))
             assert selection.reprobe_selection_record(record) == ("/safe/agy", binding)
-        assert observed == [("/safe/agy", "1.2.11")]
+        assert observed == ["/safe/agy"]
+        diagnostic_path = root / "capability-diagnostic.stderr"
+        descriptor = os.open(diagnostic_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            streams = MODULE._ControllerStreams(root / "unused-stream", diagnostic_path, root / "unused-envelope", stderr_fd=descriptor)
+            for flag in MODULE.MODEL_SELECTION.REQUIRED_AGY_CAPABILITIES:
+                failure = MODULE.SelectionPreflightError("private cause must not be exposed")
+                failure.__cause__ = MODULE.MODEL_SELECTION.MissingCapabilities((flag,))
+                outcome = MODULE._ControllerOutcome()
+                with mock.patch.object(MODULE, "_reprobe_direct_selection", side_effect=failure):
+                    MODULE._launch_controller_provider(root, MODULE._ControllerBinding(), MODULE._ProviderExecution(), streams, MODULE._ScopedLaunch(), outcome)
+                assert outcome.reason == "selection_preflight_failed"
+        finally:
+            os.close(descriptor)
+        diagnostic = diagnostic_path.read_text()
+        assert "private cause" not in diagnostic
+        for flag in MODULE.MODEL_SELECTION.REQUIRED_AGY_CAPABILITIES:
+            assert "agy missing required capabilities: " + flag + "\n" in diagnostic
 
     check("exact 1.2.11 help and launch reprobe retain required options", exact_1_2_11_help_and_launch_reprobe_agree)
 
-    def v3_selection_schema_matches_the_current_runtime_binding() -> None:
-        """The public V3 schema may not accept records the strict decoder rejects."""
+    def current_selection_schema_matches_the_runtime_binding() -> None:
         schema = ROOT / "skills/agy-worker/runtime/schemas/model-selection.schema.json"
-        record = {
-            "schema_version": 3,
-            "kind": "agy-worker-selection",
-            "selection_mode": "exact-model",
-            "user_model": "gemini-3.6-flash-high",
-            "user_model_source": "cli",
-            "resolved_agy_model": "gemini-3.6-flash-high",
-            "installed_agy_version": "1.1.17",
-            "matrix_sha256": "a" * 64,
-            "matrix_agy_version": "1.1.22",
-            "matrix_source_revision": "b" * 40,
-            "version_relation": "drift",
-            "compatibility_status": "critical-interface-compatible-version-drift",
-            "critical_interface_probe_version": 1,
-            "critical_interface_status": "compatible",
-            "critical_capabilities_sha256": "c" * 64,
-            "help_sha256": "d" * 64,
-            "model_availability": "not_assessed",
-            "probed_executable": {
-                "path_sha256": "e" * 64,
-                "content_sha256": "f" * 64,
-                "target_lstat": {
-                    "device": 1, "inode": 1, "mode": 0o100755,
-                    "uid": os.geteuid(), "gid": os.getegid(), "size": 1,
-                    "mtime_ns": 1, "ctime_ns": 1,
-                },
-                "symlink_chain": [],
-                "components": [],
-            },
-            "compatibility_disposition": "proceed",
-            "approved_help_sha256": "d" * 64,
-        }
-        record["compatibility_decision_sha256"] = (
-            MODULE.MODEL_SELECTION.compatibility_decision_sha256(record)
-        )
-
-        document = json.loads(schema.read_text(encoding="utf-8"))
-        for title in (
-            "v3 approved drift exact-model selection",
-            "v3 approved drift model and effort selection",
-        ):
-            v3_variant = next(
-                item for item in document["oneOf"] if item.get("title") == title
-            )
-            v3_properties = v3_variant["properties"]
-            assert v3_properties["resolved_agy_model"] == {
-                "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$", "maxLength": 128,
-            }
-            binding_rules = v3_properties["probed_executable"]["allOf"]
-            assert binding_rules[0] == {"$ref": "#/properties/probed_executable"}
-            current_binding = binding_rules[1]
-            assert current_binding["required"] == ["content_sha256"]
-            assert current_binding["properties"]["target_lstat"]["required"] == ["ctime_ns"]
-            assert current_binding["properties"]["symlink_chain"]["items"]["properties"]["lstat"]["required"] == ["ctime_ns"]
-            assert current_binding["properties"]["components"]["items"]["properties"]["lstat"]["required"] == ["ctime_ns"]
-        MODULE.MODEL_SELECTION.validate_selection_record_shape(record)
-        effort_record = copy.deepcopy(record)
-        effort_record.update({
-            "selection_mode": "model-effort",
-            "user_effort": "high",
-            "user_effort_source": "cli",
+        record = MODULE.MODEL_SELECTION.resolve_selection("Caller.Model/future", "maximum", "cli", "cli", probe_version=False)
+        record.update(installed_agy_version="future-build", probed_executable={
+            "path_sha256": "e" * 64, "content_sha256": "f" * 64,
+            "target_lstat": {"device": 1, "inode": 1, "mode": 0o100755,
+                             "uid": os.geteuid(), "gid": os.getegid(), "size": 1,
+                             "mtime_ns": 1, "ctime_ns": 1},
+            "symlink_chain": [], "components": [],
         })
-        effort_record["compatibility_decision_sha256"] = (
-            MODULE.MODEL_SELECTION.compatibility_decision_sha256(effort_record)
-        )
-        MODULE.MODEL_SELECTION.validate_selection_record_shape(effort_record)
-
-        # V3 decoder validation must be no weaker than the public schema.  In
-        # particular, recomputing the approval digest cannot make an invalid
-        # model field a valid current selection artifact.
-        for valid_record in (record, effort_record):
-            for field in ("user_model", "resolved_agy_model"):
-                for invalid_model in ("not a model slug", "a." * 64 + "a"):
-                    malformed = copy.deepcopy(valid_record)
-                    malformed[field] = invalid_model
-                    malformed["compatibility_decision_sha256"] = (
-                        MODULE.MODEL_SELECTION.compatibility_decision_sha256(malformed)
-                    )
-                    try:
-                        MODULE.MODEL_SELECTION.validate_selection_record_shape(malformed)
-                    except MODULE.MODEL_SELECTION.CallerError:
-                        pass
-                    else:
-                        raise AssertionError("runtime decoder accepted an invalid V3 model slug")
-
+        document = json.loads(schema.read_text())
+        assert document["properties"]["schema_version"]["const"] == 4
+        binding = document["properties"]["probed_executable"]
+        assert "content_sha256" in binding["required"]
+        assert "ctime_ns" in binding["properties"]["target_lstat"]["required"]
+        for field in ("symlink_chain", "components"):
+            assert "ctime_ns" in binding["properties"][field]["items"]["properties"]["lstat"]["required"]
+        MODULE.MODEL_SELECTION.validate_selection_record_shape(record)
+        for field in ("user_model", "resolved_agy_model", "user_effort"):
+            for invalid in ("not one argument", "x" * 129, "bad\x00value"):
+                malformed = copy.deepcopy(record)
+                malformed[field] = invalid
+                try:
+                    MODULE.MODEL_SELECTION.validate_selection_record_shape(malformed)
+                except MODULE.MODEL_SELECTION.CallerError:
+                    pass
+                else:
+                    raise AssertionError("invalid caller argument accepted")
         mutations = (
             lambda value: value.update({"resolved_agy_model": None}),
             lambda value: value.update({"resolved_agy_model": "not a model slug"}),
@@ -4155,12 +4254,12 @@ with tempfile.TemporaryDirectory() as temporary:
             except MODULE.MODEL_SELECTION.CallerError:
                 pass
             else:
-                raise AssertionError("runtime decoder accepted a malformed V3 schema shape")
+                raise AssertionError("runtime decoder accepted a malformed current schema shape")
 
-    check("v3 selection schema rejects records missing the current runtime binding", v3_selection_schema_matches_the_current_runtime_binding)
+    check("current selection schema rejects records missing the current runtime binding", current_selection_schema_matches_the_runtime_binding)
 
     def completed_probe_descendants_are_always_reaped() -> None:
-        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
+        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --effort  Caller effort\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
 
         def group_is_gone(child: int, group: int) -> bool:
             deadline = time.monotonic() + 2.0
@@ -4225,7 +4324,7 @@ with tempfile.TemporaryDirectory() as temporary:
                     if argument == "--version":
                         assert result == "1.1.16"
                     else:
-                        assert len(result) == 2
+                        assert result is None
                 else:
                     try:
                         action()
@@ -4240,7 +4339,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check("completed success and nonzero version/help probes reap pipe-closing live descendants", completed_probe_descendants_are_always_reaped)
 
     def completed_probe_leader_does_not_wait_for_descendant_held_pipe_eof() -> None:
-        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
+        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --effort  Caller effort\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
 
         def group_is_gone(child: int, group: int) -> bool:
             deadline = time.monotonic() + 2.0
@@ -4301,7 +4400,7 @@ with tempfile.TemporaryDirectory() as temporary:
             if argument == "--version":
                 assert result == "1.1.16"
             else:
-                assert len(result) == 2
+                assert result is None
             child, group = map(int, child_record.read_text(encoding="ascii").split())
             assert child != group and group_is_gone(child, group), (child, group)
             assert not provider_marker.exists()
@@ -4312,6 +4411,8 @@ with tempfile.TemporaryDirectory() as temporary:
         record = root / "mutual-selection.json"; record.write_text("{}\n", encoding="utf-8")
         selector = ROOT / "skills/agy-worker/runtime/scripts/model_selection.py"
         for args in (
+            ("--observe-installed-version", "--probe-interface"),
+            ("--probe-interface", "--observe-installed-version"),
             ("--validate-record", str(record), "--verify-record-executable", str(record)),
             ("--verify-record-executable", str(record), "--validate-record", str(record)),
         ):
@@ -4646,7 +4747,7 @@ with tempfile.TemporaryDirectory() as temporary:
         if selection:
             selection_path = job / "selection.json"
             MODULE.MODEL_SELECTION.publish_record(
-                selection_path, MODULE.MODEL_SELECTION.resolve_literal_selection("gemini-3.7-flash"),
+                selection_path, MODULE.MODEL_SELECTION.resolve_selection("gemini-3.7-flash", None, "cli", None, probe_version=False),
             )
             selection_raw, selection_info = MODULE.read_regular(
                 selection_path, MODULE.MAX_COMMAND_BYTES, "fixture selection",

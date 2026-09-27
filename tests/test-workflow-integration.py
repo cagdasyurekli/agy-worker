@@ -123,7 +123,7 @@ if args == ["--version"]:
     print("0.0.0" if {self.behavior!r} == "preflight" else "1.2.11")
     raise SystemExit(0)
 if args == ["--help"]:
-    sys.stderr.write({AGY_HELP!r})
+    sys.stderr.write("invalid interface\\n" if {self.behavior!r} == "preflight" else {AGY_HELP!r})
     raise SystemExit(0)
 
 behavior = {self.behavior!r}

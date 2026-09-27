@@ -18,17 +18,6 @@ ignore = [
     "UP006", "UP007", "UP012", "UP022", "UP031", "UP035", "UP037", "UP045",
 ]
 
-[tool.ruff.lint.per-file-ignores]
-# These exact source/AST-bound historical modules retain their reviewed imports
-# and dead locals. Changing them breaks existing authority checks; byte-bound
-# files cannot gain inline noqa comments either. Historical bindings stay fixed.
-"scripts/version_attestation_runner.py" = ["F401"]  # one unused Mapping import
-"scripts/version_bootstrap_runner.py" = ["F401"]  # one AST-bound pathlib import
-"scripts/models_capture_profile.py" = ["F841"]  # one AST-bound cleanup_failed local
-"scripts/version_initial_bootstrap_runner.py" = ["F841"]  # one AST-bound temporary_path
-"scripts/version_manifest_version_evidence.py" = ["F841"]  # same shared algorithm
-"scripts/version_manifest_capture_runner.py" = ["B904"]  # one byte-bound existing exception context
-
 [tool.mypy]
 python_version = "3.9"
 files = [

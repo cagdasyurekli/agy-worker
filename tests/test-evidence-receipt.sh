@@ -277,7 +277,6 @@ LEAK_RUNTIME="$TMP/leaky-runtime"
 mkdir "$LEAK_RUNTIME"
 cp -R "$ROOT/skills/agy-worker/runtime/scripts" "$LEAK_RUNTIME/scripts"
 cp -R "$ROOT/skills/agy-worker/runtime/schemas" "$LEAK_RUNTIME/schemas"
-cp -R "$ROOT/skills/agy-worker/runtime/compat" "$LEAK_RUNTIME/compat"
 cp "$ROOT/skills/agy-worker/runtime/verify-job.sh" "$LEAK_RUNTIME/verify-job.sh"
 sed 's/builtin eval "exec ${evidence_fd}>&-"/:/' \
     "$ROOT/skills/agy-worker/runtime/qa-gate.sh" > "$LEAK_RUNTIME/qa-gate.sh"
@@ -610,6 +609,32 @@ duplicate_target="$RECEIPTS/duplicate-option.json"
 if [[ $? == 64 && ! -e "$duplicate_target" ]]; then ok "singleton wrapper options reject repetition"; else bad "singleton wrapper options reject repetition"; fi
 
 echo
+mkdir -p "$TMP/selection-bin"
+cat > "$TMP/selection-bin/agy" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+    --version)
+        printf '1.2.11\n'
+        ;;
+    --help)
+        printf '%s\n' \
+            '  --add-dir  Add a directory to the workspace' \
+            '  --conversation  Resume a previous conversation by ID' \
+            '  --disable-slash-commands  Disable slash command expansion' \
+            '  --json-schema  Enforce structured output' \
+            '  --mode  Set execution mode (accept-edits, plan)' \
+            '  --model  Select the model' \
+            '  --effort  Reasoning effort (low|medium|high|max)' \
+            '  --output-format  Output format (text, json, stream-json)' \
+            '  --print  Run one prompt non-interactively' \
+            '  --print-timeout  Bound print-mode waiting' \
+            '  --sandbox  Enable terminal restrictions'
+        ;;
+    *) exit 97 ;;
+esac
+SH
+chmod +x "$TMP/selection-bin/agy"
+export PATH="$TMP/selection-bin:$PATH"
 echo "selection and recommendation bindings:"
 "$ROOT/model-selection.sh" --tier bulk --tier-source cli > "$TMP/selection.json"
 "$ROOT/model-recommendation.sh" --stage pre-dispatch --selected-tier bulk \
@@ -669,31 +694,6 @@ mismatch_target="$RECEIPTS/mismatch-selection.json"
     --pre-recommendation "$TMP/mismatch-recommendation.json" --verify-argv '["true"]' >/dev/null 2>&1
 if [[ $? == 64 && ! -e "$mismatch_target" ]]; then ok "selection and advisory mismatch is rejected before gate"; else bad "selection and advisory mismatch is rejected before gate"; fi
 
-mkdir -p "$TMP/selection-bin"
-cat > "$TMP/selection-bin/agy" <<'SH'
-#!/usr/bin/env bash
-case "$*" in
-    --version)
-        printf '1.2.11\n'
-        ;;
-    --help)
-        printf '%s\n' \
-            '  --add-dir  Add a directory to the workspace' \
-            '  --conversation  Resume a previous conversation by ID' \
-            '  --disable-slash-commands  Disable slash command expansion' \
-            '  --json-schema  Enforce structured output' \
-            '  --mode  Set execution mode (accept-edits, plan)' \
-            '  --model  Select the model' \
-            '  --effort  Reasoning effort (low|medium|high|max)' \
-            '  --output-format  Output format (text, json, stream-json)' \
-            '  --print  Run one prompt non-interactively' \
-            '  --print-timeout  Bound print-mode waiting' \
-            '  --sandbox  Enable terminal restrictions'
-        ;;
-    *) exit 97 ;;
-esac
-SH
-chmod +x "$TMP/selection-bin/agy"
 PATH="$TMP/selection-bin:$PATH" "$ROOT/model-selection.sh" \
     --model gemini-3.6-flash --effort high \
     > "$TMP/direct-selection.json"
@@ -713,13 +713,14 @@ selection=value['caller_selection']
 assert selection['selection_mode']=='model-effort'
 assert selection['user_model']=='gemini-3.6-flash'
 assert selection['user_effort']=='high'
-assert selection['resolved_agy_model']=='gemini-3.6-flash-high'
+assert selection['resolved_agy_model']=='gemini-3.6-flash'
+assert selection['schema_version']==4
 assert value['pre_dispatch_recommendation']['recommendation_only'] is True
 assert value['pre_dispatch_recommendation']['applied'] is False
 PY
 then ok "direct model/effort provenance binds without changing selection"; else bad "direct model/effort provenance binds without changing selection"; fi
 
-for direct_mutation in resolved provenance matrix; do
+for direct_mutation in resolved provenance retired-field; do
     python3 -B - "$TMP/direct-selection.json" "$TMP/direct-$direct_mutation.json" \
         "$direct_mutation" <<'PY'
 import json,sys
@@ -727,7 +728,7 @@ source,target,mode=sys.argv[1:]
 value=json.load(open(source))
 if mode=='resolved': value['resolved_agy_model']='gemini-3.6-flash-low'
 elif mode=='provenance': del value['user_effort_source']
-elif mode=='matrix': value['matrix_sha256']='0'*64
+elif mode=='retired-field': value['matrix_sha256']='0'*64
 json.dump(value,open(target,'w'),sort_keys=True); open(target,'a').write('\n')
 PY
     invalid_direct_target="$RECEIPTS/direct-$direct_mutation.json"
@@ -735,6 +736,30 @@ PY
         --repo "$REPO" --base "$BASE" --selection "$TMP/direct-$direct_mutation.json" \
         --verify-argv '["true"]' >/dev/null 2>&1
     if [[ $? == 64 && ! -e "$invalid_direct_target" ]]; then ok "direct $direct_mutation mutation is rejected before gate"; else bad "direct $direct_mutation mutation is rejected before gate"; fi
+done
+
+# Valid literal effort differs from the advisory; provenance is separately
+# bound by the published receipt, since advisories carry no source provenance.
+for mismatch in effort provenance; do
+    python3 -B - "$TMP/direct-selection.json" "$TMP/literal-$mismatch.json" "$mismatch" <<'PYTHON'
+import json,sys
+value=json.load(open(sys.argv[1]))
+if sys.argv[3]=='effort': value['user_effort']='future-level'
+else: value['user_model_source']='environment'
+json.dump(value,open(sys.argv[2],'w'))
+PYTHON
+    target="$RECEIPTS/literal-$mismatch.json"
+    if [[ "$mismatch" == effort ]]; then
+        "$VERIFY" --receipt "$target" --envelope "$TMP/honest.json" --repo "$REPO" \
+            --base "$BASE" --selection "$TMP/literal-$mismatch.json" \
+            --pre-recommendation "$TMP/direct-recommendation.json" --verify-argv '["true"]' \
+            >/dev/null 2>&1
+        if [[ $? == 64 && ! -e "$target" ]]; then ok "literal effort mismatch rejects before gate"; else bad "literal effort mismatch rejects before gate"; fi
+    else
+        python3 -B "$VALIDATOR" validate --receipt "$direct_target" \
+            --selection "$TMP/literal-$mismatch.json" >/dev/null 2>&1
+        if [[ $? == 1 ]]; then ok "receipt rejects separately bound provenance mismatch"; else bad "receipt rejects separately bound provenance mismatch"; fi
+    fi
 done
 
 echo

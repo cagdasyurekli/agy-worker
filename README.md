@@ -246,8 +246,8 @@ Before spending provider quota, run the offline doctor against the target reposi
 
 A green doctor result covers offline prerequisites only. It does not predict live
 authentication, provider availability, sandbox permission, task quality, or dispatch
-success. Version drift asks for explicit compatibility review; it does not silently
-change the caller's model or effort choice.
+success. Each launch checks required AGY capabilities and the exact executable;
+version text is diagnostic only. Model and effort remain caller-owned.
 
 agy needs network access and writable state under `~/.gemini`. Codex's
 `workspace-write` sandbox therefore needs both the reviewed network setting and an
@@ -275,11 +275,11 @@ candidate; a fresh restart remains an explicit user decision.
 See [Project workflow](docs/PROJECT_WORKFLOW.md) for lifecycle commands, Verification
 v2, quality gates, recovery, cleanup, and Evidence Receipt v1.
 
-## Explicit updates and tool compatibility checks
+## Explicit project updates
 
-Updates are deliberate and source-verified; the runtime does not self-update. CI and
-the optional local notifier observe narrow compatibility signals without authorizing
-an apply, release, dispatch, or provider call.
+Updates are deliberate and source-verified; the runtime does not self-update. The
+read-only update check and optional local notifier observe official project releases
+without authorizing an apply, release, dispatch, or provider call.
 
 If hosted Actions quota is unavailable, run the same provider-independent suite
 locally:
@@ -289,7 +289,7 @@ locally:
 ```
 
 See [Operations](docs/OPERATIONS.md) for CI evidence, updates, notifier maintenance,
-compatibility observation, and privacy-safe reporting.
+project release observation, and privacy-safe reporting.
 
 ## See the evidence boundary in under a minute
 

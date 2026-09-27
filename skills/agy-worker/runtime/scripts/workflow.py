@@ -1067,14 +1067,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--tier", action=SingleValue)
     run_parser.add_argument("--model", action=SingleValue)
     run_parser.add_argument("--effort", action=SingleValue)
-    run_parser.add_argument(
-        "--compatibility-disposition", choices=("proceed",), action=SingleValue,
-        help="Explicit caller disposition for reviewed agy version drift.",
-    )
-    run_parser.add_argument(
-        "--approve-help-sha", action=SingleValue,
-        help="Exact observed raw agy help SHA-256 approved for version drift.",
-    )
     run_parser.add_argument("--max-cycles", type=int)
     run_parser.add_argument("--allow-scoped-repair", action="store_true",
                              help="Permit same-conversation repair within the approved scoped job.")
@@ -1160,10 +1152,6 @@ def _dispatch_run(
         cmd += ["--model", args.model]
     if args.effort:
         cmd += ["--effort", args.effort]
-    if args.compatibility_disposition:
-        cmd += ["--compatibility-disposition", args.compatibility_disposition]
-    if args.approve_help_sha:
-        cmd += ["--approve-help-sha", args.approve_help_sha]
     if args.max_cycles:
         cmd += ["--max-cycles", str(args.max_cycles)]
     if args.allow_scoped_repair:
@@ -1480,15 +1468,6 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
 
 
 def command_run(args: argparse.Namespace) -> int:
-    if bool(args.compatibility_disposition) != bool(args.approve_help_sha):
-        raise WorkflowError(
-            "--compatibility-disposition and --approve-help-sha must be supplied together"
-        )
-    if args.compatibility_disposition:
-        if not args.model or args.tier:
-            raise WorkflowError("compatibility approval requires one explicit --model")
-        if SHA_RE.fullmatch(args.approve_help_sha) is None:
-            raise WorkflowError("--approve-help-sha must be a lowercase SHA-256 digest")
     repo = real_absolute(Path(args.repo), "repository")
     if args.provider_scope:
         args.provider_scope = str(

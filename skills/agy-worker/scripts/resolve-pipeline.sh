@@ -39,7 +39,7 @@ pipeline_runtime_complete() {
     [[ -d "$runtime_root" && ! -L "$runtime_root" ]] || return 1
     runtime_canonical="$(CDPATH= cd -- "$runtime_root" 2>/dev/null && pwd -P)" \
         || return 1
-    for parent in scripts agents schemas compat; do
+    for parent in scripts schemas; do
         [[ -d "$runtime_canonical/$parent" \
             && ! -L "$runtime_canonical/$parent" ]] || return 1
         parent_canonical="$(CDPATH= cd -- "$runtime_canonical/$parent" \
@@ -69,11 +69,9 @@ pipeline_runtime_complete() {
         scripts/recommendation_record.py \
         scripts/model-recommendation.py \
         scripts/model_selection.py \
-        scripts/compatibility.py \
         scripts/candidate_state.py \
         scripts/agy_dispatch.py \
         scripts/job_lifecycle.py \
-        scripts/doctor-metadata.py \
         scripts/delegation_policy.py; do
         case "$required" in
             */*) dependency_parent="${required%/*}" ;;
@@ -96,25 +94,13 @@ pipeline_runtime_complete() {
         scripts/agy_dispatch_containment.py \
         scripts/agy_dispatch_verification.py \
         schemas/workflow-state.schema.json \
-        scripts/version_manifest_engine.py \
         schemas/worker-result.schema.json \
         schemas/worker-result.provider.schema.json \
         schemas/evidence-receipt.schema.json \
         schemas/model-selection.schema.json \
         schemas/model-recommendation.schema.json \
         schemas/job-state.schema.json \
-        schemas/delegation-policy.schema.json \
-        compat/agy-verified-version.txt \
-        compat/agy-upstream-head.txt \
-        compat/agy-last-reviewed.txt \
-        compat/agy-model-effort-matrix.json \
-        compat/model-effort-matrix.schema.json \
-        compat/agy-model-effort-matrix.sha256 \
-        compat/agy-models-inventory-binding.json \
-        compat/agy-models-inventory-binding.sha256 \
-        compat/agy-version-manifest.json \
-        compat/agy-version-manifest.sha256 \
-        compat/version-manifest.schema.json; do
+        schemas/delegation-policy.schema.json; do
         dependency_parent="${required%/*}"
         parent_canonical="$(CDPATH= cd -- "$runtime_canonical/$dependency_parent" \
             2>/dev/null && pwd -P)" || return 1

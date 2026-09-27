@@ -170,19 +170,11 @@ unknown provider or driver artifacts into a candidate. That residual is unaccept
 the controller continues to reject every source drift and owns only deterministic
 binding facts, while Codex still owns the choice and interpretation of checks.
 
-Reviewed direct selection keeps the exact caller slug. The matrix remains anchored to
-its reviewed version; installed-version drift needs bounded safe-target `--version`
-and strict critical `--help` structural probes plus an explicit Codex `proceed`
-disposition bound to the exact raw-help SHA. The controller never interprets help
-prose as availability evidence. Exact-version structural acceptance is only mechanical:
-Codex inspects current bounded raw help before every reviewed direct dispatch and
-stops when the exact caller-selected model or effort cannot be honored. Record
-`model_availability` as `not_assessed`, never
-infer it. A final reprobe failure is a sanitized local selection-preflight failure
-with no provider launch, fallback, automatic retry, same-job resume, or same-job
-restart. Preserve the frozen selection only as local evidence; Codex reviews current
-sanitized `agy --help` evidence and creates a new job with the same caller-selected
-model and effort.
+Direct selection preserves the exact caller model and effort. Every launch uses a
+bounded capability probe and immediate executable-binding recheck. Version text is
+diagnostic only; help proves neither model availability nor account entitlement.
+A failed preflight must stop before provider execution without silently changing the
+choice. Driver review and candidate-bound verification remain independent.
 
 The following historical migration contract was retired by the unreleased
 [current-only job format change](PROJECT_WORKFLOW.md#retired-job-formats-and-flags):
@@ -211,15 +203,14 @@ security tests remain green.
 ## Updates are explicit and trust official sources
 
 `update.sh check` is read-only. `update.sh apply` is an explicit human-authorized
-operation; never run it in the background or as part of a worker job. Production
-release origins, agy/Codex upstreams, release channels, and review cadence must not be
-environment-overridable. Report established drift separately from unavailable or
-malformed evidence: the latter is inconclusive and must outrank a known drift result
-rather than becoming green. Always report both tools before aggregating.
+operation; never run it in the background or as part of a worker job. The fixed
+project release origin must not be environment-overridable. A verified different
+commit is an update observation, not proof of version ordering; unavailable or
+malformed evidence remains inconclusive.
 
 A literal GitHub URL passed to `git ls-remote` is not a fixed-source guarantee: Git
 still honors repository and global `url.*.insteadOf`, proxy, credential, and transport
-configuration. Read-only compatibility evidence therefore uses an exact
+configuration. Read-only project release evidence therefore uses an exact
 `api.github.com` REST repository/path allowlist, a proxyless redirect-rejecting strict
 JSON client, and no Git network command. Keep the explicit apply-time fetch limitation
 visible; observation hardening does not silently harden mutation.
@@ -236,84 +227,12 @@ deadline, create a fresh process group, and kill/reap that group on timeout, ove
 or HUP/INT/TERM. Return only parsed canonical fields; never surface raw child output
 as compatibility evidence or diagnostics.
 
-Security-sensitive evidence runners cannot be validated by a happy-path subprocess
-test. Exercise the exact publication and lifecycle primitives against fixed weakened
-copies: post-link stat and parent-fsync failures, signals before process-group
-registration, a second signal during TERM grace or inode rollback, and a signal
-between the final marker and disarm. Use one supervisor for every synthetic
-controller, keep Popen through validated PGID registration signal-masked, and never
-signal an unvalidated group. A failed mutation must be observed before harness-owned
-cleanup; cleanup must still prove no orphan, late side effect, final, or temporary
-artifact remains. These tests are proof infrastructure, not authority to run a real
-tool or advance compatibility metadata.
+## Capabilities and response semantics are separate
 
-Reconcile each tool's official CLI documentation, stable release, exact source
-revision, and installed semantic command inventory before advancing its separate
-version/revision/review-date metadata. An unknown command that exits zero or prints
-usage is not semantic evidence. The daily watcher observes the same fixed sources;
-it never updates a baseline, installs a tool, dispatches a model, or takes a GitHub
-write action. A bounded real job remains separately approved when behavior changed.
-
-Model-list display text can look like an additional slug. A generic slug regex turned
-the `gpt-oss` label beside `gpt-oss-120b-medium` into a false twelfth entry. Parse a
-bounded inventory one line at a time, recognize only whole exact reviewed slugs,
-require every expected slug exactly once, and permit a display alias only beside its
-bound canonical slug. Reserve the reviewed provider namespaces so even a one-hyphen
-unknown such as `gemini-unknown` fails closed without treating every ordinary display
-label as a model. Keep prefix/longest-match and namespace-removal mutations in paired
-offline controls; inventory parsing alone is not a version binding.
-
-A version observation and an inventory observation must share cryptographic
-executable authority, not merely a pathname or a nearby timestamp. Keep the
-version-only runner incapable of listing models, and give inventory its own
-fixed-profile runner that validates the accepted version binding, reopens the same
-snapshot and source identities, sends one literal `models` argv, and binds the exact
-line-semantic parser into a private completion record. Offline synthetic coverage is
-authority to review that mechanism, not authority to run it or advance compatibility
-metadata.
-
-Authentication isolation and real-account observation are different products. Keep
-the accepting inventory runner on an empty closed HOME, and put any future account-
-dependent observation behind a separate capture-only profile that names the exact
-owner-private HOME identity. Pass only that HOME plus private scratch/cache paths,
-revalidate the nofollow component chain around the child, require capture-owned
-scratch/cache/cwd to be empty again after process-group closure, retain arbitrary
-bounded exit-zero raw bytes privately without semantic interpretation, and label the
-result `captured`, never accepted. The runner must not read account contents itself,
-attempt login, retry, route, or update metadata. The authorized external CLI may
-still read, write, mutate, or cache in HOME; the runner cannot detect or undo that
-behavior or guarantee no residual after rejection. Fake-account tests can prove the
-wiring; they do not authorize a real account or remove the local-owner, same-UID,
-interpreter, and OS-administrator TCB.
-
-An authorized account capture that leaves capture-owned TMPDIR outside its one exact
-reviewed cache exception must reject before publication, even if no other outcome
-suggests a problem. Preserve ambiguous residuals for review; do not create a marker,
-retry the call, or advance metadata from rejected evidence. A later successful,
-version-bound capture still requires strict offline interpretation and a separate
-human reconciliation before it may update an active baseline.
-
-## Observation is not completion of a compatibility goal
-
-A version, help, source, or distribution observation can narrow the next review, but
-it does not satisfy a request to make the product compatible with that version. Keep
-the requested compatibility goal active until the accepted baseline and every coupled
-runtime contract are reconciled and verified. If account evidence, provider work, or
-another authority is missing, return that exact blocker to the user; do not silently
-replace the goal with an observation-only record or mark an adjacent release complete.
-
-The companion process-inert profile builder may fail closed on a reviewed source-byte
-or normalized-AST mismatch before stdin or authority traversal. That is a selected
-reviewed-source drift control under the local-owner, same-UID, interpreter, and OS-
-administrator TCB, not resistance to coordinated hostile-source edits.
-
-An official installer channel can move before a public release/source repository.
-Observe that difference through one fixed, bounded manifest canary, but do not turn a
-distribution version or checksum into source or behavior evidence. Disable proxies,
-reject redirects, cap and validate the JSON response, structurally bind its archive
-URL to the expected host/path/version, and make no archive request. Keep the recorded
-tuple explicitly observational: version or same-version build/hash drift asks for
-human review and cannot advance a baseline or activate model routing.
+A local help probe establishes only the required interface. Keep provider response
+handling strict and version-independent: denial presence blocks automatic continuation,
+malformed framing is never salvaged, and a valid candidate remains available for
+independent driver verification. A version string cannot establish task success.
 
 ## Diagnostics observe; they do not repair
 
@@ -325,11 +244,10 @@ repository names, credentials, or personal configuration.
 
 Never make a doctor scan home configuration, probe invented authentication commands,
 call a provider, access the network, run an updater, or repair a failure. Report
-version drift and due review as requiring human review; report missing or malformed
-prerequisites as not ready. Green proves only the tested offline conditions, not
+missing capabilities or malformed prerequisites as not ready. Green proves only the tested offline conditions, not
 authentication, provider availability, sandbox permission, task quality, or a future
-dispatch. Portable diagnostics must carry byte-synchronized reviewed metadata and
-fail closed when their bundle or records are incomplete. Treat temp placement and
+dispatch. Portable diagnostics reuse the runtime capability probe and fail closed when
+their bundle is incomplete. Treat temp placement and
 signal propagation as part of the trust boundary: ignore caller temp paths, keep
 captures private and bounded, and terminate the exact active process group. A
 non-symlink file is not contained when one of its parent directories is a symlink;
@@ -376,29 +294,14 @@ status instead of relabelling interruption as unavailable evidence.
 
 ## Model routing is explicit
 
-The caller selects the tier or direct model/effort input. Built-in retries reuse the same model; gate failures do
-not silently increase cost or reasoning effort. Keep recommendation policy outside
-both dispatch and gate acceptance: its output must be visible, state the current tier,
-show controlled driver-owned evidence and relative cost impact, and say explicitly
-that it was not applied. A validated model/effort matrix remains metadata, never
-routing or gate authority. Direct selectors resolve only from exact reviewed choices
-after matrix SHA/schema/version/source and installed-version preflight. Preserve
-presence as data: unset differs from explicit empty, CLI and matching environment
-sources conflict even when equal, and repeated components never mean “last wins.”
-Resolve once, publish private driver provenance, and freeze the exact slug and matrix
-SHA across retries. Disabled, stale, unknown, duplicate, unsupported, and fixed/no-
-level-plus-effort inputs fail closed. Do not add a separate thinking-level abstraction
-or assume that agy's separate model and effort arguments compose safely; send one
-resolved `--model` and no downstream `--effort`.
-
-An exact matrix cannot validate itself. Keep its reviewed pair-to-slug mappings and
-fixed-slug classifications mirrored in explicit validator allowlists, and require
-exact equality between the two representations. That duplication is intentional:
-changing only the data or only the code fails closed and forces the next compatibility
-review to update both. Never reconstruct a supposedly reviewed slug with string
-concatenation; a plausible model name is not evidence. Keep the sanitized review
-record as the human evidence owner, and keep raw prompts, streams, envelopes, and
-private artifact paths out of it.
+The caller selects the tier or direct model/effort input. Built-in retries preserve
+that choice; gate failures do not silently increase cost or effort. Recommendations
+remain visible, advisory, and separate from dispatch and gate acceptance. Forward
+model and effort as separate literal arguments without constructing a compound slug
+or inventing an effort catalog. AGY rejection is visible, with no fallback.
+Preserve presence as data: unset differs from explicit empty, CLI and matching
+environment sources conflict even when equal, and repeated components never mean
+“last wins.” Bind the exact choice in private selection and receipt records.
 
 Only an independently observed, bounded quality or verification gap can justify
 recommending a higher named tier. Permission, authentication, scope-policy, contract,
@@ -617,29 +520,6 @@ then boundedly decode the scanlines so valid framing cannot hide transparency or
 broken image stream. Do not imply that a checked-in preview is active in GitHub
 repository settings.
 
-Do not let an offline mutation harness prove only a reimplementation of a sensitive
-runner. Keep the production one-call path in one canonical stdlib module, bind the
-exact source byte count and SHA before importing it, and make synthetic self-test use
-that same function with fixed test-only callables. A green generic lifecycle harness
-is useful evidence for its primitives, but it cannot substitute for exact production
-source provenance.
-
-Do not use the literal value of `sys.executable`, UID/GID, or owner/group writability
-as Apple interpreter provenance. `/usr/bin/python3` can resolve into a versioned Xcode
-or Command Line Tools tree owned by the hosted job account. Keep the fixed
-`/usr/bin/python3 -I -S -B` launch, exact reviewed family/component grammar,
-alias/target identity, regular executable/no-setid target, and no-world-writable
-directory or resolved-executable checks.
-Be honest about the TCB: the selected interpreter, hosted image, local owner, and OS
-administrators are trusted. These in-process checks are drift/sanity evidence, not
-same-user or hostile-PR tamper resistance, binary provenance, code signing, or OS
-attestation.
-
-When hosted-runner trust facts drift, emit only bounded, canonical categories from the
-same evaluator that rejected them. Report every ordered violation, redact unreviewed
-path components, cap the record, and treat it as diagnostic evidence rather than a
-reason to relax the trust boundary.
-
 A clean worktree does not prove that a committed pull-request patch passes
 `git diff --check`. CI must check the GitHub event's immutable base-to-head range:
 base...head for pull requests, before..head for ordinary pushes, and the empty tree
@@ -688,55 +568,6 @@ use lstat-only traversal and never follow the target. Nested repositories, initi
 submodules, mount/device changes, special nodes, and any digest drift remain manual
 recovery boundaries.
 
-Do not let an explicit-account capture profile become a hidden execution path. Keep
-profile preparation process-inert, accept only a closed canonical stdin request, and
-reopen every supplied authority through no-follow descriptors. A retained snapshot
-may be external to the version-evidence directory; bind its exact identity and bytes
-instead of inventing a co-location rule. Publish only a new owner-private mode-0600
-canonical profile with no-overwrite, fsync, and signal rollback semantics. Preparing
-or validating that file never authorizes a provider call, inventory acceptance,
-metadata change, routing, or account-HOME inspection.
-
-Do not turn recovery bootstrap into an alternate recovery implementation. Bootstrap
-must consume one exact retained accepted binding, copy held executable bytes into a
-new disjoint owner-private root, and emit only the unchanged recovery runner input
-shape. Keep its one version observation bounded and separate from models, login,
-routing, metadata, provider, or network authority. Record each root, directory,
-temporary file, and final artifact at creation; never replace that owned identity
-with a later pathname observation. Roll back through no-follow, descriptor-relative
-reopens and compare-delete only the exact owned inode. Revalidate unchanged empty
-mode-`0700` scratch after process-group closure and before publication. A replacement,
-identity/mode/shape drift, interruption, or power-loss residual is bounded manual
-recovery evidence, never a reason to scan or chase paths. Pinning the exact production
-graph and sole Popen site is useful reviewed-source drift detection under the
-reviewed-source/interpreter/local-owner/same-UID/OS-admin TCB; it is not a proof
-against coordinated hostile-source changes.
-
-An initial current-source bridge must own its exact version and stdout constants; it
-must not borrow the historical canonical recovery runner's `1.1.11` stdout authority.
-Its generated profile may pass the version-agnostic prior shape check, but that is
-structural validation only. Persist a stable false reconciliation limitation and do
-not execute it through the current canonical recovery runner until a separate reviewed
-version reconciliation changes that runner's own contract.
-
-Do not make the first current-source bridge depend on a historical recovery record or
-an account-HOME scan. Its profile must bind only the exact source path/full identity,
-fixed reviewed SHA/version, and a new owner-private root. Hold that one source twice
-before creating independent source/snapshot copies, then emit the existing
-`snapshot-version-only` recovery input rather than a second recovery protocol. For
-directory-ledger comparisons retain dev/gid/ino/uid/mode/type but permit only the
-directory link-count change caused by owned children; regular-file link counts remain
-exact. A scratch mutation is evidence of drift: reject and leave the bounded private
-residual rather than recursively discovering or deleting it.
-
-Do not dynamically dual-version a recovery runner. A later fixed recovery contract
-must own immutable local version/stdout/source constants and a separately reviewable
-sole Popen graph; it may not mutate, alias, monkeypatch, or import the historical
-canonical runner's production globals or validators. Keep historical runners byte
-unchanged. Treat recovery output as non-authorizing evidence: no models, metadata,
-inventory, capture, routing, or Phase 2 call follows without its own reconciliation
-and explicit approval.
-
 Hard-link publication has a real two-name lifecycle. Record staging and final as the
 same owned inode with derived `nlink=2`, unlink staging without a signal checkpoint or
 injected durability hook, then record and reopen-verify final `nlink=1` before polling.
@@ -756,16 +587,7 @@ and call `os._exit(0)` without restoring handlers or unblocking. An embedded API
 cannot make the final restore-mask handoff atomic: signals absent from its snapshot
 become caller-owned. Polling between
 1 MiB userspace chunks bounds observation opportunities, not a single kernel syscall.
-An `ast.dump` pin is interpreter-ABI-specific. Do not normalize away or drop AST
-fields to make another interpreter repin it: select the reviewed CPython major/minor
-and exact isolation flags, then reject before parsing production source or acquiring
-mutation authority. A test harness should perform the same check before importing
-the pinned module and print one canonical rerun command on mismatch.
-Apply this boundary consistently to bootstrap, version, models, capture, and the
-process-inert profile CLI. Embedded library calls restore only with explicit caller
-handoff semantics; a harness should be process-owning by default and expose return
-only as a named test handoff. Keep exact dependency pins ordered from version to
-models to capture, with independent harness and profile pins.
+
 
 Hashing an opaque “approval” file is not review evidence. Parse and cohere canonical
 Receipt, dispatch, tool/version, selection, verifier, candidate-diff, approval, and
@@ -774,13 +596,9 @@ Require evidence, approval/review, and transition as strict ancestor stages. Be 
 about the boundary: protected-main ancestry proves ordering under the maintainer and
 local-Git TCB, not human identity or a cryptographic signature.
 
-Fast upstream release cadence must not turn review drift into a total product
-lockout. Keep matrix-derived model/effort resolution exact-version/source bound, but
-let the no-selector path defer to agy's own default. If the caller explicitly accepts
-the risk, a separate CLI-only literal slug may pass through once without a matrix
-lookup; its bounded version observation is diagnostic and non-gating. Its artifact
-must say unreconciled and carry no matrix, provider, cost,
-recommendation, fallback, or routing authority.
+Frequent upstream releases should not require a new local version registry. Probe
+the required interface before each launch and bind the executable immediately before
+use. Do not infer model availability, task quality, or permission from those probes.
 
 A local notifier is a process supervisor, not a cron-shaped shell shortcut. Bind the
 complete transitive executable/data manifest, derive HOME from the account database,
@@ -790,21 +608,13 @@ notification needs an acknowledgement that nested groups actually closed. A desk
 notification is an irreversible final side effect; record only an attempt and never
 claim it can be rolled back.
 
-Expanding a closed notifier source manifest is also a state-schema migration. Exact
-key equality is appropriate for new installs, but applying the new key set before an
-old authenticated installation can exercise its uninstall authority makes `refresh`
-unusable precisely when it is needed. Preserve a narrowly versioned legacy-ledger
-decoder for supported immediately-prior releases: validate the historical key set,
-digests, source/Git identity, tombstone, replacements, and launchd state under the old
-contract, then cross the boundary through uninstall plus a fresh current install.
-Never solve this by accepting arbitrary subsets, rewriting private authority in place,
-or deleting a malformed ledger without historical authentication.
-
-The bounded implementation supports exactly the v0.8.0 18-file ledger as the one
-immediately-prior migration into the current 21-file install, and only through the
-explicit `refresh` command. It reuses the old ledger solely for bound, authenticated,
-resumable uninstall; the replacement ledger is produced by a fresh current install.
-Every other command and every unknown legacy shape remains strict and fail-closed.
+Changing a closed notifier source manifest can retire the installed record format.
+Reject that old format read-only before creating a lock or directory or invoking
+launchctl or the network. Leave its snapshot and schedule untouched; authenticated
+uninstall belongs to the creating release at its original bound source/Git identity.
+After that uninstall confirms unloaded status, the owner archives its retained inert
+recovery directory privately before a new explicit install creates current authority. Do not accept arbitrary manifest
+subsets, rewrite authority in place, or delete an unauthenticated ledger.
 
 A published tag, a checked-out repository, an installed skill, and a loaded notifier
 snapshot are separate states. Updating or verifying one does not establish the
@@ -818,13 +628,11 @@ child stdout incrementally before it can exhaust memory. CI checkout credentials
 another ambient capability: disable persistence unless a later reviewed step needs
 them, even when repository workflow permissions are read-only.
 
-A provider failure label needs two independent bindings: a structurally exact terminal
-event and the observed CLI version that emitted it. Baseline compatibility metadata is
-not proof of the runtime version for an unreconciled literal model. Observe that version
-through the same bounded process-owning probe, let probe failure remain non-gating, and
-classify only an exact reviewed shape. Publish a sanitized countdown, never the error
-string, and never turn retry metadata into an automatic sleep, retry, restart, or model
-change.
+Provider failures require strictly framed, bounded terminal facts. Denial presence
+remains permission-required even when the controller deadline also fired; preserve
+truthful limit metadata and a valid bound candidate. Cancellation, binding failure,
+and output bounds take precedence. No denial, timeout, quota prose, or nonzero exit
+grants automatic retry or model changes.
 
 Untrusted feedback prose is agent input, even when it arrives through a familiar
 GitHub issue form. A prompt-injection blacklist or a security-keyword classifier is
@@ -835,19 +643,6 @@ time, and pagination bounds. Public submission is a separate exact-byte decision
 route explicit security reports privately, treat keyword matching only as an extra
 deny barrier, and require a fresh human acknowledgement bound to the reviewed digest
 before sending a non-security draft to the fixed public destination.
-
-### Exact-version structural selection boundary (2026-08-23)
-
-Observation: exact matrix-version resolution was incorrectly coupled to a retained
-raw-help digest and demanded a V3 approval even after the bounded structural probe
-passed. User impact: a normal reviewed exact-version caller was blocked by missing
-historical bytes rather than a current compatibility drift. Change: V2 now records an
-exact version match after the structural `--version` and `--help` probes; V3
-`--compatibility-disposition proceed --approve-help-sha` is reserved for version drift.
-Positive tests prove an exact synthetic 1.1.16 selection and option-local provider
-prose proceed without approval. Negative tests prove an unapproved 1.1.17 drift stops
-before task intake or provider dispatch, while a mismatched drift approval remains
-review-required.
 
 ## Route context and verification through one authority
 
@@ -871,18 +666,6 @@ group. Keep passed groups as evidence when their relevant bytes are unchanged.
 For a shell-suite failure investigation, set `KEEP_AGY_WORKER_TEST_TMP=1` so the
 failing fixtures survive the exit trap. Capture the exit code and process handle
 along with output; a missing observation is not permission to start a duplicate run.
-
-### Sidecar failure classification of non-activating evidence (2026-08-28)
-
-Observation: Diagnosing a failed account-backed observation must not alter the historical
-runner's execution semantics or silently retry provider requests.
-Change: `models_capture_1_1_22_classifier.py` is an independent sidecar maintenance tool
-that operates on an explicit owner-private evidence root. It enforces strict structural,
-permission, and hash integrity checks, and matches sanitized stderr against versioned
-rulesets. Exactly one matching category (authentication, provider_permission, quota,
-service, timeout, local_environment) is permitted; multiple or zero matches resolve to
-unknown. The output is a mode-0600 record containing only category, origin, hashes, and
-enforced limits, with raw prose and absolute paths excluded and no activation authority granted.
 
 ### Privacy-safe per-suite CI timing telemetry and gate boundaries (2026-08-28)
 
@@ -931,33 +714,16 @@ fail-closed cleanup and workspace mutation assertions remain fully enforced with
 Observation: Duplicating the offline CI stage inventory across shell scripts, timing observers, and
 sharding verifiers creates inventory drift hazards and maintenance overhead. In addition, exhaustive
 combinatorial matrix testing in full subprocess wrappers consumes excessive process execution time.
-Change: `scripts/ci_stages.py` defines the single declarative canonical 40-stage manifest (stage ID,
+Change: `scripts/ci_stages.py` defines the single declarative canonical stage manifest (stage ID,
 announcement, shard, exact argv, and receipt metadata) from which execution, timing, sharding, inventory digest,
 and gate validation are derived without `eval` or unsafe shell reconstruction. Shard receipts include
 per-stage monotonic durations (`stage_durations`) under schema v2 with strict fail-closed validation;
 same-run publication and aggregation require v2, while standalone validation preserves the frozen v1
 shape and its historical stage-ID/announcement digest. The runner routes explicit syntax-check bytecode
 to a disposable cache without leaking `PYTHONPYCACHEPREFIX` into ordinary suites whose negative controls
-must observe fixture-local bytecode. Exhaustive model/effort
-matrix combinations are validated in the pure unit layer, retaining representative end-to-end worker cases
-for CLI selection, environment selection, fixed models, conflicts, unsupported choices, and preflight failures.
-
-### Manifest-driven common engine and mechanical version copy guard (2026-08-30)
-
-Observation: Version-specific executable algorithm copies create maintenance debt, drift risk, and AST/file churn across multiple supported CLI versions.
-Change: Moved version evidence, capture profile/runner, classification, and reprofile into version-neutral production modules backed by a digest-bound common engine and `compat/agy-version-manifest.json`; the stable 1.1.22 filenames are thin CLI adapters. The fixed suites exercise the shared implementations, and synthetic subprocess coverage binds a new manifest version through every real entry point without editing source. Compatibility activation requires the manifest and fails closed when it is absent. A manifest row remains configuration rather than activation authority: separate evidence, canary, and activation review are required. The copy guard rejects new version-stamped algorithm copies while preserving frozen historical evidence.
-
-### Bootstrap version evidence without future proof fields (2026-09-05)
-
-Observation: The common manifest previously required a same-version recovery binding
-before its version-evidence operation could produce that binding. Copying a prior
-version's hashes into those fields would misrepresent evidence.
-Change: A `candidate` row carries established source/distribution inputs and permits
-only `version-evidence`. It rejects same-version recovery and capture fields; optional
-historical predecessor hashes remain explicitly unvalidated provenance, never proof
-for the candidate. Established tiers still require complete recovery evidence.
-Promote the row only after the corresponding
-evidence exists. Version observation alone never authorizes capture or activation.
+must observe fixture-local bytecode. Pure selection validation retains representative
+end-to-end cases for CLI/environment provenance, conflicts, literal forwarding, and
+capability failures.
 
 ### Narrow provider scope and external 0700 staged worktree (2026-08-30)
 
@@ -987,18 +753,6 @@ remained readable, but an unapproved broad record could not launch through dispa
 `run`/`start`. Retired job formats are now subject to the
 [current-only format policy](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
-### Bind self-updating capture binaries explicitly (2026-09-03)
-
-Observation: A version-pinned `agy models` observation can replace its own disposable
-snapshot before returning, so post-run digest rejection prevents false evidence but
-cannot produce an inventory.
-Correction: an attempted `UF_IMMUTABLE` guard did not prevent the observed same-user
-self-update, so it is not an accepted capture control. Version manifest rows can instead
-require a disposable snapshot on a macOS kernel-reported read-only mount (for example an
-owner-prepared UDRO image). The runner binds digest and descriptor/path evidence and
-checks the mount flag before and after the child. This blocks the observed in-place
-replacement route, but does not prove that an updater cannot re-execute from a writable
-location; same-UID or administrator tampering remains an explicit residual.
 ## Transparent provider dispatch notice and truthful boundaries
 
 When Codex delegates to an external worker CLI backed by provider services, transparency

@@ -73,7 +73,7 @@ import sys
 path, stage, tier, evidence, decision, recommended, direction, steps = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     result = json.load(handle)
-assert result["schema_version"] == 1
+assert result["schema_version"] == 2
 assert result["kind"] == "model-tier-recommendation"
 assert result["stage"] == stage
 assert result["selected_tier"] == tier
@@ -123,9 +123,7 @@ assert "selected_tier" not in value
 assert value["user_model"] == model
 assert value.get("user_effort", "") == effort
 assert value["resolved_agy_model"] == resolved
-assert len(value["matrix_sha256"]) == 64
-assert value["matrix_agy_version"] == "1.2.11"
-assert len(value["matrix_source_revision"]) == 40
+assert not any(key.startswith("matrix_") for key in value)
 assert value["recommendation_only"] is True
 assert value["applied"] is False
 assert value["decision"] == "no-escalation"
@@ -893,6 +891,7 @@ if [[ "${1:-}" == "--version" && $# -eq 1 ]]; then
         drift) printf '1.1.11\n' ;;
         drift117) printf '1.1.17\n' ;;
         drift999) printf '9.9.9\n' ;;
+        canary) printf 'canary-build\n' ;;
         empty) : ;;
         malformed) printf 'version 1.2.11\n' ;;
         oversize) i=0; while [[ $i -lt 140 ]]; do printf x; i=$((i+1)); done; printf '\n' ;;
@@ -949,8 +948,8 @@ fi
 if [[ "${1:-}" == "--help" && $# -eq 1 ]]; then
     printf 'help\n' >> "$FAKE_CALLS_FILE"
     case "${FAKE_HELP_MODE:-ready}" in
-        ready)
-            cat >&2 <<'HELP'
+        ready|missing-*)
+            sed "/^  ${FAKE_HELP_MODE#missing-}  /d" >&2 <<'HELP'
 Usage of agy:
   --add-dir                       Add a directory to the workspace
   --conversation                  Resume a previous conversation by ID
@@ -1140,9 +1139,6 @@ if [[ "${FAKE_TRY_STAGE_WRITE:-0}" == "1" && -n "$stage_dir" ]]; then
 fi
 if [[ -n "${FAKE_CALLED_FILE:-}" ]]; then
     : > "$FAKE_CALLED_FILE"
-fi
-if [[ -n "${FAKE_MUTATE_MATRIX:-}" ]]; then
-    printf '{"mutated":true}\n' > "$FAKE_MUTATE_MATRIX"
 fi
 if [[ -n "${FAKE_MUTATE_PROJECT_MARKER:-}" ]]; then
     printf 'gitdir: tampered\n' > "$FAKE_MUTATE_PROJECT_MARKER"
@@ -1342,7 +1338,7 @@ run_worker() {
         FAKE_HEARTBEAT_BARRIER_RELEASE FAKE_HEARTBEAT_COUNT FAKE_HEARTBEAT_DELAY \
         FAKE_HELP_MODE FAKE_MODEL_FILE FAKE_MUTATE_EXECUTABLE \
         FAKE_MUTATE_EXECUTABLE_MODE FAKE_MUTATE_EXECUTABLE_PARENT \
-        FAKE_MUTATE_EXECUTABLE_SAME_LENGTH FAKE_MUTATE_MATRIX \
+        FAKE_MUTATE_EXECUTABLE_SAME_LENGTH \
         FAKE_MUTATE_PROJECT_MARKER FAKE_MUTATION_MARKER FAKE_PROBE_PARENT_PID_FILE \
         FAKE_PROBE_PGID_FILE FAKE_PROBE_READY_FILE FAKE_PROBE_RELEASE_FILE \
         FAKE_PROMPT_FILE FAKE_QUOTA_ERROR FAKE_REPLACE_EXECUTABLE_SYMLINK \
@@ -1391,7 +1387,6 @@ run_worker() {
     FAKE_PROBE_PARENT_PID_FILE="${FAKE_PROBE_PARENT_PID_FILE:-}" \
     FAKE_PROBE_READY_FILE="${FAKE_PROBE_READY_FILE:-}" \
     FAKE_PROBE_RELEASE_FILE="${FAKE_PROBE_RELEASE_FILE:-}" \
-    FAKE_MUTATE_MATRIX="${FAKE_MUTATE_MATRIX:-}" \
     FAKE_MUTATE_WORKTREE_PATH="${FAKE_MUTATE_WORKTREE_PATH:-}" \
     FAKE_MUTATE_PROJECT_MARKER="${FAKE_MUTATE_PROJECT_MARKER:-}" \
     FAKE_SPARSE_PROJECT_MARKER="${FAKE_SPARSE_PROJECT_MARKER:-}" \
@@ -1596,7 +1591,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 command, _raw, _identity = module.load_command(Path(job_text).resolve())
-assert command["schema_version"] == 12
+assert command["schema_version"] == 13
 assert command["provider_isolation"] == "session"
 assert command["native_grant_profile"] == "baseline"
 assert command["whole_worktree_content_sha256"] is None
@@ -1668,7 +1663,7 @@ info = copied_path.stat()
 
 assert copied == source
 assert stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
-assert command["schema_version"] == 12
+assert command["schema_version"] == 13
 assert command["provider_isolation"] == "session"
 assert command["allow_self_verification"] is True
 assert command["self_verification_manifest_path"] == str(copied_path)
@@ -1898,7 +1893,7 @@ prompt = argv[argv.index(b"--print") + 1].decode("utf-8")
 root_marker = "The exact absolute workspace root for this attempt is the JSON string "
 root_start = prompt.index(root_marker) + len(root_marker)
 decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert command["schema_version"] == 12
+assert command["schema_version"] == 13
 assert command["provider_isolation"] == "session"
 assert b"--sandbox" not in argv
 assert command["provider_scope_path"] is None
@@ -1979,7 +1974,7 @@ if [[ "$rc" == "0" && "$(<"$TMP/raw-flash-high.model")" == "gemini-3.6-flash-hig
 import sys
 parts = [part for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
 calls = open(sys.argv[2], encoding="ascii").read().splitlines()
-raise SystemExit(0 if b"--effort" not in parts and calls == ["worker"] else 1)
+raise SystemExit(0 if b"--effort" not in parts and calls == ["version", "help"] * 2 + ["worker"] else 1)
 PY
 then
     ok "raw flash-high stays exact pass-through with no effort argument"
@@ -1997,7 +1992,7 @@ import sys
 argv_path, selection_path, calls_path, tier, source, expected = sys.argv[1:]
 parts = [part for part in open(argv_path, "rb").read().split(b"\0") if part]
 record = json.load(open(selection_path, encoding="utf-8"))
-assert open(calls_path, encoding="ascii").read().splitlines() == ["worker"]
+assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help"] * 2 + ["worker"]
 assert record["selection_mode"] == "tier"
 assert record["selected_tier"] == tier
 assert record["selected_tier_source"] == source
@@ -2054,7 +2049,7 @@ else
 fi
 
 printf 'literal model under malformed version output\n' | FAKE_VERSION_MODE=malformed \
-    run_worker literal-version-independent --literal-model future-model-1.2 \
+    run_worker literal-version-independent --model future-model-1.2 \
     > "$TMP/literal-version-independent.out" 2> "$TMP/literal-version-independent.err"
 rc=$?
 if [[ "$rc" == 0 && "$(<"$TMP/literal-version-independent.model")" == "future-model-1.2" ]] \
@@ -2067,19 +2062,17 @@ import sys
 argv = [item for item in open(sys.argv[1], "rb").read().split(b"\0") if item]
 record = json.load(open(sys.argv[2], encoding="utf-8"))
 calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-assert calls == ["version", "worker"]
+assert calls == ["version", "help"] * 2 + ["worker"]
 assert argv.count(b"--model") == 1
 assert argv[argv.index(b"--model") + 1] == b"future-model-1.2"
 assert b"--effort" not in argv and b"--thinking-level" not in argv
-assert record == {
-    "schema_version": 1,
-    "kind": "agy-worker-selection",
-    "selection_mode": "literal-model",
-    "user_model": "future-model-1.2",
-    "user_model_source": "cli",
-    "resolved_agy_model": "future-model-1.2",
-    "compatibility_status": "unreconciled-pass-through",
-}
+assert record["schema_version"] == 4
+assert record["selection_mode"] == "exact-model"
+assert record["user_model"] == record["resolved_agy_model"] == "future-model-1.2"
+assert record["user_model_source"] == "cli"
+assert record["installed_agy_version"] == "version 1.2.11"
+assert "probed_executable" in record
+assert not any(key.startswith("matrix_") for key in record)
 PY
 then
     ok "literal model routing stays version-independent while version observation remains non-gating"
@@ -2090,7 +2083,7 @@ fi
 assert_direct_result() {
     local name="$1" job="$2" expected="$3" user_model="$4" user_effort="$5"
     local model_source="${6:-cli}" effort_source="${7:-}"
-    local expected_schema="${8:-2}"
+    local expected_schema="${8:-4}"
     if [[ "$(<"$TMP/$job.model")" == "$expected" ]] \
             && [[ "$(wc -l < "$TMP/$job.worker-calls" | tr -d ' ')" == "1" ]] \
             && python3 - "$TMP/$job.argv" "$TMP/logs/$job/selection.json" \
@@ -2102,11 +2095,15 @@ import sys
 
 argv_path, selection_path, calls_path, expected, user_model, user_effort, model_source, effort_source, expected_schema = sys.argv[1:]
 parts = [part for part in open(argv_path, "rb").read().split(b"\0") if part]
-assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help", "version", "help", "version", "help", "worker"]
+assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help", "version", "help", "worker"]
 assert parts.count(b"--model") == 1
 index = parts.index(b"--model")
 assert parts[index + 1].decode() == expected
-assert b"--effort" not in parts
+if user_effort:
+    assert parts.count(b"--effort") == 1
+    assert parts[parts.index(b"--effort") + 1].decode() == user_effort
+else:
+    assert b"--effort" not in parts
 assert b"--thinking-level" not in parts
 record = json.load(open(selection_path, encoding="utf-8"))
 assert record["schema_version"] == int(expected_schema)
@@ -2116,26 +2113,8 @@ assert record.get("user_effort", "") == user_effort
 assert record["user_model_source"] == model_source
 assert record.get("user_effort_source", "") == effort_source
 assert record["resolved_agy_model"] == expected
-assert record["installed_agy_version"] == "1.2.11"
-assert record["matrix_agy_version"] == "1.2.11"
-assert record["version_relation"] == "match"
-assert record["critical_interface_probe_version"] == 1
-assert record["critical_interface_status"] == "compatible"
-if record["schema_version"] == 3:
-    assert record["compatibility_status"] == "critical-interface-compatible-version-drift"
-    assert record["version_relation"] == "drift"
-    assert record["compatibility_disposition"] == "proceed"
-    assert record["approved_help_sha256"] == record["help_sha256"]
-    assert len(record["compatibility_decision_sha256"]) == 64
-    assert "reviewed_help_sha256" not in record
-else:
-    assert record["schema_version"] == 2
-    assert record["compatibility_status"] == "reviewed-version-match"
-    assert "reviewed_help_sha256" not in record
-    assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(record))
-assert record["model_availability"] == "not_assessed"
-assert len(record["critical_capabilities_sha256"]) == 64
-assert len(record["help_sha256"]) == 64
+assert record["installed_agy_version"] in {"1.2.11", "agy 1.2.11"}
+assert not any(key.startswith("matrix_") for key in record)
 binding = record["probed_executable"]
 assert set(binding) == {"path_sha256", "target_lstat", "content_sha256", "symlink_chain", "components"}
 assert len(binding["path_sha256"]) == 64
@@ -2143,27 +2122,23 @@ assert len(binding["content_sha256"]) == 64
 assert binding["target_lstat"]["inode"] > 0
 assert binding["target_lstat"]["ctime_ns"] > 0
 assert all("path" not in key or key == "path_sha256" for item in [binding, *binding["symlink_chain"], *binding["components"]] for key in item)
-assert len(record["matrix_sha256"]) == 64
-assert len(record["matrix_source_revision"]) == 40
 assert stat.S_IMODE(os.stat(selection_path).st_mode) & 0o077 == 0
 PY
     then ok "$name"; else bad "$name"; fi
 }
 
-# An exact matrix-version match proceeds after the bounded structural probe; it
-# does not need a raw-help approval.  The standalone selector remains a public
-# surface, so its private executable path must never appear in its JSON stdout.
+# Advertised capabilities and literal caller choices authorize the interface.
 printf 'exact-version structural help may dispatch\n' | \
     AGY_TEST_WORKER="$WORKER" run_worker exact-version-unseen-help --model gemini-3.6-flash --effort high \
     > "$TMP/exact-version-unseen-help.out" 2> "$TMP/exact-version-unseen-help.err"
 rc=$?
 if [[ "$rc" == 0 ]]; then
-    assert_direct_result "exact-version structural probe proceeds without approval" \
-        exact-version-unseen-help gemini-3.6-flash-high gemini-3.6-flash high cli cli 2
+    assert_direct_result "complete structural probe proceeds without version approval" \
+        exact-version-unseen-help gemini-3.6-flash gemini-3.6-flash high cli cli 4
 else
     bad "exact-version structural probe boundary (exit $rc)"
 fi
-# An exact-version help line may explicitly negate --model.  It must be an
+# An option help line may explicitly negate --model.  It must be an
 # option-local structural match; the controller does not infer availability
 # from provider prose.
 printf 'help prose requires Codex, not controller, semantic interpretation\n' | \
@@ -2172,37 +2147,30 @@ printf 'help prose requires Codex, not controller, semantic interpretation\n' | 
     > "$TMP/help-option-negation.out" 2> "$TMP/help-option-negation.err"
 rc=$?
 if [[ "$rc" == 0 ]]; then
-    assert_direct_result "exact-version option prose does not override structural compatibility" \
-        help-option-negation gemini-3.6-flash-high gemini-3.6-flash high cli cli 2
+    assert_direct_result "option prose does not override the structural capability check" \
+        help-option-negation gemini-3.6-flash gemini-3.6-flash high cli cli 4
 else
     bad "exact-version option prose structural boundary (exit $rc)"
 fi
-LOCALE_HELP_SHA="$(LC_ALL=C FAKE_HELP_MODE=locale-sensitive PATH="$TMP/bin:$PATH" \
-    "$TMP/bin/agy" --help 2>&1 | /usr/bin/python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
 LC_ALL=POSIX FAKE_VERSION_MODE=drift117 FAKE_HELP_MODE=locale-sensitive PATH="$TMP/bin:$PATH" \
     "$SELECTOR" --model gemini-3.6-flash --effort high \
     --child-env FAKE_VERSION_MODE --child-env FAKE_HELP_MODE \
-    --compatibility-disposition proceed --approve-help-sha "$LOCALE_HELP_SHA" \
     > "$TMP/direct-selector-public.json" 2> "$TMP/direct-selector-public.err"
 rc=$?
-if [[ "$rc" == 0 ]] && python3 - "$TMP/direct-selector-public.json" "$TMP/bin/agy" \
-        "$LOCALE_HELP_SHA" <<'PY'
+if [[ "$rc" == 0 ]] && python3 - "$TMP/direct-selector-public.json" "$TMP/bin/agy" <<'PYTHON'
 import json, sys
 payload = open(sys.argv[1], "rb").read()
 record = json.loads(payload)
 assert sys.argv[2].encode() not in payload
-assert record["schema_version"] == 3
+assert record["schema_version"] == 4
 assert record["installed_agy_version"] == "1.1.17"
-assert record["version_relation"] == "drift"
-assert record["help_sha256"] == record["approved_help_sha256"] == sys.argv[3]
+assert record["user_model"] == record["resolved_agy_model"] == "gemini-3.6-flash"
+assert record["user_effort"] == "high"
 assert "path" not in record["probed_executable"]
 assert set(record["probed_executable"]) == {"path_sha256", "target_lstat", "content_sha256", "symlink_chain", "components"}
-PY
-then
-    ok "direct selector pins the documented C-locale help digest and exposes no executable path"
-else
-    bad "direct selector locale/hash parity or executable binding"
-fi
+PYTHON
+then ok "direct selector accepts diagnostic version and exposes no executable path"
+else bad "direct selector diagnostic/executable binding"; fi
 
 # BEGIN model-selection coverage
 # BEGIN exhaustive pure-policy model-selection coverage
@@ -2236,80 +2204,25 @@ root = Path(sys.argv[1])
 sys.path.insert(0, str(root / "skills" / "agy-worker" / "runtime" / "scripts"))
 import model_selection
 
-matrix, actual_sha, version, revision = model_selection.load_policy()
-
-direct_pairs = (
-    ("gemini-3.7-flash", "low", "gemini-3.7-flash-low"),
-    ("gemini-3.7-flash", "medium", "gemini-3.7-flash-medium"),
-    ("gemini-3.7-flash", "high", "gemini-3.7-flash-high"),
-    ("gemini-3.6-flash", "low", "gemini-3.6-flash-low"),
-    ("gemini-3.6-flash", "medium", "gemini-3.6-flash-medium"),
-    ("gemini-3.6-flash", "high", "gemini-3.6-flash-high"),
-    ("gemini-3.8-flash", "low", "gemini-3.8-flash-low"),
-    ("gemini-3.8-flash", "medium", "gemini-3.8-flash-medium"),
-    ("gemini-3.8-flash", "high", "gemini-3.8-flash-high"),
-    ("gemini-3.1-pro", "low", "gemini-3.1-pro-low"),
-    ("gemini-3.1-pro", "high", "gemini-3.1-pro-high"),
-)
-
-exact_models = (
-    "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high",
-    "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
-    "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
-    "gemini-3.1-pro-low", "gemini-3.1-pro-high",
-    "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
-)
-
-# Exhaustive resolution of all direct pairs
-for base_model, effort, expected_slug in direct_pairs:
-    resolved, kind = model_selection.resolve_model(matrix, base_model, effort)
-    assert resolved == expected_slug
-    assert kind == "model-effort"
-
-# Exhaustive resolution of all exact/fixed models
-for exact_model in exact_models:
-    resolved, kind = model_selection.resolve_model(matrix, exact_model, None)
-    assert resolved == exact_model
-    assert kind == "exact-model"
-
-# Exhaustive rejection of unsupported choices
-# 1. Pro medium
-try:
-    model_selection.resolve_model(matrix, "gemini-3.1-pro", "medium")
-    raise AssertionError("Pro medium should be rejected")
-except model_selection.CallerError:
-    pass
-
-# 2. Base models without effort
-for base_model in ("gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-pro"):
+# Model and effort catalogs belong to AGY. Only transport/provenance is validated.
+for model in ("gemini-3.1-pro", "claude-sonnet-4-6", "vendor/Future-Model", "gemini-3.6-flash-high"):
+    for effort in (None, "medium", "thinking-high", "Future-Level"):
+        record = model_selection.resolve_selection(model, effort, "cli", "cli" if effort else None, probe_version=False)
+        assert record["resolved_agy_model"] == model
+        assert record.get("user_effort") == effort
+        model_selection.validate_selection_record(record)
+for model, effort in (("", None), (" padded", None), ("model", "bad effort"), ("model", "-flag")):
     try:
-        model_selection.resolve_model(matrix, base_model, None)
-        raise AssertionError(f"Base model {base_model} without effort should be rejected")
+        model_selection.resolve_selection(model, effort, "cli", "cli" if effort else None, probe_version=False)
     except model_selection.CallerError:
         pass
-
-# 3. Fixed models with effort
-for fixed_model in ("claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"):
-    for effort in ("low", "medium", "high"):
-        try:
-            model_selection.resolve_model(matrix, fixed_model, effort)
-            raise AssertionError(f"Fixed model {fixed_model} with effort should be rejected")
-        except model_selection.CallerError:
-            pass
-
-# 4. Exact compound slugs with effort
-for exact_model in exact_models:
-    if exact_model not in ("claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"):
-        try:
-            model_selection.resolve_model(matrix, exact_model, "high")
-            raise AssertionError(f"Exact slug {exact_model} with effort should be rejected")
-        except model_selection.CallerError:
-            pass
+    else:
+        raise AssertionError("unsafe transport accepted")
 PY
 then
-    ok "exhaustive pure unit validation of model and effort matrix combinations"
+    ok "literal caller values and transport boundaries without a model catalog"
 else
-    bad "exhaustive pure unit validation of model and effort matrix combinations"
+    bad "literal caller values and transport boundaries without a model catalog"
 fi
 # END exhaustive pure-policy model-selection coverage
 
@@ -2320,7 +2233,7 @@ printf 'representative direct pair cli-cli\n' | \
     > "$TMP/direct-pair-rep-cli-cli.out" 2> "$TMP/direct-pair-rep-cli-cli.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.7-flash/high accepts cli-cli" \
-        "direct-pair-rep-cli-cli" "gemini-3.7-flash-high" "gemini-3.7-flash" "high" \
+        "direct-pair-rep-cli-cli" "gemini-3.7-flash" "gemini-3.7-flash" "high" \
         "cli" "cli"
 else
     bad "representative pair gemini-3.7-flash/high accepts cli-cli"
@@ -2331,7 +2244,7 @@ printf 'representative direct pair cli-env\n' | \
     > "$TMP/direct-pair-rep-cli-env.out" 2> "$TMP/direct-pair-rep-cli-env.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.6-flash/medium accepts cli-env" \
-        "direct-pair-rep-cli-env" "gemini-3.6-flash-medium" "gemini-3.6-flash" "medium" \
+        "direct-pair-rep-cli-env" "gemini-3.6-flash" "gemini-3.6-flash" "medium" \
         "cli" "environment"
 else
     bad "representative pair gemini-3.6-flash/medium accepts cli-env"
@@ -2342,7 +2255,7 @@ printf 'representative direct pair env-cli\n' | \
     > "$TMP/direct-pair-rep-env-cli.out" 2> "$TMP/direct-pair-rep-env-cli.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.8-flash/low accepts env-cli" \
-        "direct-pair-rep-env-cli" "gemini-3.8-flash-low" "gemini-3.8-flash" "low" \
+        "direct-pair-rep-env-cli" "gemini-3.8-flash" "gemini-3.8-flash" "low" \
         "environment" "cli"
 else
     bad "representative pair gemini-3.8-flash/low accepts env-cli"
@@ -2354,7 +2267,7 @@ printf 'representative direct pair env-env\n' | \
     > "$TMP/direct-pair-rep-env-env.out" 2> "$TMP/direct-pair-rep-env-env.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.1-pro/high accepts env-env" \
-        "direct-pair-rep-env-env" "gemini-3.1-pro-high" "gemini-3.1-pro" "high" \
+        "direct-pair-rep-env-env" "gemini-3.1-pro" "gemini-3.1-pro" "high" \
         "environment" "environment"
 else
     bad "representative pair gemini-3.1-pro/high accepts env-env"
@@ -2404,61 +2317,6 @@ else
 fi
 # END representative model-selection worker dispatches
 
-# Keep the reduced dispatch set mechanically bound to this exact source region:
-# the eight representative jobs cover the four provenance classes plus exact and
-# fixed model paths, while the preceding pure-policy block remains exhaustive.
-if PYTHONDONTWRITEBYTECODE=1 python3 -B - "$ROOT/tests/test-agy-worker.sh" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-
-def bounded(begin: str, end: str) -> str:
-    assert source.count(begin) == 1, begin
-    assert source.count(end) == 1, end
-    start = source.index(begin) + len(begin)
-    finish = source.index(end)
-    assert start < finish, (begin, end)
-    return source[start:finish]
-
-coverage_tag = "model" + "-selection coverage"
-selection = bounded("# BEGIN " + coverage_tag, "# END " + coverage_tag)
-policy_tag = "exhaustive pure-policy " + coverage_tag
-policy = bounded("# BEGIN " + policy_tag, "# END " + policy_tag)
-representative_tag = "representative model-selection worker dispatches"
-representative = bounded("# BEGIN " + representative_tag, "# END " + representative_tag)
-
-for required in (
-    "# Exhaustive resolution of all direct pairs",
-    "# Exhaustive resolution of all exact/fixed models",
-    "# Exhaustive rejection of unsupported choices",
-    "for base_model, effort, expected_slug in direct_pairs:",
-    "for exact_model in exact_models:",
-    "model_selection.resolve_model",
-):
-    assert required in policy, required
-
-expected_jobs = [
-    "direct-pair-rep-cli-cli",
-    "direct-pair-rep-cli-env",
-    "direct-pair-rep-env-cli",
-    "direct-pair-rep-env-env",
-    "direct-exact-rep-cli",
-    "direct-exact-rep-env",
-    "direct-fixed-rep-cli",
-    "direct-fixed-rep-env",
-]
-runner = "run" + "_worker"
-assert selection.count(runner) == len(expected_jobs)
-assert re.findall(rf"\b{runner}\s+([a-z0-9-]+)\b", representative) == expected_jobs
-assert not re.search(r"^\s*(?:for|while)\b", representative, flags=re.MULTILINE)
-PY
-then
-    ok "model-selection source guard binds exhaustive policy and eight representative dispatches"
-else
-    bad "model-selection source guard binds exhaustive policy and eight representative dispatches"
-fi
 # END model-selection coverage
 
 expect_selector_reject() {
@@ -2480,46 +2338,23 @@ expect_selector_reject "repeated model is ambiguous" repeated-model \
 expect_selector_reject "repeated effort is ambiguous" repeated-effort \
     --model gemini-3.6-flash --effort high --effort high
 expect_selector_reject "repeated tier is ambiguous" repeated-tier --tier bulk --tier bulk
-expect_selector_reject "repeated literal model is ambiguous" repeated-literal \
-    --literal-model future-model-1.2 --literal-model future-model-1.2
-expect_selector_reject "literal model conflicts with reviewed model" literal-model-conflict \
-    --literal-model future-model-1.2 --model gemini-3.6-flash --effort high
-expect_selector_reject "literal model conflicts with effort" literal-effort-conflict \
-    --literal-model future-model-1.2 --effort high
-expect_selector_reject "uppercase literal model is rejected" literal-uppercase \
-    --literal-model Future-Model-1.2
-expect_selector_reject "slash literal model is rejected" literal-slash \
-    --literal-model vendor/model-v1
-literal_too_long="$(python3 -c 'print("a-" + "b" * 127)')"
-expect_selector_reject "overlong literal model is rejected" literal-too-long \
-    --literal-model "$literal_too_long"
-expect_selector_reject "empty literal model is rejected" empty-literal --literal-model ''
+expect_selector_reject "retired literal alias rejects before task or provider" retired-literal \
+    --literal-model future-model-1.2
+model_too_long="$(python3 -c 'print("a-" + "b" * 127)')"
+expect_selector_reject "overlong model is rejected" model-too-long --model "$model_too_long"
 expect_selector_reject "empty CLI model is rejected" empty-cli-model --model ''
 expect_selector_reject "empty CLI effort is rejected" empty-cli-effort \
     --model gemini-3.6-flash --effort ''
 expect_selector_reject "effort without model is rejected" effort-without-model --effort high
-expect_selector_reject "base model without effort is rejected" base-without-effort \
-    --model gemini-3.6-flash
-expect_selector_reject "Pro medium is unsupported" pro-medium \
-    --model gemini-3.1-pro --effort medium
-expect_selector_reject "fixed Sonnet rejects effort" sonnet-effort \
-    --model claude-sonnet-4-6 --effort high
-expect_selector_reject "fixed Opus rejects effort" opus-effort \
-    --model claude-opus-4-6-thinking --effort high
-expect_selector_reject "fixed GPT rejects effort" gpt-effort \
-    --model gpt-oss-120b-medium --effort medium
-expect_selector_reject "compound slug rejects effort" compound-effort \
-    --model gemini-3.6-flash-high --effort high
-expect_selector_reject "unknown direct model is rejected" unknown-direct \
-    --model vendor/model-v1
-expect_selector_reject "case-changing a direct model is rejected" upper-direct \
-    --model Gemini-3.6-Flash --effort high
 expect_selector_reject "padded direct model is rejected" padded-direct \
     --model ' gemini-3.6-flash' --effort high
-expect_selector_reject "thinking-style effort is rejected" thinking-effort \
-    --model gemini-3.6-flash --effort thinking-high
 expect_selector_reject "invented thinking-level flag is rejected" thinking-flag \
     --model gemini-3.6-flash --thinking-level high
+
+expect_selector_reject "retired disposition flag is actionable rejection" retired-disposition \
+    --model future-model --compatibility-disposition proceed
+expect_selector_reject "retired help approval flag is actionable rejection" retired-help-approval \
+    --model future-model --approve-help-sha "$(printf 'a%.0s' {1..64})"
 
 assert_env_reject() {
     local name="$1" job="$2" got="$3"
@@ -2580,60 +2415,8 @@ make_selector_fixture() {
     # Test fixtures must start from source bytes, not an ambient interpreter cache.
     # This is deliberately fixture-local; it never deletes checkout/cache inputs.
     rm -rf "$destination/runtime/scripts/__pycache__"
-    case "$mode" in
-        clean) ;;
-        disabled|missing-output)
-            python3 - "$destination/runtime/compat/agy-model-effort-matrix.json" "$mode" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
+    [[ "$mode" == clean ]] || return 64
 
-path = pathlib.Path(sys.argv[1])
-mode = sys.argv[2]
-data = json.loads(path.read_text())
-if mode == "disabled":
-    data["resolution_status"] = "disabled-unverified-source"
-    data["inventory"]["reviewed_source_revision"] = None
-    data["inventory"]["evidence"] = ["installed-agy-models"]
-else:
-    data["adjustable_models"][0]["resolutions"]["high"] = ""
-path.write_text(json.dumps(data, indent=2) + "\n")
-digest = hashlib.sha256(path.read_bytes()).hexdigest()
-(path.parent / "agy-model-effort-matrix.sha256").write_text(digest + "\n")
-PY
-            ;;
-        source-drift) printf '%040d\n' 0 > "$destination/runtime/compat/agy-upstream-head.txt" ;;
-        coordinated-source-drift)
-            python3 - "$destination/runtime/compat" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-revision = "0" * 40
-(root / "agy-upstream-head.txt").write_text(revision + "\n", encoding="ascii")
-for name in ("agy-model-effort-matrix", "agy-models-inventory-binding"):
-    path = root / f"{name}.json"
-    value = json.loads(path.read_text())
-    value["inventory" if name.endswith("matrix") else "reviewed_source_revision"] = (
-        {**value["inventory"], "reviewed_source_revision": revision}
-        if name.endswith("matrix")
-        else revision
-    )
-    path.write_text(json.dumps(value, indent=2) + "\n")
-    (root / f"{name}.sha256").write_text(
-        hashlib.sha256(path.read_bytes()).hexdigest() + "\n",
-        encoding="ascii",
-    )
-PY
-            ;;
-        version-drift) printf '9.9.9\n' > "$destination/runtime/compat/agy-verified-version.txt" ;;
-        sha-mismatch) printf '%064d\n' 0 > "$destination/runtime/compat/agy-model-effort-matrix.sha256" ;;
-        missing-matrix) rm -f "$destination/runtime/compat/agy-model-effort-matrix.json" ;;
-        malformed-schema) printf '\n{}\n' >> "$destination/runtime/compat/model-effort-matrix.schema.json" ;;
-    esac
 }
 
 fixture_cache_source="$TMP/selector-fixture-cache-source"
@@ -2683,296 +2466,64 @@ expect_compat_reject() {
     fi
 }
 
-for compat_mode in disabled source-drift coordinated-source-drift version-drift sha-mismatch missing-matrix \
-    malformed-schema missing-output; do
-    compat_fixture="$TMP/selector-$compat_mode"
-    make_selector_fixture "$compat_fixture" "$compat_mode"
-    case "$compat_mode" in
-        disabled|source-drift|version-drift) compat_exit=7 ;;
-        *) compat_exit=8 ;;
-    esac
-    expect_compat_reject "$compat_mode matrix evidence fails closed" \
-        "$compat_fixture" "compat-$compat_mode" "$compat_exit" ready 0
-done
-
 VERSION_FIXTURE="$TMP/selector-version-probes"
 make_selector_fixture "$VERSION_FIXTURE" clean
-printf 'version drift needs Codex review before task intake\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker version-drift-installed --model gemini-3.6-flash --effort high \
-    > "$TMP/version-drift-installed.out" 2> "$TMP/version-drift-installed.err"
-rc=$?
-if [[ "$rc" == 7 && "$(cat "$TMP/version-drift-installed.calls")" == $'version\nhelp' \
-        && ! -s "$TMP/version-drift-installed.worker-calls" \
-        && ! -e "$TMP/logs/version-drift-installed/task.txt" ]] \
-        && ! grep -Eq 'Usage of agy:|Select a model|currently unavailable|/tmp|/Users' "$TMP/version-drift-installed.err"
-then
-    ok "installed version drift is review-required before task intake or provider dispatch"
-else
-    bad "installed version drift review-required boundary"
-fi
-# The approval digest is a public product fact, not an out-of-band shell hash.
-# It must name only bounded compatibility evidence and never the executable,
-# help prose, prompt, repository, or credentials.
-HELP_SHA="$(python3 - "$TMP/version-drift-installed.err" <<'PY'
-import json
-import sys
-raw = open(sys.argv[1], encoding="utf-8").read().splitlines()
-prefix = "model-selection: review-required "
-assert len(raw) == 1 and raw[0].startswith(prefix), raw
-value = json.loads(raw[0][len(prefix):])
-assert value == {
-    "schema_version": 1,
-    "kind": "agy-worker-compatibility-review-evidence",
-    "installed_agy_version": "1.1.17",
-    "matrix_agy_version": "1.2.11",
-    "version_relation": "drift",
-    "compatibility_status": "direct-selection-review-required",
-    "critical_interface_status": "compatible",
-    "critical_capabilities_sha256": value["critical_capabilities_sha256"],
-    "raw_help_sha256": value["raw_help_sha256"],
-    "user_model": "gemini-3.6-flash",
-    "user_model_source": "cli",
-    "user_effort": "high",
-    "user_effort_source": "cli",
-    "resolved_agy_model": "gemini-3.6-flash-high",
-    "retry_selection_arguments": [
-        "--model", "gemini-3.6-flash", "--effort", "high",
-        "--compatibility-disposition", "proceed", "--approve-help-sha", value["raw_help_sha256"],
-    ],
-    "retry_selection_environment": {},
-    "approval": {"compatibility_disposition": None, "approve_help_sha256": None},
-}
-assert all(isinstance(value[key], str) and len(value[key]) == 64 for key in (
-    "critical_capabilities_sha256", "raw_help_sha256",
-))
-assert not any(secret in raw[0] for secret in ("/tmp", "/Users", "Usage of agy:", "version drift needs"))
-assert "selected_model" not in value and "selected_effort" not in value
-print(value["raw_help_sha256"])
-PY
-)"
-if [[ -n "$HELP_SHA" ]]; then
-    ok "version drift publishes bounded sanitized approval evidence from product output"
-else
-    bad "version drift approval evidence shape"
-fi
-
-# A drift review must preserve exactly where each caller selector came from.
-# The retry fragment is deliberately limited to selector argv/environment plus
-# the newly observed approval digest: task text, paths, and ambient secrets are
-# not review evidence.
-assert_drift_retry_selection() {
-    local name="$1" error_file="$2" expected_model="$3" expected_model_source="$4"
-    local expected_effort="$5" expected_effort_source="$6" expected_resolved="$7"
-    if python3 - "$error_file" "$expected_model" "$expected_model_source" \
-            "$expected_effort" "$expected_effort_source" "$expected_resolved" <<'PY'
-import json
-import sys
-
-path, model, model_source, effort, effort_source, resolved = sys.argv[1:]
-line = open(path, encoding="utf-8").read().strip()
-prefix = "model-selection: review-required "
-assert line.startswith(prefix)
-value = json.loads(line[len(prefix):])
-assert value["user_model"] == model
-assert value["user_model_source"] == model_source
-assert value["resolved_agy_model"] == resolved
-if effort:
-    assert value["user_effort"] == effort
-    assert value["user_effort_source"] == effort_source
-else:
-    assert "user_effort" not in value and "user_effort_source" not in value
-args = value["retry_selection_arguments"]
-env = value["retry_selection_environment"]
-assert isinstance(args, list) and all(isinstance(item, str) for item in args)
-assert isinstance(env, dict) and set(env) <= {"AGY_WORKER_MODEL", "AGY_WORKER_EFFORT"}
-expected_args = []
-expected_env = {}
-if model_source == "cli":
-    expected_args += ["--model", model]
-else:
-    expected_env["AGY_WORKER_MODEL"] = model
-if effort:
-    if effort_source == "cli":
-        expected_args += ["--effort", effort]
-    else:
-        expected_env["AGY_WORKER_EFFORT"] = effort
-expected_args += ["--compatibility-disposition", "proceed", "--approve-help-sha", value["raw_help_sha256"]]
-assert args == expected_args and env == expected_env
-assert not ({"selected_model", "selected_effort"} & set(value))
-assert not any(token in line for token in ("prompt-secret", "/private/", "ambient-secret"))
-PY
-    then
-        ok "$name"
-    else
-        bad "$name"
-    fi
-}
-
-printf 'prompt-secret env model and effort\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    AGY_WORKER_MODEL=gemini-3.6-flash AGY_WORKER_EFFORT=high \
-    AGY_WORKER_UNRELATED_SECRET=ambient-secret run_worker version-drift-env \
-    > "$TMP/version-drift-env.out" 2> "$TMP/version-drift-env.err"
-rc=$?
-if [[ "$rc" == 7 ]]; then
-    assert_drift_retry_selection "drift evidence preserves environment model and effort provenance" \
-        "$TMP/version-drift-env.err" gemini-3.6-flash environment high environment gemini-3.6-flash-high
-else
-    bad "environment drift evidence preflight (exit $rc)"
-fi
-
-printf 'prompt-secret mixed selector provenance\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    AGY_WORKER_EFFORT=high AGY_WORKER_UNRELATED_SECRET=ambient-secret \
-    run_worker version-drift-mixed --model gemini-3.6-flash \
-    > "$TMP/version-drift-mixed.out" 2> "$TMP/version-drift-mixed.err"
-rc=$?
-if [[ "$rc" == 7 ]]; then
-    assert_drift_retry_selection "drift evidence preserves mixed CLI/environment provenance" \
-        "$TMP/version-drift-mixed.err" gemini-3.6-flash cli high environment gemini-3.6-flash-high
-else
-    bad "mixed drift evidence preflight (exit $rc)"
-fi
-
-printf 'prompt-secret fixed selector\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    AGY_WORKER_UNRELATED_SECRET=ambient-secret run_worker version-drift-fixed \
-    --model gemini-3.6-flash-high \
-    > "$TMP/version-drift-fixed.out" 2> "$TMP/version-drift-fixed.err"
-rc=$?
-if [[ "$rc" == 7 ]]; then
-    assert_drift_retry_selection "drift evidence keeps exact compound as resolved rather than caller base" \
-        "$TMP/version-drift-fixed.err" gemini-3.6-flash-high cli '' '' gemini-3.6-flash-high
-else
-    bad "fixed drift evidence preflight (exit $rc)"
-fi
-
-printf 'approved version drift preserves the caller selection\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker version-drift-approved --model gemini-3.6-flash --effort high \
-    --compatibility-disposition proceed --approve-help-sha "$HELP_SHA" \
-    > "$TMP/version-drift-approved.out" 2> "$TMP/version-drift-approved.err"
-rc=$?
-if [[ "$rc" == 0 ]] && python3 - "$TMP/logs/version-drift-approved/selection.json" \
-        "$TMP/version-drift-approved.argv" "$TMP/version-drift-approved.calls" "$HELP_SHA" <<'PY'
-import json, sys
-record = json.load(open(sys.argv[1], encoding="utf-8"))
-argv = [item for item in open(sys.argv[2], "rb").read().split(b"\0") if item]
-calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-assert calls == ["version", "help", "version", "help", "version", "help", "worker"]
-assert record["schema_version"] == 3
-assert record["compatibility_disposition"] == "proceed"
-assert record["approved_help_sha256"] == record["help_sha256"] == sys.argv[4]
-assert len(record["compatibility_decision_sha256"]) == 64
-assert argv[argv.index(b"--model") + 1] == b"gemini-3.6-flash-high"
-assert b"--effort" not in argv and b"--thinking-level" not in argv
-PY
-then
-    ok "explicit Codex disposition binds exact help SHA and preserves model effort argv"
-else
-    bad "approved direct version drift binding"
-fi
-# A review-required selection consumes no task bytes and leaves no controller
-# reservation, so the exact job id can be retried with its public digest.
-retry_job="version-drift-retry"
-printf 'review then exact same job retry\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker "$retry_job" --model gemini-3.6-flash --effort high \
-    > "$TMP/$retry_job.out" 2> "$TMP/$retry_job.err"
-retry_rc=$?
-RETRY_HELP_SHA="$(python3 - "$TMP/$retry_job.err" <<'PY'
-import json
-import sys
-line = open(sys.argv[1], encoding="utf-8").read().strip()
-prefix = "model-selection: review-required "
-assert line.startswith(prefix)
-print(json.loads(line[len(prefix):])["raw_help_sha256"])
-PY
-)"
-retry_cleanup_ok=0
-[[ ! -e "$TMP/logs/$retry_job" ]] && retry_cleanup_ok=1
-rm -f "$TMP/$retry_job.calls"
-printf 'approved exact same job retry\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker "$retry_job" --model gemini-3.6-flash --effort high \
-    --compatibility-disposition proceed --approve-help-sha "$RETRY_HELP_SHA" \
-    > "$TMP/$retry_job-approved.out" 2> "$TMP/$retry_job-approved.err"
-retry_approved_rc=$?
-if [[ "$retry_rc" == 7 && "$retry_cleanup_ok" == 1 && "$retry_approved_rc" == 0 \
-        && -f "$TMP/logs/$retry_job/selection.json" \
-        && "$(cat "$TMP/$retry_job.calls")" == $'version\nhelp\nversion\nhelp\nversion\nhelp\nworker' ]]; then
-    ok "review-required cleanup permits exact same job-id approval retry without provider before approval"
-else
-    bad "review-required job cleanup or same-id retry boundary"
-fi
-for approval_case in missing-help-sha stale-help-sha malformed-help-sha uppercase-disposition duplicate-disposition; do
-    approval_args=(--model gemini-3.6-flash --effort high)
-    approval_exit=64
-    case "$approval_case" in
-        missing-help-sha)
-            approval_args+=(--compatibility-disposition proceed)
-            approval_exit=7 ;;
-        stale-help-sha)
-            approval_args+=(--compatibility-disposition proceed --approve-help-sha "$(printf '0%.0s' {1..64})")
-            approval_exit=7 ;;
-        malformed-help-sha)
-            approval_args+=(--compatibility-disposition proceed --approve-help-sha "NOT-A-SHA") ;;
-        uppercase-disposition)
-            approval_args+=(--compatibility-disposition PROCEED --approve-help-sha "$HELP_SHA") ;;
-        duplicate-disposition)
-            approval_args+=(--compatibility-disposition proceed --compatibility-disposition proceed --approve-help-sha "$HELP_SHA") ;;
-    esac
-    approval_job="approval-$approval_case"
-    printf 'invalid compatibility approval must remain pre-task\n' | \
-        AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-        run_worker "$approval_job" "${approval_args[@]}" \
-        > "$TMP/$approval_job.out" 2> "$TMP/$approval_job.err"
-    rc=$?
-    if [[ "$rc" == "$approval_exit" && ! -s "$TMP/$approval_job.worker-calls" \
-            && ! -e "$TMP/logs/$approval_job/task.txt" ]]; then
-        ok "$approval_case is rejected before task intake and provider dispatch"
-    else
-        bad "$approval_case rejection boundary (exit $rc)"
-    fi
+# Every required option must be advertised even on default and tier routes.
+for missing in add-dir conversation disable-slash-commands effort json-schema mode model output-format print print-timeout sandbox; do
+    for route in default tier direct; do
+        selector_args=()
+        case "$route" in
+            tier) selector_args=(--tier cheap) ;;
+            direct) selector_args=(--model vendor/Future-Model --effort Future-Level) ;;
+        esac
+        job="missing-$route-$missing"
+        printf 'must remain unread\n' | FAKE_HELP_MODE="missing---$missing" \
+            run_worker "$job" ${selector_args+"${selector_args[@]}"} > "$TMP/$job.out" 2> "$TMP/$job.err"
+        rc=$?
+        if [[ "$rc" == 8 && ! -s "$TMP/$job.worker-calls" && ! -e "$TMP/logs/$job" ]] \
+                && grep -Fq -- "--$missing" "$TMP/$job.err"; then
+            ok "$route missing --$missing rejects before provider, job and lock mutation"
+        else bad "$route missing --$missing capability boundary (exit $rc)"; fi
+    done
 done
-printf 'far version drift keeps the exact requested model\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift999 \
-    run_worker version-drift-999 --model gemini-3.7-flash --effort high \
-    --compatibility-disposition proceed --approve-help-sha "$HELP_SHA" \
-    > "$TMP/version-drift-999.out" 2> "$TMP/version-drift-999.err"
-rc=$?
-if [[ "$rc" == 0 ]] && python3 - "$TMP/logs/version-drift-999/selection.json" \
-        "$TMP/version-drift-999.argv" "$TMP/version-drift-999.calls" <<'PY'
-import json
-import sys
-record = json.load(open(sys.argv[1], encoding="utf-8"))
-argv = [item for item in open(sys.argv[2], "rb").read().split(b"\0") if item]
-calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-assert calls == ["version", "help", "version", "help", "version", "help", "worker"]
-assert calls.count("worker") == 1
-assert record["schema_version"] == 3
-assert record["installed_agy_version"] == "9.9.9"
-assert record["version_relation"] == "drift"
-assert record["compatibility_disposition"] == "proceed"
-assert record["resolved_agy_model"] == "gemini-3.7-flash-high"
-assert argv[argv.index(b"--model") + 1] == b"gemini-3.7-flash-high"
-assert b"--effort" not in argv and b"--thinking-level" not in argv
-PY
-then
-    ok "9.9.9 drift preserves the caller's exact model and effort resolution"
-else
-    bad "9.9.9 drift exact model preservation"
-fi
-for version_mode in fail empty malformed oversize hang; do
+for route in default tier direct; do
+    selector_args=()
+    case "$route" in
+        tier) selector_args=(--tier cheap) ;;
+        direct) selector_args=(--model vendor/Future-Model --effort Future-Level) ;;
+    esac
+    job="arbitrary-version-$route"
+    printf 'arbitrary diagnostic version\n' | FAKE_VERSION_MODE=canary \
+        run_worker "$job" ${selector_args+"${selector_args[@]}"} \
+        > "$TMP/$job.out" 2> "$TMP/$job.err"
+    if [[ $? == 0 ]] && python3 - "$TMP/$job.argv" "$TMP/logs/$job/selection.json" \
+            "$TMP/$job.calls" "$route" <<'PYTHON'
+import json,sys
+argv=open(sys.argv[1],'rb').read().split(b'\0')
+record=json.load(open(sys.argv[2]))
+assert record['installed_agy_version']=='canary-build'
+assert open(sys.argv[3]).read().splitlines() == ['version','help'] * 2 + ['worker']
+if sys.argv[4] == 'direct':
+    assert argv[argv.index(b'--model')+1] == b'vendor/Future-Model'
+    assert argv[argv.index(b'--effort')+1] == b'Future-Level'
+elif sys.argv[4] == 'tier':
+    assert argv[argv.index(b'--model')+1] == b'gemini-3.6-flash-low'
+    assert b'--effort' not in argv
+else:
+    assert b'--model' not in argv and b'--effort' not in argv
+PYTHON
+    then ok "non-semver diagnostic permits $route launch with literal caller choices"
+    else bad "non-semver diagnostic $route launch boundary"; fi
+done
+
+for version_mode in fail empty oversize hang; do
     expect_compat_reject "$version_mode version evidence is unavailable" \
         "$VERSION_FIXTURE" "version-$version_mode" 8 "$version_mode" 1
 done
 
-for help_mode in missing duplicate malformed semantic utf8 nul oversize fail hang; do
+for help_mode in missing duplicate malformed utf8 nul oversize fail hang; do
     help_job="help-$help_mode"
     help_version_mode=ready
-    [[ "$help_mode" != semantic ]] || help_version_mode=drift117
     printf 'help interface failure must not read this task\n' | \
         AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" \
         FAKE_VERSION_MODE="$help_version_mode" FAKE_HELP_MODE="$help_mode" \
@@ -2982,12 +2533,6 @@ for help_mode in missing duplicate malformed semantic utf8 nul oversize fail han
     help_calls=0
     [[ ! -f "$TMP/$help_job.calls" ]] || help_calls="$(wc -l < "$TMP/$help_job.calls" | tr -d ' ')"
     help_expected=8
-    if [[ "$help_mode" == semantic ]]; then
-        # Option-local prose is evidence for Codex's review, not a controller
-        # semantic decision.  Under version drift it reaches the same
-        # review-required boundary as other structurally compatible drift.
-        help_expected=7
-    fi
     if [[ "$rc" == "$help_expected" && "$help_calls" == 2 && ! -s "$TMP/$help_job.worker-calls" \
             && ! -e "$TMP/logs/$help_job/task.txt" ]]; then
         ok "$help_mode help preflight is pre-provider and task-unread"
@@ -3328,15 +2873,15 @@ else
     bad "direct selector launch-failure boundary (exit $rc)"
 fi
 
-printf 'legacy missing agy still consumes the task and reaches dispatch\n' | \
+printf 'tier missing agy must not read the task\n' | \
     run_without_fake_agy legacy-path-missing "$NO_AGY_PATH" --tier cheap \
     > "$TMP/legacy-path-missing.out" 2> "$TMP/legacy-path-missing.err"
 rc=$?
-if [[ "$rc" == 5 && -s "$TMP/no-agy-logs/legacy-path-missing/task.txt" \
-        && -s "$TMP/no-agy-logs/legacy-path-missing/selection.json" ]]; then
-    ok "legacy tier preserves historical missing-agy dispatch semantics"
+if [[ "$rc" == 8 && ! -e "$TMP/no-agy-logs/legacy-path-missing/task.txt" \
+        && ! -e "$TMP/no-agy-logs/legacy-path-missing/selection.json" ]]; then
+    ok "tier missing-agy fails before task intake"
 else
-    bad "legacy tier missing-agy semantics (exit $rc)"
+    bad "tier missing-agy preflight (exit $rc)"
 fi
 
 printf 'prefixed semantic version\n' | AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" \
@@ -3346,7 +2891,7 @@ printf 'prefixed semantic version\n' | AGY_TEST_WORKER="$VERSION_FIXTURE/runtime
 rc=$?
 if [[ "$rc" == 0 ]]; then
     assert_direct_result "documented prefixed agy version is accepted" version-prefixed \
-        gemini-3.6-flash-high gemini-3.6-flash high cli cli 2
+        gemini-3.6-flash gemini-3.6-flash high cli cli 4
 else
     bad "documented prefixed agy version is accepted (exit $rc)"
 fi
@@ -3364,91 +2909,22 @@ import sys
 direct = json.load(open(sys.argv[1], encoding="utf-8"))
 tier = json.load(open(sys.argv[2], encoding="utf-8"))
 root = Path(sys.argv[3])
-assert direct["schema_version"] == 2
-assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(direct))
-
-v2_only = {
-    "version_relation", "compatibility_status", "critical_interface_probe_version",
-    "critical_interface_status", "critical_capabilities_sha256", "help_sha256",
-    "model_availability", "probed_executable",
-}
-v3_only = {
-    "compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256",
-}
-legacy_direct = {key: value for key, value in direct.items() if key not in v2_only | v3_only}
-legacy_direct["schema_version"] = 1
-
-# Historical V2 records remain decodable, but a missing descriptor digest must
-# make the current launch rebind fail closed rather than becoming trusted data.
-legacy_v2_binding = copy.deepcopy(direct)
-for key in v3_only:
-    legacy_v2_binding.pop(key, None)
-legacy_v2_binding["schema_version"] = 2
-legacy_v2_binding["probed_executable"].pop("content_sha256")
-legacy_v2_binding["probed_executable"]["target_lstat"].pop("ctime_ns")
-for item in legacy_v2_binding["probed_executable"]["symlink_chain"]:
-    item["lstat"].pop("ctime_ns")
-for item in legacy_v2_binding["probed_executable"]["components"]:
-    item["lstat"].pop("ctime_ns")
-
-historical_v2_drift = copy.deepcopy(legacy_v2_binding)
-historical_v2_drift.update({
-    "installed_agy_version": "1.1.17",
-    "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-})
-
-v3_drift = copy.deepcopy(direct)
-v3_drift.update({
-    "schema_version": 3,
-    "installed_agy_version": "1.1.17",
-    "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-    "compatibility_disposition": "proceed",
-    "approved_help_sha256": direct["help_sha256"],
-})
-decision_fields = (
-    "compatibility_disposition", "approved_help_sha256", "help_sha256",
-    "critical_capabilities_sha256", "installed_agy_version", "matrix_agy_version",
-    "matrix_sha256", "matrix_source_revision", "selection_mode", "user_model",
-    "user_model_source", "resolved_agy_model", "probed_executable",
-)
-decision = {key: v3_drift[key] for key in decision_fields}
-if v3_drift["selection_mode"] == "model-effort":
-    decision["user_effort"] = v3_drift["user_effort"]
-    decision["user_effort_source"] = v3_drift["user_effort_source"]
-v3_drift["compatibility_decision_sha256"] = __import__("hashlib").sha256(
-    json.dumps(decision, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
-).hexdigest()
-
+assert direct["schema_version"] == 4
 cases = {
-    "three-key-direct": {
-        "schema_version": 1,
-        "kind": "agy-worker-selection",
-        "selection_mode": "exact-model",
-    },
-    "tier-with-direct-fields": {**tier, "user_model": "gemini-3.6-flash-high"},
+    "three-key-direct": {"schema_version": 4, "kind": "agy-worker-selection", "selection_mode": "exact-model"},
+    "tier-with-direct-fields": {**tier, "user_model": "untrusted"},
     "direct-missing-provenance": {key: value for key, value in direct.items() if key != "user_model_source"},
     "direct-invalid-source": {**direct, "user_model_source": "worker"},
-    "direct-invalid-sha": {**direct, "matrix_sha256": "z" * 64},
+    "direct-invalid-sha": {**direct, "probed_executable": {**direct["probed_executable"], "content_sha256": "z" * 64}},
     "direct-extra-field": {**direct, "applied": False},
-    "v1-direct": legacy_direct,
-    "v2-legacy-executable-binding": legacy_v2_binding,
-    "v2-historical-drift": historical_v2_drift,
-    "v2-historical-drift-with-v3-decision": {
-        **historical_v2_drift, "compatibility_disposition": "proceed",
-    },
-    "v2-missing-help-digest": {key: value for key, value in direct.items() if key != "help_sha256"},
-    "v2-contradictory-relation": {**direct, "version_relation": "drift"},
-    "v2-extra-field": {**direct, "model_availability_detail": "not assessed"},
-    "v2-tampered-binding": {**direct, "probed_executable": {
-        **direct["probed_executable"], "target_lstat": {**direct["probed_executable"]["target_lstat"], "inode": 0},
-    }},
-    "v3-approved-drift": v3_drift,
-    "v3-model-decision-transplant": {**v3_drift, "resolved_agy_model": "gemini-3.1-pro-high"},
-    "v3-effort-decision-transplant": {**v3_drift, "user_effort": "medium"},
-    "v3-source-decision-transplant": {**v3_drift, "user_model_source": "environment"},
+    "missing-binding": {key: value for key, value in direct.items() if key != "probed_executable"},
+    "tampered-binding": {**direct, "probed_executable": {**direct["probed_executable"], "target_lstat": {**direct["probed_executable"]["target_lstat"], "inode": 0}}},
+    "model-transplant": {**direct, "resolved_agy_model": "other-model"},
+    "effort-provenance-missing": {key: value for key, value in direct.items() if key != "user_effort_source"},
+    "retired-matrix-field": {**direct, "matrix_sha256": "a" * 64},
 }
+for schema in (1, 2, 3):
+    cases[f"retired-{schema}"] = {**direct, "schema_version": schema}
 for name, value in cases.items():
     (root / f"{name}.json").write_text(json.dumps(value) + "\n", encoding="utf-8")
 PY
@@ -3466,63 +2942,43 @@ expect_invalid_selection_record() {
     if [[ "$got" == 64 && ! -s "$path.invalid.out" ]]; then ok "$name"; else bad "$name (exit $got)"; fi
 }
 expect_valid_selection_record "runtime validator accepts a complete direct artifact" "$VALID_DIRECT_RECORD"
-expect_valid_selection_record "runtime validator preserves v1 direct artifact compatibility" "$ARTIFACT_CASES/v1-direct.json"
-expect_valid_selection_record "runtime validator reads a legacy v2 executable binding without trusting it for launch" "$ARTIFACT_CASES/v2-legacy-executable-binding.json"
-expect_valid_selection_record "runtime validator preserves historical v2 drift as read-only evidence" "$ARTIFACT_CASES/v2-historical-drift.json"
 expect_valid_selection_record "runtime validator accepts a complete tier artifact" "$VALID_TIER_RECORD"
-expect_invalid_selection_record "runtime validator rejects a three-key direct artifact" "$ARTIFACT_CASES/three-key-direct.json"
-expect_invalid_selection_record "runtime validator rejects tier records carrying direct fields" "$ARTIFACT_CASES/tier-with-direct-fields.json"
-expect_invalid_selection_record "runtime validator rejects missing direct provenance" "$ARTIFACT_CASES/direct-missing-provenance.json"
-expect_invalid_selection_record "runtime validator rejects an invalid source" "$ARTIFACT_CASES/direct-invalid-source.json"
-expect_invalid_selection_record "runtime validator rejects an invalid matrix SHA" "$ARTIFACT_CASES/direct-invalid-sha.json"
-expect_invalid_selection_record "runtime validator rejects extra artifact fields" "$ARTIFACT_CASES/direct-extra-field.json"
-expect_invalid_selection_record "runtime validator rejects incomplete v2 interface evidence" "$ARTIFACT_CASES/v2-missing-help-digest.json"
-expect_invalid_selection_record "runtime validator rejects contradictory v2 version relation" "$ARTIFACT_CASES/v2-contradictory-relation.json"
-expect_invalid_selection_record "runtime validator rejects a historical v2 drift with v3 approval fields" "$ARTIFACT_CASES/v2-historical-drift-with-v3-decision.json"
-expect_invalid_selection_record "runtime validator rejects extra v2 fields" "$ARTIFACT_CASES/v2-extra-field.json"
-expect_invalid_selection_record "runtime validator rejects tampered v2 executable binding" "$ARTIFACT_CASES/v2-tampered-binding.json"
-expect_valid_selection_record "runtime validator accepts an approved v3 drift decision" "$ARTIFACT_CASES/v3-approved-drift.json"
-expect_invalid_selection_record "runtime validator rejects a v3 model decision transplant" "$ARTIFACT_CASES/v3-model-decision-transplant.json"
-expect_invalid_selection_record "runtime validator rejects a v3 effort decision transplant" "$ARTIFACT_CASES/v3-effort-decision-transplant.json"
-expect_invalid_selection_record "runtime validator rejects a v3 source decision transplant" "$ARTIFACT_CASES/v3-source-decision-transplant.json"
-
-"$SELECTOR" --verify-record-executable "$ARTIFACT_CASES/v2-legacy-executable-binding.json" \
-    > "$ARTIFACT_CASES/v2-legacy-executable-binding.verify.out" \
-    2> "$ARTIFACT_CASES/v2-legacy-executable-binding.verify.err"
-legacy_v2_verify_rc=$?
-if [[ "$legacy_v2_verify_rc" == 64 && ! -s "$ARTIFACT_CASES/v2-legacy-executable-binding.verify.out" ]]; then
-    ok "legacy v2 executable binding decodes but cannot authorize a current launch"
-else
-    bad "legacy v2 executable binding launch authority (exit $legacy_v2_verify_rc)"
-fi
+for record in "$ARTIFACT_CASES"/*.json; do
+    expect_invalid_selection_record "runtime validator rejects $(basename "$record")" "$record"
+done
+for schema in 1 2 3; do
+    record="$ARTIFACT_CASES/retired-$schema.json"
+    before="$(shasum -a 256 "$record")"
+    "$SELECTOR" --verify-record-executable "$record" > "$record.verify.out" 2> "$record.verify.err"
+    if [[ $? == 64 && ! -s "$record.verify.out" && "$before" == "$(shasum -a 256 "$record")" ]] \
+            && grep -Fq 'release that created it' "$record.verify.err"; then
+        ok "retired selection $schema rejects launch authorization without rewriting history"
+    else bad "retired selection $schema launch boundary"; fi
+done
 
 RETRY_FIXTURE="$TMP/selector-retry-freeze"
 make_selector_fixture "$RETRY_FIXTURE" clean
-RETRY_MATRIX="$RETRY_FIXTURE/runtime/compat/agy-model-effort-matrix.json"
 printf 'automatic retry is forbidden\n' | \
     FAKE_DISPATCH_COUNT_FILE="$TMP/retry-freeze.dispatch-count" \
-    FAKE_MUTATE_MATRIX="$RETRY_MATRIX" FAKE_FAIL_FIRST=1 \
+    FAKE_FAIL_FIRST=1 \
     AGY_TEST_WORKER="$RETRY_FIXTURE/runtime/agy-worker.sh" \
     run_worker retry-freeze \
         --model gemini-3.6-flash --effort high \
         > "$TMP/retry-freeze.out" 2> "$TMP/retry-freeze.err"
 rc=$?
 if [[ "$rc" == 5 ]] && python3 - \
-        "$TMP/logs/retry-freeze/selection.json" "$RETRY_MATRIX" \
-        "$RETRY_FIXTURE/runtime/compat/agy-model-effort-matrix.sha256" \
+        "$TMP/logs/retry-freeze/selection.json" \
         "$TMP/retry-freeze.calls" "$TMP/retry-freeze.worker-calls" <<'PY'
 import hashlib
 import json
 import sys
 
-selection_path, matrix_path, sha_path, calls_path, workers_path = sys.argv[1:]
+selection_path, calls_path, workers_path = sys.argv[1:]
 selection = json.load(open(selection_path, encoding="utf-8"))
-expected = open(sha_path, encoding="ascii").read().strip()
-assert selection["resolved_agy_model"] == "gemini-3.6-flash-high"
-assert selection["matrix_sha256"] == expected
-assert hashlib.sha256(open(matrix_path, "rb").read()).hexdigest() != expected
+assert selection["resolved_agy_model"] == "gemini-3.6-flash"
+assert selection["user_effort"] == "high"
 calls = open(calls_path).read().splitlines()
-assert calls == ["version", "help", "version", "help", "version", "help", "worker"]
+assert calls == ["version", "help", "version", "help", "worker"]
 assert calls.count("worker") == 1
 assert open(workers_path).read().splitlines() == ["worker"]
 PY
@@ -4158,7 +3614,7 @@ start_worker() {
         FAKE_HEARTBEAT_COUNT FAKE_HEARTBEAT_DELAY FAKE_HELP_MODE FAKE_MODEL_FILE \
         FAKE_MUTATE_EXECUTABLE FAKE_MUTATE_EXECUTABLE_MODE \
         FAKE_MUTATE_EXECUTABLE_PARENT FAKE_MUTATE_EXECUTABLE_SAME_LENGTH \
-        FAKE_MUTATE_MATRIX FAKE_MUTATE_PROJECT_MARKER FAKE_MUTATION_MARKER \
+        FAKE_MUTATE_PROJECT_MARKER FAKE_MUTATION_MARKER \
         FAKE_MUTATE_WORKTREE_PATH \
         FAKE_PROBE_PARENT_PID_FILE FAKE_PROBE_PGID_FILE FAKE_PROBE_READY_FILE \
         FAKE_PROBE_RELEASE_FILE FAKE_PROMPT_FILE FAKE_QUOTA_ERROR \
@@ -4379,202 +3835,56 @@ for classified_case in authentication_text provider_text unknown_text; do
     fi
 done
 
-printf 'observed quota terminal\n' | FAKE_VERSION_MODE=quota113 \
-    FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    run_worker quota-terminal --literal-model claude-opus-4-6-thinking \
-    > "$TMP/quota-terminal.out" 2> "$TMP/quota-terminal.err"
-quota_rc=$?
-sleep 1
-control_worker status quota-terminal > "$TMP/quota-terminal.status"
-quota_status_rc=$?
-if [[ "$quota_rc" == 24 && "$quota_status_rc" == 0 \
-        && ! -s "$TMP/quota-terminal.out" ]] && python3 - \
-        "$TMP/quota-terminal.err" "$TMP/quota-terminal.status" \
-        "$TMP/quota-terminal.calls" "$TMP/quota-terminal.model" <<'PY'
-import json
-import sys
-
-first = json.load(open(sys.argv[1], encoding="utf-8"))
-later = json.load(open(sys.argv[2], encoding="utf-8"))
-calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-model = open(sys.argv[4], encoding="utf-8").read()
-for value in (first, later):
-    assert value["status"] == "failed"
-    assert value["exit_code"] == 24
-    assert value["reason"] == "provider_quota_exhausted"
-    assert value["failure_stage"] == "missing_structured_output"
-    assert value["resume_available"] is True
-    assert "conversation_id" not in value
-    assert "provider_retry_after_seconds" not in value
-    assert "provider_retry_observed_epoch" not in value
-assert 17510 <= first["retry_after_seconds"] <= 17514
-assert 17508 <= later["retry_after_seconds"] < first["retry_after_seconds"]
-assert calls == ["version", "worker"]
-assert model == "claude-opus-4-6-thinking"
-PY
-then
-    ok "exact agy 1.1.13 quota terminal gets exit 24, bounded countdown, and no automatic retry"
-else
-    bad "exact agy 1.1.13 quota terminal classification"
-fi
-
-printf 'same text wrong version\n' | FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    run_worker quota-wrong-version > "$TMP/quota-wrong-version.out" \
-    2> "$TMP/quota-wrong-version.err"
-quota_wrong_version_rc=$?
-if [[ "$quota_wrong_version_rc" == 4 \
-        && "$(status_field "$TMP/quota-wrong-version.err" reason)" == invalid_envelope \
-        && "$(status_field "$TMP/quota-wrong-version.err" failure_stage)" == missing_structured_output ]]; then
-    ok "unreviewed quota terminal without a report is an invalid-envelope failure"
-else
-    bad "version-bound quota terminal classification"
-fi
-
-printf 'altered quota prose\n' | FAKE_VERSION_MODE=quota113 \
-    FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    FAKE_QUOTA_ERROR='quota reached; retry in 4h51m54s' \
-    run_worker quota-altered --literal-model claude-opus-4-6-thinking \
-    > "$TMP/quota-altered.out" 2> "$TMP/quota-altered.err"
-quota_altered_rc=$?
-if [[ "$quota_altered_rc" == 4 \
-        && "$(status_field "$TMP/quota-altered.err" reason)" == invalid_envelope \
-        && "$(status_field "$TMP/quota-altered.err" failure_stage)" == missing_structured_output ]]; then
-    ok "free-form quota prose without a report is an invalid-envelope failure"
-else
-    bad "free-form quota prose classification boundary"
-fi
-
-printf 'quota duration outside bound\n' | FAKE_VERSION_MODE=quota113 \
-    FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    FAKE_QUOTA_ERROR='rpc error: Individual quota reached. Contact your administrator to enable overages. Resets in 999h00m00s.' \
-    run_worker quota-unbounded --literal-model claude-opus-4-6-thinking \
-    > "$TMP/quota-unbounded.out" 2> "$TMP/quota-unbounded.err"
-quota_unbounded_rc=$?
-if [[ "$quota_unbounded_rc" == 24 ]] && python3 - "$TMP/quota-unbounded.err" <<'PY'
-import json
-import sys
-value = json.load(open(sys.argv[1], encoding="utf-8"))
-assert value["reason"] == "provider_quota_exhausted"
-assert value["retry_after_seconds"] is None
-PY
-then
-    ok "out-of-range quota reset stays classified without publishing a false duration"
-else
-    bad "quota retry duration bound"
-fi
-
-if PYTHONDONTWRITEBYTECODE=1 python3 - \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" "$TMP" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
+        "$TMP/logs/tier/dispatch-command.json" "$TMP/diagnostic-command" <<'PY'
 import copy
 import importlib.util
 import json
 from pathlib import Path
 import sys
 
-spec = importlib.util.spec_from_file_location("agy_dispatch_quota_contract", sys.argv[1])
+source, template, destination = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("agy_dispatch_diagnostic_command", source)
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-root = Path(sys.argv[2])
-canonical = (
-    "rpc error: Individual quota reached. Contact your administrator to enable "
-    "overages. Resets in 4h51m54s."
-)
-result = {
-    "conversation_id": "fake-conversation-01",
-    "status": "ERROR",
-    "response": "",
-    "error": canonical,
-    "duration_seconds": 1.0,
-    "num_turns": 3,
-    "json_schema": {},
-    "usage": {},
-}
-
-def stream(name, value=result, *, init=True, duplicate=False, malformed=False):
-    path = root / name
-    rows = []
-    if init:
-        rows.append(json.dumps({"event": "init", "conversation_id": "fake-conversation-01", "init": {}}))
-    rows.append(json.dumps({"event": "result", "result": value}, separators=(",", ":")))
-    if duplicate:
-        rows.append(rows[-1])
-    if malformed:
-        rows.insert(0, "{not-json")
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    return path
-
-for index, duration in enumerate(("4h51m54s", "4h51m53s", "4h50m17s")):
-    value = copy.deepcopy(result)
-    value["error"] = canonical.replace("4h51m54s", duration)
-    classified = module._quota_terminal_failure(stream(f"quota-observed-{index}", value), "1.1.13")
-    assert classified == ("provider_quota_exhausted", {
-        "4h51m54s": 17514, "4h51m53s": 17513, "4h50m17s": 17417,
-    }[duration])
-
-altered = (
-    canonical + " ", canonical.replace("Individual", "individual"),
-    "prefix " + canonical, canonical + " suffix",
-    canonical.replace("quota", "limit"),
-    canonical.replace("quota", "QUOTA"),
-    "rpc error: RESOURCE_EXHAUSTED 429 retry quota",
-)
-for index, error in enumerate(altered):
-    value = copy.deepcopy(result); value["error"] = error
-    assert module._quota_terminal_failure(stream(f"quota-altered-{index}", value), "1.1.13") is None
-
-for index, mutate in enumerate((
-    lambda value: value.pop("usage"),
-    lambda value: value.__setitem__("extra", 1),
-    lambda value: value.__setitem__("response", "not empty"),
-    lambda value: value.__setitem__("error", {"code": 429}),
-    lambda value: value.__setitem__("duration_seconds", "1"),
-    lambda value: value.__setitem__("duration_seconds", float("nan")),
-    lambda value: value.__setitem__("num_turns", True),
-    lambda value: value.__setitem__("json_schema", []),
-    lambda value: value.__setitem__("usage", []),
-)):
-    value = copy.deepcopy(result); mutate(value)
-    assert module._quota_terminal_failure(stream(f"quota-shape-{index}", value), "1.1.13") is None
-
-assert module._quota_terminal_failure(stream("quota-no-init", init=False), "1.1.13") is None
-assert module._quota_terminal_failure(stream("quota-duplicate", duplicate=True), "1.1.13") is None
-assert module._quota_terminal_failure(stream("quota-malformed", malformed=True), "1.1.13") is None
-mismatch = copy.deepcopy(result); mismatch["conversation_id"] = "different-conversation"
-assert module._quota_terminal_failure(stream("quota-conversation-mismatch", mismatch), "1.1.13") is None
-duplicate_key = root / "quota-duplicate-key"
-duplicate_key.write_text(
-    '{"event":"init","init":{},"conversation_id":"fake-conversation-01"}\n'
-    '{"event":"result","result":{"conversation_id":"fake-conversation-01",'
-    '"status":"ERROR","status":"ERROR","response":"","error":'
-    + json.dumps(canonical) + ',"duration_seconds":1.0,"num_turns":3,'
-    '"json_schema":{},"usage":{}}}\n',
-    encoding="utf-8",
-)
-assert module._quota_terminal_failure(duplicate_key, "1.1.13") is None
-
-# Current command validation rejects malformed observed AGY versions.
-job = root / "quota-command-current"
+command = json.loads(Path(template).read_text(encoding="utf-8"))
+job = Path(destination)
 job.mkdir(mode=0o700)
-command = json.loads((root / "logs" / "quota-terminal" / module.COMMAND_NAME).read_text(encoding="utf-8"))
-assert command["schema_version"] == module.CURRENT_COMMAND_SCHEMA
-for bad_version in ([], {}, "01.1.13", "1.1", "1.1.123456"):
-    bad = copy.deepcopy(command); bad["agy_version"] = bad_version
-    (job / module.COMMAND_NAME).write_bytes(module.canonical(bad))
-    (job / module.COMMAND_NAME).chmod(0o600)
+for invalid in (None, [], {}, 123, "", "bad\nversion", "bad\x00version", "bad\x7fversion", "é" * 65):
+    changed = copy.deepcopy(command)
+    changed["agy_version"] = invalid
+    module.write_atomic(job, module.COMMAND_NAME, changed)
     try:
         module.load_command(job)
     except module.DispatchError as exc:
-        assert str(exc) == "dispatch agy version is invalid"
+        assert str(exc) == "dispatch agy diagnostic version is invalid", str(exc)
     else:
-        raise AssertionError("invalid command agy version accepted")
-
+        raise AssertionError(f"invalid diagnostic version accepted: {invalid!r}")
+for diagnostic in ("future vendor build", "9.9.9-preview", "é" * 64):
+    changed = copy.deepcopy(command)
+    changed["agy_version"] = diagnostic
+    module.write_atomic(job, module.COMMAND_NAME, changed)
+    validated, _, _ = module.load_command(job)
+    assert validated["agy_version"] == diagnostic
 PY
-then
-    ok "agy 1.1.13 quota classifier is exact-shape, exact-version, and current-command strict"
+if [[ $? == 0 ]]; then
+    ok "command diagnostic version is bounded text without a semantic-version gate"
 else
-    bad "quota terminal exact contract matrix"
+    bad "command diagnostic version type, control, byte-bound or free-text validation"
 fi
+
+for version_mode in ready quota113 drift999; do
+    printf 'quota prose does not establish a report\n' | FAKE_VERSION_MODE="$version_mode" \
+        FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 run_worker "quota-$version_mode" \
+        > "$TMP/quota-$version_mode.out" 2> "$TMP/quota-$version_mode.err"
+    rc=$?
+    if [[ "$rc" == 4 && ! -s "$TMP/quota-$version_mode.out" \
+            && "$(status_field "$TMP/quota-$version_mode.err" reason)" == invalid_envelope \
+            && "$(wc -l < "$TMP/quota-$version_mode.worker-calls" | tr -d ' ')" == 1 ]]; then
+        ok "quota prose without report fails across $version_mode without retry"
+    else bad "quota prose must not invent report or retry authority ($version_mode)"; fi
+done
 
 HARD_SIDE_EFFECT="$TMP/hard-side-effect"
 printf 'hard limit must win\n' | FAKE_DISPATCH_MODE=heartbeat-forever \
@@ -5018,7 +4328,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 14
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 15
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -5247,11 +4557,14 @@ printf 'resume unavailable\n' | FAKE_EXIT_CODE=23 \
     run_worker resume-unavailable --idle-timeout 1s --hard-timeout 2s --max-runtime 8s \
     > "$TMP/resume-unavailable.out" 2> "$TMP/resume-unavailable.err"
 unavailable_sha="$(status_sha "$TMP/resume-unavailable.err")"
+resume_unavailable_calls_before="$(cat "$TMP/resume-unavailable.calls")"
+resume_unavailable_state_before="$(shasum -a 256 "$TMP/logs/resume-unavailable/dispatch-state.json")"
 FAKE_DISPATCH_MODE=heartbeat-success control_worker resume resume-unavailable \
     --approve-state-sha "$unavailable_sha" > "$TMP/resume-unavailable.resume" 2>&1
 resume_rc=$?
-resume_unavailable_calls="$(wc -l < "$TMP/resume-unavailable.calls" | tr -d ' ')"
-if [[ "$resume_rc" == 21 && "$resume_unavailable_calls" == 1 ]]; then
+resume_unavailable_calls="$(cat "$TMP/resume-unavailable.calls")"
+if [[ "$resume_rc" == 21 && "$resume_unavailable_calls" == "$resume_unavailable_calls_before" \
+        && "$resume_unavailable_state_before" == "$(shasum -a 256 "$TMP/logs/resume-unavailable/dispatch-state.json")" ]]; then
     resume_unavailable_ok=1
 else
     resume_unavailable_ok=0
@@ -5288,29 +4601,12 @@ print(json.dumps({"schema_version": 2, "summary": "one required driver check is 
 PY
 }
 
-if PYTHONDONTWRITEBYTECODE=1 python3 -B - \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" "$TMP" <<'PY'
-import importlib.util
+if python3 -B - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" <<'PYTHON'
 import json
-import os
 from pathlib import Path
 import re
-import shlex
-import stat
-import subprocess
 import sys
-
 source = Path(sys.argv[1]).resolve()
-root = Path(sys.argv[2]).resolve()
-spec = importlib.util.spec_from_file_location("agy_dispatch_v2_continue_parity", source)
-module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
-
-origin = root / "historical-v2-direct-origin"; origin.mkdir()
-subprocess.run(["git", "init", "-q", str(origin)], check=True)
-subprocess.run(["git", "-C", str(origin), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "base"], check=True)
-repo = root / "historical-v2-direct-repo"
-subprocess.run(["git", "-C", str(origin), "worktree", "add", "-q", "-b", "historical-selection", str(repo)], check=True)
-job = (root / "historical-v2-direct-job"); job.mkdir(mode=0o700); job = job.resolve()
 provider_schema = source.parent.parent / "schemas" / "worker-result.provider.schema.json"
 # The provider consumes RE2, where `$` is a strict end-of-text anchor. Keep the
 # driver schema's Python-search spelling separate while enforcing the same IDs.
@@ -5321,163 +4617,12 @@ assert "(?" not in provider_id_pattern
 strict_id = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}").fullmatch
 assert all(strict_id(value) for value in ("A", "unit_core", "Lint-2", "Z" * 64))
 assert all(not strict_id(value) for value in ("", "1unit", "unit.", "unit\n", "A" * 65, "é"))
-matrix, matrix_sha, matrix_version, matrix_revision = module.MODEL_SELECTION.load_policy()
-resolved_model, selection_mode = module.MODEL_SELECTION.resolve_model(
-    matrix, "gemini-3.7-flash", "high",
-)
-selection = {
-    "schema_version": 2, "kind": "agy-worker-selection", "selection_mode": selection_mode,
-    "user_model": "gemini-3.7-flash", "user_model_source": "cli",
-    "user_effort": "high", "user_effort_source": "cli",
-    "resolved_agy_model": resolved_model,
-    "installed_agy_version": "9.9.9",
-    "matrix_sha256": matrix_sha, "matrix_agy_version": matrix_version,
-    "matrix_source_revision": matrix_revision, "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-    "critical_interface_probe_version": 1, "critical_interface_status": "compatible",
-    "critical_capabilities_sha256": "a" * 64, "help_sha256": "b" * 64,
-    "model_availability": "not_assessed",
-    "probed_executable": {
-        "path_sha256": "c" * 64,
-        "target_lstat": {
-            "device": 1, "inode": 1, "mode": stat.S_IFREG | 0o755,
-            "uid": os.geteuid(), "gid": os.getegid(), "size": 1,
-            "mtime_ns": 1,
-        },
-        "symlink_chain": [], "components": [],
-    },
-}
-module.MODEL_SELECTION.validate_selection_record(selection)
-selection_path = job / "selection.json"
-module.MODEL_SELECTION.publish_record(selection_path, selection)
-selection_raw, selection_info = module.read_regular(
-    selection_path, module.MAX_COMMAND_BYTES, "fixture selection",
-)
-command = {
-    "schema_version": module.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
-    "job_id": "historical-v2-direct", "workdir": str(repo),
-    "argv": [
-        "agy", "--json-schema", str(provider_schema), "--model", resolved_model,
-        "--print", "task",
-    ],
-    "agy_version": matrix_version, "agy_version_observed": True,
-    "selection_path": str(selection_path),
-    "selection_sha256": module.digest(selection_raw),
-    "selection_identity": list(module._identity(selection_info)),
-    "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20, "notice_seconds": 3,
-    "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
-    "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-    "provider_env": [], "provider_scope_path": None, "provider_scope_sha256": None,
-    "provider_scope_identity": None, "approved_transmission_sha256": None,
-    "provider_isolation": "session", "native_grant_profile": "baseline",
-    "allow_scoped_repair": False, "repair_authority_sha256": None,
-    "allow_self_verification": False, "self_verification_manifest_path": None,
-    "self_verification_manifest_sha256": None, "self_verification_manifest_identity": None,
-}
-content = module.whole_worktree_content_manifest(str(repo))
-command["whole_worktree_content_sha256"] = content["manifest_sha256"]
-command["approved_whole_worktree_sha256"] = module._compute_v11_launch_approval_sha256(
-    "session", "baseline", whole_worktree_content_sha256=content["manifest_sha256"],
-    readable_manifest_sha256=module._manifest_digest(module._scan_readable_worktree(str(repo))),
-)
-assert set(command) == module.CURRENT_COMMAND_FIELDS
-module.write_atomic(job, module.COMMAND_NAME, command)
-command_raw, command_info = module.read_regular(
-    job / module.COMMAND_NAME, module.MAX_COMMAND_BYTES, "fixture command",
-)
-state = module.initial_state(
-    command, "initial", 1, command_sha=module.digest(command_raw),
-    command_identity=module._identity(command_info), stage_sha=None,
-    stage_identity=None, schema_bindings=module._schema_bindings(command),
-)
-candidate = {
-    "status": "completed", "summary": "historical-v2-direct-candidate",
-    "files_changed": [], "commands_run": [], "tests_run": [], "risks": [],
-    "open_questions": [], "confidence": 0.9, "requires_human": False,
-}
-envelope = job / "envelope.json"
-candidate_raw = json.dumps(candidate, ensure_ascii=True, indent=2).encode("ascii") + b"\n"
-envelope.write_bytes(candidate_raw); envelope.chmod(0o600)
-_bound, envelope_info = module.read_regular(envelope, 1024 * 1024, "fixture envelope")
-snapshot = module._worktree_snapshot(str(repo)); assert snapshot is not None
-state.update({
-    "status": "succeeded", "exit_code": 0, "finished_epoch": 1.0,
-    "conversation_id": "historical-v2-conversation", "result_path": str(envelope),
-    "result_sha256": module.digest(candidate_raw),
-    "result_identity": list(module._identity(envelope_info)),
-    "candidate_recognized": True, "candidate_source": "provider_success",
-    "result_available": True, "candidate_worktree_sha256": snapshot["sha256"],
-    "candidate_worktree_entries": snapshot["entries"],
-    "driver_disposition": "unreviewed", "phase": "awaiting-verification",
-    "assurance": "pending", "continue_available": True, "resume_available": False,
-    "next_action": "driver_review",
-})
-_raw, sha = module.write_atomic(job, module.STATE_NAME, state)
-public = module.public_status(state, sha, job=job)
-assert [item["action"] for item in public["available_actions"]] == [
-    "result", "verification-copy", "finalize",
-]
-verification = {
-    "schema_version": 2, "summary": "driver found a bounded defect",
-    "passed_checks": [], "failed_checks": ["fixture"],
-    "advisory_checks": 0, "missing_checks": 0,
-    "candidate_sha256": state["result_sha256"], "coverage": "partial",
-    "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
-}
-before = (job / module.STATE_NAME).read_bytes()
-delivered = subprocess.run(
-    [sys.executable, str(source), "result", "--job-dir", str(job)],
-    check=True, stdout=subprocess.PIPE,
-)
-assert json.loads(delivered.stdout)["summary"] == candidate["summary"]
-assert (job / module.STATE_NAME).read_bytes() == before
-
-marker = root / "historical-v2-direct-provider-called"
-bin_dir = root / "historical-v2-direct-bin"; bin_dir.mkdir()
-fake = bin_dir / "agy"
-fake.write_text("#!/bin/sh\n: > " + shlex.quote(str(marker)) + "\nexit 99\n", encoding="utf-8")
-fake.chmod(0o755)
-environment = dict(os.environ); environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
-rejected = subprocess.run(
-    [sys.executable, str(source), "continue", "--job-dir", str(job),
-     "--approve-state-sha", sha],
-    input=json.dumps(verification).encode("utf-8"), env=environment,
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-)
-assert rejected.returncode == 64 and not rejected.stdout
-assert b"dispatch direct selection lacks approved compatibility disposition" in rejected.stderr
-assert (job / module.STATE_NAME).read_bytes() == before
-assert not (job / "continue-staged").exists() and not marker.exists()
-try:
-    module.create_state(
-        job, "conversation-continue", resume=True,
-        approve_sha=sha, verification=verification,
-    )
-except module.DispatchError as exc:
-    assert str(exc) == "dispatch direct selection lacks approved compatibility disposition"
-else:
-    raise AssertionError("historical V2 drift selection authorized a continuation")
-assert (job / module.STATE_NAME).read_bytes() == before
-assert not (job / "continue-staged").exists() and not marker.exists()
-
-finalized = subprocess.run(
-    [sys.executable, str(source), "finalize", "--job-dir", str(job),
-     "--approve-state-sha", sha, "--assurance", "partially_verified"],
-    input=json.dumps(verification).encode("utf-8"), check=True, stdout=subprocess.PIPE,
-)
-assert json.loads(finalized.stdout)["driver_disposition"] == "partially_verified"
-assert not marker.exists()
-PY
-then
-    historical_v2_parity_ok=1
-else
-    historical_v2_parity_ok=0
-fi
-if [[ "$resume_unavailable_ok" == 1 && "$historical_v2_parity_ok" == 1 ]]; then
-    ok "resume and historical V2 drift recovery reject provider launch while preserving result/finalize"
-else
-    bad "resume or historical V2 drift recovery action parity"
-fi
+PYTHON
+then ok "provider check-id regex remains RE2-compatible and driver validation stays strict"
+else bad "provider check-id schema boundary"; fi
+if [[ "$resume_unavailable_ok" == 1 ]]; then
+    ok "unavailable resume preserves failure state and starts no probes or provider"
+else bad "unavailable resume action parity"; fi
 
 . "$ROOT/tests/agy_worker_project_lifecycle_cases.sh"
 
@@ -5620,13 +4765,15 @@ done
 project_feedback project-cycles | control_worker continue project-cycles --approve-state-sha "$project_sha" \
     > "$TMP/project-cycles.exhausted" 2> "$TMP/project-cycles.exhausted.err"
 project_exhausted_rc=$?
-project_calls="$(wc -l < "$TMP/project-cycles.calls" | tr -d ' ')"
+project_calls="$(wc -l < "$TMP/project-cycles.worker-calls" | tr -d ' ')"
 if [[ "$project_cycle_ok" == 1 && "$project_exhausted_rc" == 64 && "$project_calls" == 5 ]] \
-        && python3 - "$TMP/project-cycles.status" "$TMP/project-cycles.argv" <<'PY'
+        && python3 - "$TMP/project-cycles.status" "$TMP/project-cycles.argv" "$TMP/project-cycles.calls" <<'PY'
 import json, sys
+from pathlib import Path
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 argv = [item.decode() for item in open(sys.argv[2], "rb").read().split(b"\0") if item]
 assert state["cycle"] == 5 and state["continue_available"] is False
+assert Path(sys.argv[3]).read_text().splitlines() == ["version", "help"] + ["version", "help", "worker"] * 5
 assert argv.count("--conversation") == 1
 assert "unit-tests" not in " ".join(argv)
 assert "driver checks found one repairable failure" not in " ".join(argv)
@@ -6151,9 +5298,9 @@ fi
 echo
 echo "model-recommendation.sh offline policy tests:"
 expect_direct_recommendation "pre-dispatch explicit pair stays unranked and unapplied" \
-    pre-dispatch gemini-3.6-flash high high-complexity-bounded gemini-3.6-flash-high
+    pre-dispatch gemini-3.6-flash high high-complexity-bounded gemini-3.6-flash
 expect_direct_recommendation "post-gate explicit pair cannot be changed or redispatched" \
-    post-gate gemini-3.1-pro low driver-verification-failed gemini-3.1-pro-low
+    post-gate gemini-3.1-pro low driver-verification-failed gemini-3.1-pro
 expect_direct_recommendation "fixed exact model stays unranked and unapplied" \
     pre-dispatch claude-sonnet-4-6 '' high-complexity-bounded claude-sonnet-4-6
 expect_recommendation "pre-dispatch routine work needs no escalation" \
@@ -6237,11 +5384,8 @@ expect_recommendation_reject "duplicate selected model is ambiguous" \
 expect_recommendation_reject "duplicate selected effort is ambiguous" \
     --stage pre-dispatch --selected-model gemini-3.6-flash --selected-effort high \
     --selected-effort high --evidence bounded-routine
-expect_recommendation_reject "unsupported direct recommendation pair is rejected" \
-    --stage pre-dispatch --selected-model gemini-3.1-pro --selected-effort medium \
-    --evidence bounded-routine
-expect_recommendation_reject "unknown direct recommendation model is rejected" \
-    --stage pre-dispatch --selected-model vendor/model-v1 --evidence bounded-routine
+expect_direct_recommendation "arbitrary caller model and effort remain unranked" \
+    pre-dispatch vendor/Future-Model Future-Level bounded-routine vendor/Future-Model
 expect_recommendation_reject "positional arguments are rejected" \
     --stage pre-dispatch --selected-tier bulk --evidence bounded-routine hardest
 

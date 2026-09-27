@@ -190,108 +190,45 @@ def test_run_missing_args() -> bool:
 check("run rejects missing required arguments", test_run_missing_args)
 
 
-def test_compatibility_approval_is_explicit_and_forwarded_exactly() -> bool:
-    f = RepoFixture("compatibility-approval")
+def test_literal_model_effort_forwarded_exactly() -> bool:
+    f = RepoFixture("literal-model-effort")
     try:
         parser = WORKFLOW_MODULE.build_parser()
-        base = ["run", "--repo", str(f.repo), "--job-id", f.job_id,
-                "--model", "gemini-3.1-pro-high", "--task", "bounded task"]
-        observed_help_sha = "a" * 64
-        args = parser.parse_args(base + [
-            "--compatibility-disposition", "proceed",
-            "--approve-help-sha", observed_help_sha,
-        ])
+        args = parser.parse_args(["run", "--repo", str(f.repo), "--job-id", f.job_id,
+                                  "--model", "Caller.Future/model", "--effort", "maximum", "--task", "bounded task"])
         args.provider_isolation = "session"
-        with mock.patch.object(
-            WORKFLOW_MODULE.subprocess, "run",
-            return_value=subprocess.CompletedProcess([], 7),
-        ) as run_child:
-            assert WORKFLOW_MODULE._dispatch_run(
-                args, worktree=f.worktree,
-                dispatch_job_dir=f.state_dir / "compatibility-job",
-                approved_whole_worktree="b" * 64,
-            ) == 7
-        command = run_child.call_args.args[0]
-        assert command.count("--compatibility-disposition") == 1
-        assert command[command.index("--compatibility-disposition") + 1] == "proceed"
-        assert command.count("--approve-help-sha") == 1
-        assert command[command.index("--approve-help-sha") + 1] == observed_help_sha
-        assert command[command.index("--model") + 1] == "gemini-3.1-pro-high"
-
-        without_approval = parser.parse_args(base)
-        without_approval.provider_isolation = "session"
-        with mock.patch.object(
-            WORKFLOW_MODULE.subprocess, "run",
-            return_value=subprocess.CompletedProcess([], 7),
-        ) as run_child:
-            assert WORKFLOW_MODULE._dispatch_run(
-                without_approval, worktree=f.worktree,
-                dispatch_job_dir=f.state_dir / "compatibility-job",
-                approved_whole_worktree="b" * 64,
-            ) == 7
-        command = run_child.call_args.args[0]
-        assert "--compatibility-disposition" not in command
-        assert "--approve-help-sha" not in command
+        with mock.patch.object(WORKFLOW_MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 17)) as child:
+            assert WORKFLOW_MODULE._dispatch_run(args, worktree=f.worktree,
+                dispatch_job_dir=f.state_dir / "literal-job", approved_whole_worktree="b" * 64) == 17
+        command = child.call_args.args[0]
+        assert command[command.index("--model") + 1] == "Caller.Future/model"
+        assert command[command.index("--effort") + 1] == "maximum"
+        assert "--compatibility-disposition" not in command and "--approve-help-sha" not in command
         return True
     finally:
         f.clean()
 
-
-check(
-    "run forwards only caller-supplied compatibility approval and model",
-    test_compatibility_approval_is_explicit_and_forwarded_exactly,
-)
+check("run forwards literal caller model and effort unchanged", test_literal_model_effort_forwarded_exactly)
 
 
-def test_compatibility_approval_rejects_partial_ambiguous_inputs() -> bool:
-    f = RepoFixture("compatibility-invalid")
+def test_removed_approval_flags_reject_before_effects() -> bool:
+    f = RepoFixture("retired-approval")
     try:
-        parser = WORKFLOW_MODULE.build_parser()
-        base = ["run", "--repo", str(f.repo), "--job-id", f.job_id,
-                "--model", "gemini-3.1-pro-high"]
-        invalid = (
-            ["--compatibility-disposition", "proceed"],
-            ["--approve-help-sha", "a" * 64],
-            ["--compatibility-disposition", "proceed", "--approve-help-sha", "A" * 64],
-        )
-        for extra in invalid:
-            try:
-                WORKFLOW_MODULE.command_run(parser.parse_args(base + extra))
-            except WORKFLOW_MODULE.WorkflowError:
-                pass
-            else:
-                return False
-        for extra in (
-            ["--compatibility-disposition", "proceed", "--compatibility-disposition", "proceed"],
-            ["--approve-help-sha", "a" * 64, "--approve-help-sha", "b" * 64],
-            ["--model", "gemini-3.1-pro-low", "--compatibility-disposition", "proceed",
-             "--approve-help-sha", "a" * 64],
-            ["--effort", "low", "--effort", "high",
-             "--compatibility-disposition", "proceed", "--approve-help-sha", "a" * 64],
-            ["--tier", "bulk", "--tier", "default"],
-        ):
-            duplicate = run_workflow(*(base + extra))
-            assert duplicate.returncode == 2
-            assert b"repeated --" in duplicate.stderr
-        try:
-            WORKFLOW_MODULE.command_run(parser.parse_args([
-                "run", "--repo", str(f.repo), "--job-id", f.job_id,
-                "--tier", "default", "--compatibility-disposition", "proceed",
-                "--approve-help-sha", "a" * 64,
-            ]))
-        except WORKFLOW_MODULE.WorkflowError:
-            pass
-        else:
-            return False
+        base = ["run", "--repo", str(f.repo), "--job-id", f.job_id, "--model", "Caller.Future/model"]
+        before = sorted(str(path) for path in f.state_dir.rglob("*")) if f.state_dir.exists() else []
+        for extra in (["--compatibility-disposition", "proceed"], ["--approve-help-sha", "a" * 64],
+                      ["--compatibility-disposition", "proceed", "--approve-help-sha", "a" * 64]):
+            failed = run_workflow(*(base + extra))
+            assert failed.returncode == 2 and b"unrecognized arguments" in failed.stderr
+            assert (sorted(str(path) for path in f.state_dir.rglob("*")) if f.state_dir.exists() else []) == before
+        for extra in (["--model", "second"], ["--effort", "low", "--effort", "high"], ["--tier", "bulk", "--tier", "default"]):
+            failed = run_workflow(*(base + extra))
+            assert failed.returncode == 2 and b"repeated --" in failed.stderr
         return True
     finally:
         f.clean()
 
-
-check(
-    "run rejects partial, duplicate, or non-model compatibility approvals",
-    test_compatibility_approval_rejects_partial_ambiguous_inputs,
-)
+check("run rejects retired approval flags before effects and duplicate caller selectors", test_removed_approval_flags_reject_before_effects)
 
 
 def test_run_path_boundary_enforcement() -> bool:
@@ -405,7 +342,26 @@ def test_run_preview_and_approval_enforcement() -> bool:
         fake_bin = f.tmp / "bin"
         fake_bin.mkdir(mode=0o700)
         fake_agy = fake_bin / "agy"
-        fake_agy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_agy.write_text("""#!/bin/sh
+case "$1" in
+  --version) echo workflow-fixture; exit 0 ;;
+  --help) cat <<'HELP'
+  --add-dir  Directory
+  --conversation  Conversation
+  --disable-slash-commands  Disable expansion
+  --effort  Caller effort
+  --json-schema  Schema
+  --mode  Mode (accept-edits, plan)
+  --model  Caller model
+  --output-format  Format (stream-json)
+  --print  Prompt
+  --print-timeout  Deadline
+  --sandbox  Sandbox
+HELP
+    exit 0 ;;
+esac
+exit 0
+""", encoding="utf-8")
         fake_agy.chmod(0o755)
 
         res = run_workflow(

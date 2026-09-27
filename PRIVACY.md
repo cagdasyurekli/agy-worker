@@ -175,7 +175,7 @@ their own policy. Do not commit or paste raw logs into public reports.
 
 The optional local update notifier stores a canonical status, result fingerprint,
 source-manifest hashes, and resumable install/uninstall state under the account's
-owner-private Application Support directory. It does not store raw compatibility
+owner-private Application Support directory. It does not store raw update
 output, repository content, credentials, prompts, provider data, or personal paths in
 notifications. The notifier itself has no independent network or mutating Git
 authority; its hash-bound child invokes the existing read-only `update.sh check
@@ -183,62 +183,6 @@ authority; its hash-bound child invokes the existing read-only `update.sh check
 global/system configuration disabled. It never applies an update or invokes agy,
 Codex work, or a provider. Uninstall preserves replacement or ambiguous recovery
 state rather than deleting it. A displayed macOS notification cannot be retracted.
-
-The explicit-account models capture runner is a separate, never-automatic action.
-Its checked-in tests use only disposable synthetic account roots and make no agy,
-provider, or network call. Every production invocation requires separate user
-authorization for the exact canonical owner-`0700` account HOME/profile and one
-snapshot-backed `agy models` call. The external CLI may read account contents or use
-credentials under its own behavior. It may also write or mutate normal HOME state and
-create caches. The runner does not enumerate those contents and cannot detect,
-prevent, or revert HOME changes; account residuals may remain even when capture
-rejects. The account HOME, local owner and same-UID processes, reviewed source and
-interpreter, and OS administrators are trusted.
-
-After group closure, capture-owned TMP/XDG/cwd must be unchanged and empty. The fixed
-1.1.12 JSON capture bridge has one narrower reviewed exception: it may hash and
-compare-delete the exact owner-private bounded language-server schema cache leaf in
-its own TMP, fsync, and then prove scratch is empty. Every other cache shape rejects
-and remains a private residual. On a
-bounded exit-zero observation the runner retains otherwise uninterpreted raw
-stdout/stderr, exact profile and runner bytes, bounded summary, and capture record in
-a new owner-private directory; files are mode `0600` and raw bytes are never printed.
-The sanitized console JSON contains only the artifact root, capture SHA-256, and
-`captured` status. The final marker is `models.capture.sha256`, not an accepted
-binding. Output semantics such as authentication, license, permission, quota,
-rate-limit, interactive, or inventory content are decided only by later offline
-reconciliation. Nonzero, overflow, timeout, identity/scratch drift, or publication
-failure publishes no final marker. The runner never logs in, prompts, retries, falls
-back, dispatches a task, selects or routes a model, changes metadata, or uploads the
-artifacts. The user controls retention and must not commit the private profile or raw
-evidence.
-
-`scripts/models_capture_profile.py` is the separate, process-inert preparation
-step for that action. It accepts only explicit stdin paths, does not inspect
-HOME contents or ambient configuration, and validates no-follow external source,
-snapshot, and version evidence before atomically creating one owner-private canonical
-profile. It never invokes agy, a provider, a network client, a shell, or a Git
-command; preparing a profile does not authorize a capture.
-
-`scripts/models_capture_1_1_22_classifier.py` is the separate sidecar maintenance
-tool for diagnosing sanitized 1.1.22 models capture failure evidence. It requires an
-explicit owner-private (`0700`) directory path, never scans for evidence, and enforces
-strict fail-closed checks on permissions, topology, and artifact hashes. Its output is
-a mode-`0600` canonical JSON record containing only the classified category, origin,
-hashes, and enforced limitations. It excludes all raw stderr/stdout text, error prose,
-absolute filesystem paths, and account identifiers, and grants no activation, retry,
-or routing authority.
-
-`scripts/models_capture_1_1_22_reprofile.py` is a separate, process-inert reprofile
-preparation adapter that accepts an already-validated prior 1.1.22 capture profile
-and produces a new profile reflecting exactly one permitted change:
-`account_home_identity.nlink`. It opens the explicitly supplied account HOME only for
-no-follow descriptor metadata; it never enumerates or reads HOME contents. Its output
-is a mode-`0600` canonical profile in a distinct owner-private output root. It has no
-subprocess, network, Git, retry, capture, inventory acceptance, routing, or activation
-authority. Recovery validation is bounded to the explicitly supplied recovery root's
-fixed artifact and scratch allowlists; it does not expand into HOME discovery.
-Reprofiling does not authorize a capture or renew any prior one-call authorization.
 
 ## Support and changes
 
