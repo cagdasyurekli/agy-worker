@@ -379,6 +379,9 @@ Existing jobs must satisfy the [current format policy](PROJECT_WORKFLOW.md#retir
 Model and effort selection belongs to the caller. Recommendations are advisory and
 never silently alter that selection. With no selector, the dispatcher sends no model
 and leaves agy's default unchanged.
+The `selection` record, `resolved_agy_model`, and an override label establish only
+the model requested or forwarded on AGY's CLI; the backend model that actually ran
+remains unknown unless AGY stream JSON reports it.
 
 Legacy named tiers currently resolve as follows:
 

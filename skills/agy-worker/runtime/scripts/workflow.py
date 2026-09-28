@@ -94,6 +94,14 @@ def real_absolute(path: Path, label: str, *, must_exist: bool = True) -> Path:
         raise WorkflowError(f"{label} must be one canonical absolute path")
     canonical = Path(os.path.realpath(path))
     if canonical != path:
+        # macOS spells the same temporary directory through /var and /private/var.
+        # Only show that predictable alias, never an arbitrary symlink target.
+        if (
+            path.parts[:3] == ("/", "var", "folders")
+            and canonical == Path("/private") / path.relative_to("/")
+            and all(char.isascii() and (char.isalnum() or char in "/._-") for char in str(canonical))
+        ):
+            raise WorkflowError(f"{label} must be one canonical absolute path; use {canonical}")
         raise WorkflowError(f"{label} must be one canonical absolute path")
     if must_exist and not path.exists():
         raise WorkflowError(f"{label} is unavailable")

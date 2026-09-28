@@ -122,6 +122,50 @@ def test_import_does_not_mutate_subject_modes() -> bool:
 check("import does not mutate or self-heal workflow subject modes", test_import_does_not_mutate_subject_modes)
 
 
+def test_canonical_path_hint_for_macos_var_alias() -> bool:
+    alias = Path("/var/folders/example/agy-state.json")
+    canonical = Path("/private/var/folders/example/agy-state.json")
+    with mock.patch.object(WORKFLOW_MODULE.os.path, "realpath", return_value=str(canonical)):
+        try:
+            WORKFLOW_MODULE.real_absolute(alias, "workflow state", must_exist=False)
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert str(canonical) in str(exc)
+        else:
+            raise AssertionError("noncanonical alias was accepted")
+
+    # Other symlink resolutions must not disclose their targets as a path hint.
+    with mock.patch.object(WORKFLOW_MODULE.os.path, "realpath", return_value="/private/secret"):
+        try:
+            WORKFLOW_MODULE.real_absolute(alias, "workflow state", must_exist=False)
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert "/private/secret" not in str(exc)
+        else:
+            raise AssertionError("unrelated symlink resolution was accepted")
+
+    unsafe_alias = Path("/var/folders/example/\x1b[31m")
+    with mock.patch.object(
+        WORKFLOW_MODULE.os.path, "realpath", return_value="/private/var/folders/example/\x1b[31m"
+    ):
+        try:
+            WORKFLOW_MODULE.real_absolute(unsafe_alias, "workflow state", must_exist=False)
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert "\x1b" not in str(exc)
+        else:
+            raise AssertionError("unsafe alias was accepted")
+
+    if sys.platform == "darwin" and Path("/var/folders").is_symlink():
+        try:
+            WORKFLOW_MODULE.real_absolute(Path("/var/folders"), "workflow state")
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert "/private/var/folders" in str(exc)
+        else:
+            raise AssertionError("macOS /var/folders alias was accepted")
+    return True
+
+
+check("canonical path error hints only for macOS /var/folders alias", test_canonical_path_hint_for_macos_var_alias)
+
+
 class RepoFixture:
     def __init__(self, name: str) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix=f"agy-wf-{name}-")).resolve()
