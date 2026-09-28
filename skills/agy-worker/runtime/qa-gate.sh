@@ -198,6 +198,14 @@ elif (( ${#all_verify_env[@]} )); then
     echo "qa-gate.sh: verifier environment opt-in requires verify-job.sh private handoff" >&2
     exit 64
 fi
+verifier_has_bytecode_setting=0
+verifier_has_pytest_setting=0
+for verifier_name in ${received_verify_env+"${received_verify_env[@]}"}; do
+    [[ "$verifier_name" != PYTHONDONTWRITEBYTECODE ]] || verifier_has_bytecode_setting=1
+    [[ "$verifier_name" != PYTEST_ADDOPTS ]] || verifier_has_pytest_setting=1
+done
+(( verifier_has_bytecode_setting )) || verifier_environment+=("PYTHONDONTWRITEBYTECODE=1")
+(( verifier_has_pytest_setting )) || verifier_environment+=("PYTEST_ADDOPTS=-p no:cacheprovider")
 
 verifier_python="$(command -v python3)" || {
     echo "qa-gate.sh: verifier runtime unavailable" >&2; exit 64;
@@ -278,7 +286,7 @@ gate_python() {
     if [[ -n "$evidence_fd" ]]; then
         "$evidence_python" -I -S -B "$@"
     else
-        python3 "$@"
+        python3 -B "$@"
     fi
 }
 
@@ -575,6 +583,11 @@ snapshot_repo() {
         --repo "$repo" --base "$base"
 }
 
+snapshot_diagnostic_facts() {
+    gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
+        --repo "$repo" --diagnostic-facts
+}
+
 if [[ -n "$evidence_fd" ]]; then
     gate_prepare_workspace || exit 70
     trap 'gate_cleanup_evidence >/dev/null 2>&1 || true' EXIT
@@ -627,6 +640,8 @@ if (( ${#verify_specs[@]} == 0 )); then
 fi
 
 before_snapshot="$(snapshot_repo)" || gate_finish 14 driver-verification-failed
+before_diagnostic_facts="$(snapshot_diagnostic_facts)" || before_diagnostic_facts=""
+failed_verifier=""
 for (( i=0; i<${#verify_specs[@]}; i++ )); do
     verifier_mode="${verify_modes[$i]}"
     [[ "$verifier_mode" != legacy ]] || verifier_mode=shell
@@ -668,13 +683,24 @@ for (( i=0; i<${#verify_specs[@]}; i++ )); do
         fi
     fi
     if [[ "$verifier_rc" != 0 ]]; then
-        echo "qa-gate: DRIVER VERIFICATION FAILED - $verifier_label ($verifier_mode)" >&2
-        gate_finish 14 driver-verification-failed
+        failed_verifier="$verifier_label ($verifier_mode)"
+        break
     fi
 done
 after_snapshot="$(snapshot_repo)" || gate_finish 14 driver-verification-failed
 if [[ "$before_snapshot" != "$after_snapshot" ]]; then
-    echo "qa-gate: DRIVER VERIFICATION MUTATED THE WORKTREE" >&2
+    after_diagnostic_facts="$(snapshot_diagnostic_facts)" || after_diagnostic_facts=""
+    diagnostic_details=""
+    if [[ -n "$before_diagnostic_facts" && -n "$after_diagnostic_facts" ]]; then
+        diagnostic_details="$(gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
+            --compare-diagnostics "$before_diagnostic_facts" "$after_diagnostic_facts")" || diagnostic_details=""
+    fi
+    echo "qa-gate: DRIVER VERIFICATION MUTATED THE WORKTREE${diagnostic_details:+: $diagnostic_details}; inspect paths and request same-worker repair" >&2
+    [[ -z "$failed_verifier" ]] || echo "qa-gate: DRIVER VERIFICATION FAILED - $failed_verifier" >&2
+    gate_finish 14 driver-verification-failed
+fi
+if [[ -n "$failed_verifier" ]]; then
+    echo "qa-gate: DRIVER VERIFICATION FAILED - $failed_verifier" >&2
     gate_finish 14 driver-verification-failed
 fi
 

@@ -1359,7 +1359,7 @@ def run(context: dict[str, object]) -> None:
                 MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
                 state, _state_sha = MODULE.create_state(job, "initial", resume=False)
                 persisted = json.loads((job / MODULE.STATE_NAME).read_text(encoding="utf-8"))
-                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 15, label
+                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16, label
                 assert state["worktree_snapshot_algorithm"] == MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM, label
                 assert state["worktree_baseline"] is not None, label
                 assert state["worktree_root_identity"] is not None, label
@@ -1500,13 +1500,20 @@ def run(context: dict[str, object]) -> None:
         recursive = []
         for _ in range(2000):
             recursive = [recursive]
+        original_dumps = MODULE.json.dumps
+        def recursive_dump(*_args: object, **_kwargs: object) -> str:
+            raise RecursionError("fixture nesting limit")
+        MODULE.json.dumps = recursive_dump
         try:
-            MODULE.canonical(recursive)
-        except MODULE.DispatchError as exc:
-            assert str(exc) == "JSON structure is invalid"
-            assert isinstance(exc.__cause__, RecursionError)
-        else:
-            raise AssertionError("canonical encoding lost its classified recursion failure")
+            try:
+                MODULE.canonical(recursive)
+            except MODULE.DispatchError as exc:
+                assert str(exc) == "JSON structure is invalid"
+                assert isinstance(exc.__cause__, RecursionError)
+            else:
+                raise AssertionError("canonical encoding lost its classified recursion failure")
+        finally:
+            MODULE.json.dumps = original_dumps
         for reader, error_type in (
             (MODULE.WORKTREE._read_provider_scope_file, MODULE.WORKTREE.ReadableManifestError),
             (MODULE._read_provider_scope_file, MODULE.DispatchError),
@@ -1716,7 +1723,7 @@ def run(context: dict[str, object]) -> None:
         vulnerable_snapshot = MODULE._worktree_snapshot(str(candidate_repo))
         if vulnerable_snapshot is not None:
             state.update({
-                "worktree_baseline": vulnerable_snapshot,
+                "worktree_baseline": {key: vulnerable_snapshot[key] for key in ("sha256", "entries")},
                 "candidate_worktree_sha256": vulnerable_snapshot["sha256"],
                 "candidate_worktree_entries": vulnerable_snapshot["entries"],
             })
@@ -2061,7 +2068,7 @@ def run(context: dict[str, object]) -> None:
         subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
         baseline = MODULE._worktree_snapshot(str(repo)); assert baseline is not None
         state.update({
-            "worktree_baseline": baseline,
+            "worktree_baseline": {key: baseline[key] for key in ("sha256", "entries")},
             "candidate_worktree_sha256": baseline["sha256"],
             "candidate_worktree_entries": baseline["entries"],
             "continue_available": True,
@@ -2120,7 +2127,7 @@ def run(context: dict[str, object]) -> None:
         # of merely testing a synthetic flag parser.
         if intent_snapshot is not None:
             state.update({
-                "worktree_baseline": intent_snapshot,
+                "worktree_baseline": {key: intent_snapshot[key] for key in ("sha256", "entries")},
                 "candidate_worktree_sha256": intent_snapshot["sha256"],
                 "candidate_worktree_entries": intent_snapshot["entries"],
             })
@@ -2151,7 +2158,7 @@ def run(context: dict[str, object]) -> None:
         job, state, _sha, _envelope = current_candidate_fixture(
             "current-inside-worktree", inside_worktree=True,
         )
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 15
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16
         state["continue_available"] = True
         before, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
         state, loaded_raw, loaded_sha = MODULE.load_state(job)
@@ -2473,11 +2480,13 @@ def run(context: dict[str, object]) -> None:
 
         expected = reference()
         assert expected["entries"] == 7
-        assert MODULE._worktree_snapshot(str(repo)) == expected
-        assert MODULE._state_worktree_snapshot({
+        observed = MODULE._worktree_snapshot(str(repo))
+        assert observed is not None and {key: observed[key] for key in expected} == expected
+        state_observed = MODULE._state_worktree_snapshot({
             "schema_version": MODULE.CURRENT_STATE_SCHEMA,
             "worktree_snapshot_algorithm": MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM,
-        }, str(repo)) == expected
+        }, str(repo))
+        assert state_observed is not None and {key: state_observed[key] for key in expected} == expected
 
     check("independent non-empty per-path reference preserves the current semantic snapshot digest", independent_nonempty_snapshot_reference_preserves_current_digest)
 
@@ -3506,7 +3515,7 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
     def current_sanitized_outer_terminal_disposition_contracts() -> None:
         """Sanitized outer terminal disposition on the current complete state."""
         job, state, state_sha, _envelope = current_candidate_fixture("current-terminal-disposition")
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 15
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16
         assert state["provider_terminal_status"] == "unknown"
 
         # 1. State validation bounds on provider_terminal_status enum

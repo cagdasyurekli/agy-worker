@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -221,7 +222,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", action="append")
     parser.add_argument("--base", action="append")
     parser.add_argument("--git", nargs=argparse.REMAINDER)
+    parser.add_argument("--diagnostic-facts", action="store_true")
+    parser.add_argument("--compare-diagnostics", nargs=2)
     parsed = parser.parse_args(argv)
+    if parsed.compare_diagnostics is not None:
+        if parsed.repo or parsed.base or parsed.git is not None or parsed.diagnostic_facts:
+            return 64
+        if any(len(raw) > 65536 for raw in parsed.compare_diagnostics):
+            return 64
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import agy_dispatch_worktree as worktree
+
+            before, after = (json.loads(raw) for raw in parsed.compare_diagnostics)
+            if not isinstance(before, dict) or not isinstance(after, dict):
+                return 64
+            print(worktree._snapshot_drift_details(before, after))
+        except (ImportError, KeyError, TypeError, ValueError, IndexError):
+            return 64
+        return 0
+    if parsed.diagnostic_facts:
+        if not parsed.repo or len(parsed.repo) != 1 or parsed.base or parsed.git is not None:
+            return 64
+        try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import agy_dispatch_worktree as worktree
+
+            # Diagnostics must not select an executable from the caller's PATH.
+            os.environ["PATH"] = os.path.dirname(GIT_EXECUTABLE)
+            snapshot = worktree._worktree_snapshot(parsed.repo[0])
+            if snapshot is None:
+                return 1
+            print(json.dumps(snapshot["path_facts"], ensure_ascii=True, separators=(",", ":")))
+        except (ImportError, ValueError):
+            return 1
+        return 0
     if parsed.git is not None:
         if not parsed.repo or len(parsed.repo) != 1 or not parsed.git or parsed.base:
             return 64

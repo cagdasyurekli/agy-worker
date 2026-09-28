@@ -215,14 +215,14 @@ class VerificationContracts(unittest.TestCase):
             script = candidate / "check.py"
             script.write_text("raise SystemExit(0)\n")
             script.chmod(0o700)
-            state = {"schema_version": 15, "allow_self_verification": True,
+            state = {"schema_version": 16, "allow_self_verification": True,
                      "phase": "awaiting-verification", "attempt": 1,
                      "self_verification_run": 0}
             command = {"schema_version": 14, "allow_self_verification": True,
                        "workflow": "task", "workdir": str(candidate)}
             manifest = module.Manifest((module.Check("check", (str(script),), True, 5, 4096),), 5)
             api = SimpleNamespace(
-                CURRENT_STATE_SCHEMA=15, CURRENT_COMMAND_SCHEMA=14,
+                CURRENT_STATE_SCHEMA=16, CURRENT_COMMAND_SCHEMA=14,
                 DispatchError=ValueError,
                 lifecycle_lock=lambda *_args, **_kwargs: contextlib.nullcontext(),
                 state_lock=lambda *_args: contextlib.nullcontext(),

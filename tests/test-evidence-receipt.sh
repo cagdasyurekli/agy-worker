@@ -788,8 +788,10 @@ then ok "receipt exposes hashes and labels but no paths, commands, prose, or log
 reset_repo; printf 'worker edit\n' > "$REPO/a.txt"
 mutation_target="$RECEIPTS/mutation.json"
 "$VERIFY" --receipt "$mutation_target" --envelope "$TMP/honest.json" --repo "$REPO" \
-    --base "$BASE" "${SHELL_ACK[@]}" --verify-shell "printf mutation >> '$REPO/a.txt'" >/dev/null 2>&1
-if [[ $? == 14 ]] && python3 -B - "$mutation_target" <<'PY'
+    --base "$BASE" "${SHELL_ACK[@]}" --verify-shell "printf mutation >> '$REPO/a.txt'" \
+    >/dev/null 2>"$TMP/receipt-mutation.err"
+if [[ $? == 14 ]] && grep -Fq '"a.txt" (content or Git index changed)' "$TMP/receipt-mutation.err" \
+        && python3 -B - "$mutation_target" <<'PY'
 import json,sys
 value=json.load(open(sys.argv[1]))
 assert value['verdict']=='rejected'

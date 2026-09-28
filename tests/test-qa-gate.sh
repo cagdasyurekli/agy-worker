@@ -118,6 +118,46 @@ fi
 echo
 echo "driver verification is bounded and read-only:"
 check "driver verification failure" 14 honest.json --verify-argv '["false"]'
+
+# A clean unittest verifier imports repository modules. Its Python interpreter
+# must not leave bytecode in the bound candidate, and pytest's cache plugin
+# must be disabled for verifiers that select pytest.
+python_verifier_repo="$TMP/python-verifier-repo"
+mkdir -p "$python_verifier_repo"
+git -C "$python_verifier_repo" init -q
+git -C "$python_verifier_repo" config user.email test@example.com
+git -C "$python_verifier_repo" config user.name test
+printf 'original\n' > "$python_verifier_repo/a.txt"
+printf 'value = 1\n' > "$python_verifier_repo/step14_module.py"
+cat > "$python_verifier_repo/test_step14.py" <<'PY'
+import os
+import unittest
+import step14_module
+
+class VerifierEnvironmentTest(unittest.TestCase):
+    def test_clean_python_environment(self):
+        self.assertEqual(step14_module.value, 1)
+        self.assertEqual(os.environ.get("PYTHONDONTWRITEBYTECODE"), "1")
+        self.assertIn("-p no:cacheprovider", os.environ.get("PYTEST_ADDOPTS", ""))
+PY
+git -C "$python_verifier_repo" add -A
+git -C "$python_verifier_repo" commit -qm init
+python_verifier_base="$(git -C "$python_verifier_repo" rev-parse HEAD)"
+printf 'modified by worker\n' > "$python_verifier_repo/a.txt"
+"$GATE" --envelope "$TMP/honest.json" --repo "$python_verifier_repo" \
+    --base "$python_verifier_base" \
+    --verify-argv '["python3","-m","unittest","-q","test_step14"]' \
+    >"$TMP/python-verifier.out" 2>"$TMP/python-verifier.err"
+python_verifier_rc=$?
+if [[ "$python_verifier_rc" == 0 && ! -e "$python_verifier_repo/__pycache__" \
+        && ! -e "$python_verifier_repo/.pytest_cache" ]]; then
+    printf '  ok   %-52s exit %s\n' "clean Python unittest verifier leaves no cache" "$python_verifier_rc"
+    pass=$((pass+1))
+else
+    printf '  FAIL %-52s exit %s (wanted 0)\n' "clean Python unittest verifier leaves no cache" "$python_verifier_rc"
+    cat "$TMP/python-verifier.err"
+    fail=$((fail+1))
+fi
 SAFE_VERIFIER_ENV=keep check "ambient verifier variable is absent by default" 0 honest.json \
     --verify-argv "$(argv_json /usr/bin/python3 -I -S -B -c 'import os,sys;sys.exit(1 if "SAFE_VERIFIER_ENV" in os.environ else 0)')"
 SAFE_VERIFIER_ENV=keep check "direct explicit verifier variable requires receipt wrapper" 64 honest.json \
@@ -131,9 +171,48 @@ GIT_DIR=.git check "Git control cannot be a verifier opt-in" 64 honest.json \
 check "driver verification cannot rewrite declared file" 14 honest.json \
     --verify-argv "$(argv_json /usr/bin/python3 -I -S -B -c 'from pathlib import Path;import sys;Path(sys.argv[1]).write_bytes(Path(sys.argv[1]).read_bytes()+b"verify mutation\\n")' "$TMP/repo/a.txt")"
 printf 'modified by worker\n' > "$TMP/repo/a.txt"
-check "driver verification cannot create undeclared file" 14 honest.json \
-    --verify-argv "$(argv_json /usr/bin/python3 -I -S -B -c 'from pathlib import Path;import sys;Path(sys.argv[1]).write_text("artifact")' "$TMP/repo/verify.out")"
+"$GATE" --envelope "$TMP/honest.json" --repo "$TMP/repo" --base "$BASE_COMMIT" \
+    --verify-argv "$(argv_json /usr/bin/python3 -I -S -B -c 'from pathlib import Path;import sys;Path(sys.argv[1]).write_text("artifact")' "$TMP/repo/verify.out")" \
+    >"$TMP/verify-artifact.out" 2>"$TMP/verify-artifact.err"
+verify_artifact_rc=$?
+if [[ "$verify_artifact_rc" == 14 ]] \
+        && grep -Fq '"verify.out" (new path)' "$TMP/verify-artifact.err"; then
+    printf '  ok   %-52s exit %s\n' "driver verification names new artifact and rejects it" "$verify_artifact_rc"
+    pass=$((pass+1))
+else
+    printf '  FAIL %-52s exit %s (wanted 14 + path)\n' "driver verification names new artifact and rejects it" "$verify_artifact_rc"
+    cat "$TMP/verify-artifact.err"
+    fail=$((fail+1))
+fi
 rm -f "$TMP/repo/verify.out"
+"$GATE" --envelope "$TMP/honest.json" --repo "$TMP/repo" --base "$BASE_COMMIT" \
+    --verify-argv "$(argv_json /usr/bin/python3 -I -S -B -c 'from pathlib import Path;Path("__pycache__").mkdir();Path("__pycache__/x.pyc").write_bytes(b"cache")')" \
+    >"$TMP/verify-cache.out" 2>"$TMP/verify-cache.err"
+verify_cache_rc=$?
+if [[ "$verify_cache_rc" == 14 ]] \
+        && grep -Fq '"__pycache__/x.pyc" (new cache artifact' "$TMP/verify-cache.err"; then
+    printf '  ok   %-52s exit %s\n' "driver verification names new Python cache" "$verify_cache_rc"
+    pass=$((pass+1))
+else
+    printf '  FAIL %-52s exit %s (wanted 14 + cache path)\n' "driver verification names new Python cache" "$verify_cache_rc"
+    cat "$TMP/verify-cache.err"
+    fail=$((fail+1))
+fi
+rm -rf "$TMP/repo/__pycache__"
+"$GATE" --envelope "$TMP/honest.json" --repo "$TMP/repo" --base "$BASE_COMMIT" \
+    --verify-argv "$(argv_json /usr/bin/python3 -I -S -B -c 'from pathlib import Path;Path("__pycache__").mkdir();Path("__pycache__/failed.pyc").write_bytes(b"cache");raise SystemExit(1)')" \
+    >"$TMP/failed-verify-cache.out" 2>"$TMP/failed-verify-cache.err"
+failed_verify_cache_rc=$?
+if [[ "$failed_verify_cache_rc" == 14 ]] \
+        && grep -Fq '"__pycache__/failed.pyc" (new cache artifact' "$TMP/failed-verify-cache.err"; then
+    printf '  ok   %-52s exit %s\n' "failed verifier still names its new Python cache" "$failed_verify_cache_rc"
+    pass=$((pass+1))
+else
+    printf '  FAIL %-52s exit %s (wanted 14 + cache path)\n' "failed verifier still names its new Python cache" "$failed_verify_cache_rc"
+    cat "$TMP/failed-verify-cache.err"
+    fail=$((fail+1))
+fi
+rm -rf "$TMP/repo/__pycache__"
 
 echo
 echo "verifier mode and argument boundaries:"

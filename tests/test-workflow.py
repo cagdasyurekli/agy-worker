@@ -1240,6 +1240,11 @@ def test_verify_finalize_structured_argv() -> bool:
             "--receipt", str(f.receipt_file), "--envelope", str(f.envelope_file),
             "--expect-edits", "--only", "README.md",
             "--verify-argv", '["/usr/bin/git","diff","--check"]',
+            "--verify-argv", json.dumps([
+                sys.executable, "-I", "-S", "-B", "-c",
+                "import os,sys; sys.exit(0 if os.environ.get('PYTHONDONTWRITEBYTECODE') == '1' "
+                "and '-p no:cacheprovider' in os.environ.get('PYTEST_ADDOPTS', '') else 1)",
+            ], separators=(",", ":")),
             "--assurance", "verified"
         )
         assert res.returncode == 0

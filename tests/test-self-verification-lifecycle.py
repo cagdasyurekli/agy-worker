@@ -159,7 +159,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
                         0,
                     )
                     state, _raw, _sha = DISPATCH.load_state(job)
-                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (15, 1))
+                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (16, 1))
 
     def test_denial_deadline_stays_nonreusable_after_verification_and_recovery(self):
         # The controller collision test establishes this persisted reason from

@@ -46,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 120
+EXPECTED_CHECKS = 121
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -56,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 71, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 72, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -4662,6 +4662,101 @@ with tempfile.TemporaryDirectory() as temporary:
             raise AssertionError("empty directory topology drift was accepted as a queued baseline")
 
     check("empty directory create remove and metadata changes bind snapshot digest and entries", empty_directory_topology_is_snapshot_bound)
+
+    def candidate_drift_diagnostic_names_bound_paths() -> None:
+        repo = root / "candidate-diagnostic-repo"; repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        source = repo / "wordfreq"; source.write_text("print('ok')\n", encoding="utf-8")
+        source.chmod(0o644)
+        subprocess.run(["git", "-C", str(repo), "add", "wordfreq"], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "-c", "user.email=test@example.com",
+            "-c", "user.name=test", "commit", "-qm", "initial",
+        ], check=True)
+        bound = MODULE._worktree_snapshot(str(repo)); assert bound is not None
+        state = {
+            "schema_version": MODULE.CURRENT_STATE_SCHEMA,
+            "status": "succeeded", "controller_pid": None,
+            "worktree_snapshot_algorithm": MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM,
+            "worktree_root_identity": MODULE._dispatch_root_identity(str(repo)),
+            "candidate_worktree_sha256": bound["sha256"],
+            "candidate_worktree_entries": bound["entries"],
+            "candidate_worktree_path_facts": bound.get("path_facts"),
+        }
+        command = {"workdir": str(repo)}
+        MODULE._bound_candidate_worktree(state, command)
+        source.chmod(0o755)
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert "wordfreq" in message and "mode" in message, message
+        else:
+            raise AssertionError("driver mode drift was accepted")
+        source.chmod(0o644)
+        cache = repo / "__pycache__"; cache.mkdir()
+        (cache / "wordfreq.cpython-311.pyc").write_bytes(b"cache")
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert "__pycache__/wordfreq.cpython-311.pyc" in message, message
+            assert "cache" in message and "worker" in message, message
+        else:
+            raise AssertionError("verifier cache drift was accepted")
+        (cache / "wordfreq.cpython-311.pyc").unlink(); cache.rmdir()
+        escaped = repo / "line\nbreak"; escaped.write_text("content\n", encoding="utf-8")
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert '"line\\nbreak"' in message and "line\nbreak" not in message, message
+        else:
+            raise AssertionError("control-character path drift was accepted")
+        limited = {"complete": False, "items": [["first.txt", "file", 0o644, "a" * 64]]}
+        assert MODULE.WORKTREE._snapshot_drift_details(limited, limited) == (
+            "path diagnostics incomplete (first 64 paths / 8192 bytes only)"
+        )
+        for index in range(70):
+            (repo / f"sample-{index:03d}").write_text("content\n", encoding="utf-8")
+        large = MODULE._worktree_snapshot(str(repo))
+        assert large is not None and not large["path_facts"]["complete"]
+        state.update({
+            "candidate_worktree_sha256": large["sha256"],
+            "candidate_worktree_entries": large["entries"],
+            "candidate_worktree_path_facts": large["path_facts"],
+        })
+        (repo / "sample-069").chmod(0o755)
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert "path diagnostics incomplete (first 64 paths / 8192 bytes only)" in message, message
+            assert "sample-069" not in message, message
+        else:
+            raise AssertionError("late path drift was accepted past diagnostic cap")
+        validation_command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
+            "workdir": str(repo), "workflow": "task", "max_cycles": 2, "job_id": "diagnostic-mode",
+            "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
+        }, bind_launch=False)
+        malformed = MODULE.initial_state(
+            validation_command, "initial", 1, command_sha="0" * 64,
+            command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
+        )
+        malformed["candidate_worktree_sha256"] = large["sha256"]
+        malformed["candidate_worktree_entries"] = large["entries"]
+        malformed["candidate_worktree_path_facts"] = {
+            "complete": True, "items": [["wordfreq", "file", None, "a" * 64]],
+        }
+        try:
+            MODULE._validate_worktree_state(malformed)
+        except MODULE.DispatchError as exc:
+            assert "candidate path fact is invalid" in str(exc), exc
+        else:
+            raise AssertionError("malformed file mode was accepted in path facts")
+
+    check("candidate drift names mode and verifier-cache paths without accepting edits", candidate_drift_diagnostic_names_bound_paths)
 
     def snapshot_git_requires_safe_path_authority_before_execution() -> None:
         repo = root / "safe-git-repo"; repo.mkdir()

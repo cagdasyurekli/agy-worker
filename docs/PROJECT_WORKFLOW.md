@@ -119,7 +119,7 @@ workflow records must use the current explicit or facade format, defined by
 [`workflow.py`](../skills/agy-worker/runtime/scripts/workflow.py). The separately
 versioned workflow status output is not a persisted workflow record.
 
-Current dispatch records use state V15 and command V14, and selection records use
+Current dispatch records use state V16 and command V14, and selection records use
 V4. Earlier formats are retired, including ordinary jobs that used no removed
 feature. The new formats bind capability-based selection without a version registry.
 Workflow record formats retain their existing version constants.

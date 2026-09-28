@@ -32,6 +32,8 @@ import model_selection as MODEL_SELECTION  # noqa: E402 -- standalone sibling im
 
 MAX_BOUNDARY_ENTRIES = 100000
 MAX_STREAM_BYTES = 32 * 1024 * 1024
+DIAGNOSTIC_MAX_PATHS = 64
+DIAGNOSTIC_MAX_PATH_BYTES = 8192
 TERM_GRACE = 1.0
 
 class DispatchError(ValueError):
@@ -2833,6 +2835,76 @@ def _snapshot_revalidate_content(
     return True
 
 
+def _snapshot_path_facts(
+    facts: _SnapshotListedFacts, observed_paths: dict[bytes, tuple[Any, ...]],
+) -> dict[str, Any]:
+    """Retain bounded, content-free facts from the already validated scan."""
+    items: list[list[Any]] = []
+    path_bytes = 0
+    for relative, observed in sorted(observed_paths.items()):
+        if len(items) >= DIAGNOSTIC_MAX_PATHS or path_bytes + len(relative) > DIAGNOSTIC_MAX_PATH_BYTES:
+            return {"complete": False, "items": items}
+        path_bytes += len(relative)
+        kind = observed[0].decode("ascii")
+        metadata = _snapshot_persistent_metadata(observed[1]) if len(observed) > 1 else ()
+        mode = metadata[1] if metadata else None
+        payload = observed[2] if len(observed) > 2 else b""
+        if kind == "symlink":
+            payload = hashlib.sha256(payload).digest()
+        head = facts.head.get(relative)
+        indexed = facts.staged.get(relative)
+        fingerprint = digest(canonical([
+            None if head is None else [head[0], head[1].hex()],
+            None if indexed is None else [indexed[0], indexed[1].hex()],
+            relative in facts.other, relative in facts.ignored,
+            kind, list(metadata), payload.hex(),
+        ]))
+        items.append([os.fsdecode(relative), kind, mode, fingerprint])
+    return {"complete": True, "items": items}
+
+
+def _snapshot_drift_details(before: dict[str, Any] | None, after: dict[str, Any] | None) -> str:
+    """Name only differences proved by two bounded snapshot observations."""
+    if before is None or after is None:
+        return ""
+    old = {item[0]: item for item in before["items"]}
+    new = {item[0]: item for item in after["items"]}
+    details: list[str] = []
+    for path in sorted(old.keys() | new.keys()):
+        prior, current = old.get(path), new.get(path)
+        if prior is None and not before["complete"]:
+            continue
+        if current is None and not after["complete"]:
+            continue
+        if prior is not None and current is not None and prior[3] == current[3]:
+            continue
+        if prior is None:
+            cause = "new cache artifact, possibly verifier-created" if (
+                "__pycache__/" in path or path.startswith(".pytest_cache/") or path.endswith(".pyc")
+            ) else "new path"
+        elif current is None:
+            cause = "path removed"
+        elif prior[1] != current[1]:
+            cause = "kind changed"
+        elif prior[2] != current[2]:
+            cause = (
+                f"mode changed {prior[2]:04o} to {current[2]:04o}"
+                if type(prior[2]) is int and type(current[2]) is int else "mode changed"
+            )
+        else:
+            cause = "content or Git index changed"
+        display = json.dumps(path, ensure_ascii=True)
+        detail = f"{display} ({cause})"
+        if len(detail) > 1024:
+            detail = detail[:1021] + "..."
+        details.append(detail)
+        if len(details) == 3:
+            break
+    if not details and (not before["complete"] or not after["complete"]):
+        return "path diagnostics incomplete (first 64 paths / 8192 bytes only)"
+    return "; ".join(details)
+
+
 def _worktree_snapshot_raw(
     workdir: str, *, explain_unsupported: bool = False,
 ) -> dict[str, Any] | None:
@@ -2945,7 +3017,11 @@ def _worktree_snapshot_raw(
         observation.update(b"directory-manifest-v1\0")
         observation.update(initial_directory_manifest)
         observation.update(initial_empty_directories.to_bytes(8, "big"))
-        return {"sha256": observation.hexdigest(), "entries": changed + initial_empty_directories}
+        return {
+            "sha256": observation.hexdigest(),
+            "entries": changed + initial_empty_directories,
+            "path_facts": _snapshot_path_facts(facts, observed_paths),
+        }
     except _UnsupportedWorktreeError:
         raise
     except (OSError, subprocess.TimeoutExpired, OverflowError, ValueError, RecursionError):

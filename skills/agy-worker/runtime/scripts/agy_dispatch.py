@@ -176,6 +176,7 @@ CURRENT_STATE_FIELDS = {
     'candidate_recognized',
     'candidate_source',
     'candidate_worktree_entries',
+    'candidate_worktree_path_facts',
     'candidate_worktree_sha256',
     'canonical_schema_identity',
     'canonical_schema_sha256',
@@ -271,7 +272,7 @@ CURRENT_STATE_FIELDS = {
     'worktree_snapshot_algorithm',
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
-CURRENT_STATE_SCHEMA = 15
+CURRENT_STATE_SCHEMA = 16
 CURRENT_COMMAND_SCHEMA = 14
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
@@ -995,6 +996,7 @@ class DispatchState(TypedDict):
     canonical_schema_identity: list[int] | None
     candidate_worktree_sha256: str | None
     candidate_worktree_entries: int | None
+    candidate_worktree_path_facts: dict[str, Any] | None
     selection_sha256: str | None
     selection_identity: list[int] | None
     worktree_snapshot_algorithm: str
@@ -1415,6 +1417,7 @@ def _validate_worktree_state(value: Mapping[str, Any]) -> None:
         raise DispatchError("dispatch worktree baseline is invalid")
     candidate_worktree_sha = value["candidate_worktree_sha256"]
     candidate_worktree_entries = value["candidate_worktree_entries"]
+    path_facts = value["candidate_worktree_path_facts"]
     if (candidate_worktree_sha is None) != (candidate_worktree_entries is None):
         raise DispatchError("dispatch candidate worktree binding is incomplete")
     if candidate_worktree_sha is not None and (
@@ -1424,6 +1427,38 @@ def _validate_worktree_state(value: Mapping[str, Any]) -> None:
         or not (0 <= candidate_worktree_entries <= MAX_BOUNDARY_ENTRIES)
     ):
         raise DispatchError("dispatch candidate worktree binding is invalid")
+    if path_facts is not None:
+        if (
+            candidate_worktree_sha is None or not isinstance(path_facts, dict)
+            or set(path_facts) != {"complete", "items"}
+            or type(path_facts["complete"]) is not bool
+            or not isinstance(path_facts["items"], list)
+            or len(path_facts["items"]) > WORKTREE.DIAGNOSTIC_MAX_PATHS
+        ):
+            raise DispatchError("dispatch candidate path facts are invalid")
+        path_bytes = 0
+        seen_paths: set[str] = set()
+        for item in path_facts["items"]:
+            if not isinstance(item, list) or len(item) != 4:
+                raise DispatchError("dispatch candidate path fact is invalid")
+            path, kind, mode, fingerprint = item
+            if (
+                not isinstance(path, str) or not path or "\x00" in path
+                or path.startswith("/") or any(part in {"", ".", ".."} for part in path.split("/"))
+                or path in seen_paths or not isinstance(kind, str)
+                or kind not in {"missing", "file", "symlink", "special"}
+                or ((kind == "missing") != (mode is None))
+                or (mode is not None and (type(mode) is not int or not 0 <= mode <= 0o7777))
+                or not isinstance(fingerprint, str) or SHA_RE.fullmatch(fingerprint) is None
+            ):
+                raise DispatchError("dispatch candidate path fact is invalid")
+            try:
+                path_bytes += len(os.fsencode(path))
+            except UnicodeError as exc:
+                raise DispatchError("dispatch candidate path fact is invalid") from exc
+            seen_paths.add(path)
+        if path_bytes > WORKTREE.DIAGNOSTIC_MAX_PATH_BYTES:
+            raise DispatchError("dispatch candidate path facts exceed limit")
     for digest_key, identity_key in (
         ("provider_schema_sha256", "provider_schema_identity"),
         ("canonical_schema_sha256", "canonical_schema_identity"),
@@ -1560,6 +1595,8 @@ def initial_state(
             command["workdir"], explain_unsupported=explain_worktree_rejection)
     except ResolveUndoPresentError:
         worktree_baseline = None
+    if worktree_baseline is not None:
+        worktree_baseline = {key: worktree_baseline[key] for key in ("sha256", "entries")}
     state = {
         "schema_version": CURRENT_STATE_SCHEMA,
         "kind": "agy-worker-dispatch-state",
@@ -1641,6 +1678,7 @@ def initial_state(
         "canonical_schema_identity": None if schema_bindings is None else schema_bindings["canonical_schema_identity"],
         "candidate_worktree_sha256": None,
         "candidate_worktree_entries": None,
+        "candidate_worktree_path_facts": None,
         "selection_sha256": command.get("selection_sha256"),
         "selection_identity": command.get("selection_identity"),
     }
@@ -3192,12 +3230,15 @@ def _bound_candidate_worktree(state: Mapping[str, Any], command: dict[str, Any])
     if current is None or expected_sha is None or expected_entries is None:
         raise DispatchError("candidate worktree reconciliation is unavailable")
     if current["sha256"] != expected_sha or current["entries"] != expected_entries:
-        # The snapshot exposes a digest and an entry count, not path-level
-        # provenance. Do not infer or disclose a changed path from that count.
         drift = "entry count and snapshot digest" if current["entries"] != expected_entries else "snapshot digest"
+        details = WORKTREE._snapshot_drift_details(
+            state["candidate_worktree_path_facts"], current.get("path_facts"),
+        )
         raise DispatchError(
-            f"candidate worktree binding changed ({drift}); inspect volatile "
-            "ignored/cache artifacts and other edits in the disposable worktree"
+            f"candidate worktree binding changed ({drift})"
+            + (f": {details}" if details else "")
+            + "; inspect candidate drift and request repair in the same worker "
+            "conversation; do not edit the bound candidate by hand"
         )
 
 
@@ -5559,6 +5600,10 @@ def _controller_terminal_updates(
             candidate_data.candidate_worktree["entries"] if candidate_data.candidate_worktree is not None
             else current["candidate_worktree_entries"] if disposition.preserve_candidate_forensics else None
         ),
+        "candidate_worktree_path_facts": (
+            candidate_data.candidate_worktree.get("path_facts") if candidate_data.candidate_worktree is not None
+            else current["candidate_worktree_path_facts"] if disposition.preserve_candidate_forensics else None
+        ),
         "driver_disposition": "unreviewed" if disposition.candidate_recognized else "not_applicable",
         "failure_stage": outcome.failure_stage,
         "last_activity": "terminal_received" if outcome.saw_terminal else current["last_activity"],
@@ -5922,6 +5967,7 @@ def create_state(
                             "result_path", "result_sha256", "result_identity",
                             "candidate_recognized", "candidate_source", "result_available",
                             "candidate_worktree_sha256", "candidate_worktree_entries",
+                            "candidate_worktree_path_facts",
                             "driver_disposition", "worktree_reconciliation",
                             "worktree_changes_present",
                             "worktree_changed_since_dispatch",
