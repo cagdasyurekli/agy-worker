@@ -218,11 +218,11 @@ class VerificationContracts(unittest.TestCase):
             state = {"schema_version": 15, "allow_self_verification": True,
                      "phase": "awaiting-verification", "attempt": 1,
                      "self_verification_run": 0}
-            command = {"schema_version": 13, "allow_self_verification": True,
+            command = {"schema_version": 14, "allow_self_verification": True,
                        "workflow": "task", "workdir": str(candidate)}
             manifest = module.Manifest((module.Check("check", (str(script),), True, 5, 4096),), 5)
             api = SimpleNamespace(
-                CURRENT_STATE_SCHEMA=15, CURRENT_COMMAND_SCHEMA=13,
+                CURRENT_STATE_SCHEMA=15, CURRENT_COMMAND_SCHEMA=14,
                 DispatchError=ValueError,
                 lifecycle_lock=lambda *_args, **_kwargs: contextlib.nullcontext(),
                 state_lock=lambda *_args: contextlib.nullcontext(),
@@ -239,7 +239,7 @@ class VerificationContracts(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "was not enabled"):
                 module.command_self_verify(api, root, "a" * 64, "json", containment=mock.Mock())
             api._transition_locked.assert_not_called()
-            command["schema_version"] = 13
+            command["schema_version"] = 14
             command.pop("provider_isolation")
             with self.assertRaisesRegex(ValueError, "state changed"):
                 module.command_self_verify(api, root, "b" * 64, "json", containment=mock.Mock())

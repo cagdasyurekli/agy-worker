@@ -1124,7 +1124,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch_run(
     args: argparse.Namespace, *, worktree: Path, dispatch_job_dir: Path,
-    approved_whole_worktree: str | None,
+    approved_whole_worktree: str | None, base: str | None = None,
 ) -> int:
     runtime = SCRIPTS.parent
     cmd = [
@@ -1142,10 +1142,10 @@ def _dispatch_run(
     else:
         if approved_whole_worktree is None:
             raise WorkflowError("whole-worktree dispatch approval is unavailable")
-        cmd += [
-            "--add-dir", str(worktree),
-            "--approve-whole-worktree", approved_whole_worktree,
-        ]
+        cmd += ["--add-dir", str(worktree)]
+        if base is not None:
+            cmd += ["--base-commit", base]
+        cmd += ["--approve-whole-worktree", approved_whole_worktree]
     if args.tier:
         cmd += ["--tier", args.tier]
     if args.model:
@@ -1274,6 +1274,7 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
     result = _dispatch_run(
         args, worktree=worktree, dispatch_job_dir=dispatch_job_dir,
         approved_whole_worktree=approved_sha if mode == "whole-worktree" else None,
+        base=args.base,
     )
     _announce_delegation(
         dispatch_job_dir, args.job_id, result=result, intent=args.workflow,
@@ -1450,6 +1451,7 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
     result = _dispatch_run(
         args, worktree=worktree, dispatch_job_dir=dispatch_job_dir,
         approved_whole_worktree=approved_sha if mode == "whole-worktree" else None,
+        base=base,
     )
     _announce_delegation(
         dispatch_job_dir, args.job_id, result=result, intent=args.workflow,

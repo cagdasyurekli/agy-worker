@@ -258,10 +258,16 @@ The driver runs every command. Return commands_run and tests_run as empty arrays
   exit 1
 fi
 
+VERIFY_PARENT="$(mktemp -d -t agyworker-verify.XXXXXX)" || exit $?
+VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
+VERIFY_DIR="$VERIFY_PARENT/candidate"
+"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
+  --destination "$VERIFY_DIR" --format text || exit $?
+( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q tests/test_parser.py ) || exit $?
+
 if "$PIPELINE/qa-gate.sh" --envelope "$ENVELOPE" --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'; then
+  --verify-argv '["/usr/bin/git","diff","--check"]'; then
   echo "Candidate passed the evidence gate; review the diff before preserving it."
 else
   GATE_RC=$?
@@ -269,6 +275,9 @@ else
   exit "$GATE_RC"
 fi
 ```
+
+The gate verifier runs in the bound candidate. Copy test results are driver evidence
+for Verification v2; a gate snapshot only detects candidate mutation after it occurs.
 
 Provider children/probes and gate verifiers receive only the documented baseline
 environment. If a selected tool genuinely needs another caller variable, opt in its

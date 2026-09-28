@@ -1352,7 +1352,7 @@ def lifecycle_invocation_contract(text: str) -> bool:
     approved_start = text.find('ENVELOPE="$STATE_DIR/envelope.json"')
     approved_end = text.find('This facade invocation explicitly approves whole-worktree dispatch;', approved_start)
     verify_start = text.find('RECEIPT="$STATE_DIR/evidence-receipt.json"')
-    verify_end = text.find('Choose commands from the candidate repository', verify_start)
+    verify_end = text.find('\n```\n', verify_start)
     if min(approved_start, approved_end, verify_start, verify_end) < 0:
         return False
     approved = text[approved_start:approved_end]

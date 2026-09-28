@@ -67,8 +67,16 @@ Use `workflow.sh run --preview`, approved `run`, read-only `status`, and
 action. [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md)
 owns copyable commands, Verification v2 candidate bindings and recovery.
 
-Run writable checks in an isolated verification copy. Never execute an envelope's
+Run driver-selected build/test commands and Python imports in an isolated
+verification copy with `PYTHONDONTWRITEBYTECODE=1`. Inspect the bound candidate's
+actual diff and gate binding directly. Never manually edit, delete, or chmod the
+bound candidate; send needed
+repairs to the same worker conversation. Never execute an envelope's
 `commands_run` or `tests_run`; bind only sanitized driver findings to the candidate.
+Gate and `verify-finalize --verify-argv` verifiers run in the bound candidate: choose
+only commands known to be read-only there. Snapshot rejection detects a mutation
+after it happens; it does not isolate the candidate. Feed separate copy test results
+into Verification v2.
 Repair observable failures in the same conversation within budget; never silently
 fall back to direct-driver work after provider failure or exhausted budget.
 Use initial `--allow-scoped-repair` for approved multi-turn scoped work. Without that

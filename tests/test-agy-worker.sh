@@ -1591,7 +1591,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 command, _raw, _identity = module.load_command(Path(job_text).resolve())
-assert command["schema_version"] == 13
+assert command["schema_version"] == 14
 assert command["provider_isolation"] == "session"
 assert command["native_grant_profile"] == "baseline"
 assert command["whole_worktree_content_sha256"] is None
@@ -1717,6 +1717,13 @@ block_start = effective_prompt.index(expected_block)
 shell_rule = effective_prompt.index(b"Do NOT run shell or terminal tools or tests.")
 task_follows = effective_prompt.index(b"TASK FOLLOWS:")
 assert block_start < output_contract < shell_rule < task_follows
+if workflow in ("task", "project") and mode == "whole":
+    base = command["base_commit"]
+    assert f"immutable Git base commit {base}".encode() in provider_prompt
+    assert b"cumulative net changes relative to that base commit" in provider_prompt
+    assert b"state at provider launch" not in provider_prompt
+elif mode == "scoped":
+    assert b"net changes in this Gitless stage since this stage launched" in provider_prompt
 if self_verify == "1":
     self_verify_request = b"Required check IDs, run automatically: required_check"
     assert self_verify_request in effective_prompt
@@ -1764,7 +1771,7 @@ info = copied_path.stat()
 
 assert copied == source
 assert stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
-assert command["schema_version"] == 13
+assert command["schema_version"] == 14
 assert command["provider_isolation"] == "session"
 assert command["allow_self_verification"] is True
 assert command["self_verification_manifest_path"] == str(copied_path)
@@ -1994,7 +2001,7 @@ prompt = argv[argv.index(b"--print") + 1].decode("utf-8")
 root_marker = "The exact absolute workspace root for this attempt is the JSON string "
 root_start = prompt.index(root_marker) + len(root_marker)
 decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert command["schema_version"] == 13
+assert command["schema_version"] == 14
 assert command["provider_isolation"] == "session"
 assert b"--sandbox" not in argv
 assert command["provider_scope_path"] is None

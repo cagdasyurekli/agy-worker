@@ -38,6 +38,7 @@ if str(SCRIPT_DIR) not in sys.path:
 import agy_dispatch_verification as SELF_VERIFICATION  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch_worktree as WORKTREE  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import candidate_state as CANDIDATE_STATE  # noqa: E402 -- shared hardened Git reads
 
 
 # Compatibility names share the implementation and exception identities owned by WORKTREE.
@@ -115,6 +116,7 @@ CONTROL_POLL = 0.20
 CONVERSATION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 JOB_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
+COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 CURRENT_COMMAND_FIELDS = {
     'agy_version',
     'agy_version_observed',
@@ -123,6 +125,7 @@ CURRENT_COMMAND_FIELDS = {
     'approved_transmission_sha256',
     'approved_whole_worktree_sha256',
     'argv',
+    'base_commit',
     'child_umask',
     'continue_prompt',
     'hard_seconds',
@@ -269,7 +272,7 @@ CURRENT_STATE_FIELDS = {
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
 CURRENT_STATE_SCHEMA = 15
-CURRENT_COMMAND_SCHEMA = 13
+CURRENT_COMMAND_SCHEMA = 14
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
 CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -739,6 +742,16 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         raise DispatchError("dispatch provider environment is invalid") from exc
     if value["workflow"] not in {"legacy", "explore", "task", "project"}:
         raise DispatchError("dispatch workflow is invalid")
+    base_commit = value["base_commit"]
+    if base_commit is not None and (
+        not isinstance(base_commit, str) or COMMIT_RE.fullmatch(base_commit) is None
+    ):
+        raise DispatchError("dispatch base commit is invalid")
+    if value["provider_scope_path"] is not None and base_commit is not None:
+        raise DispatchError("scoped dispatch cannot carry a whole-worktree base")
+    if (value["provider_scope_path"] is None
+            and value["workflow"] in {"task", "project"} and base_commit is None):
+        raise DispatchError("whole-worktree task base is missing")
     if not _valid_max_cycles(value["workflow"], value["max_cycles"]):
         raise DispatchError("dispatch max cycles is invalid for workflow")
     if type(value["agy_version_observed"]) is not bool:
@@ -2510,9 +2523,69 @@ def _attempt_paths(job: Path, attempt: int) -> tuple[Path, Path, Path]:
     return job / f"{prefix}.stream.ndjson", job / f"{prefix}.stderr.txt", job / f"{prefix}.envelope.json"
 
 
+def _bound_whole_worktree_base(workdir: str, expected: str | None, workflow: str) -> str | None:
+    """Bind the gate's Git reference to HEAD before the first worker launch."""
+    if expected is not None and COMMIT_RE.fullmatch(expected) is None:
+        raise DispatchError("base commit is invalid")
+    try:
+        actual = CANDIDATE_STATE._git(
+            Path(workdir), "rev-parse", "--verify", "HEAD^{commit}",
+        ).decode("ascii", "strict").strip()
+    except (CANDIDATE_STATE.CandidateStateError, UnicodeError):
+        if expected is not None or workflow in {"task", "project"}:
+            raise DispatchError("Git base is unavailable") from None
+        return None
+    if COMMIT_RE.fullmatch(actual) is None or (expected is not None and expected != actual):
+        raise DispatchError("Git HEAD differs from the immutable base commit")
+    return actual
+
+
+def _whole_worktree_change_hint(workdir: Path, base: str) -> str:
+    """Show preexisting and prior-cycle changes without making worker claims evidence."""
+    try:
+        raw = CANDIDATE_STATE._git(
+            workdir, "diff", "--name-status", "--no-renames", "-z", base, "--",
+        )
+        parts = [part for part in raw.split(b"\0") if part]
+        if len(parts) % 2:
+            raise DispatchError("Git change summary is invalid")
+        changes = [
+            {"path": parts[index + 1].decode("utf-8", "surrogateescape"),
+             "change": {b"A": "created", b"D": "deleted"}.get(parts[index], "modified")}
+            for index in range(0, len(parts), 2)
+        ]
+        untracked = CANDIDATE_STATE._git(
+            workdir, "ls-files", "--others", "--exclude-standard", "-z", "--",
+        )
+        changes.extend(
+            {"path": path.decode("utf-8", "surrogateescape"), "change": "created"}
+            for path in untracked.split(b"\0") if path
+        )
+        ignored = CANDIDATE_STATE._git(
+            workdir, "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--",
+        )
+        changes.extend(
+            {"path": path.decode("utf-8", "surrogateescape"), "change": "created"}
+            for path in ignored.split(b"\0") if path
+        )
+    except CANDIDATE_STATE.CandidateStateError as exc:
+        raise DispatchError("Git change summary is unavailable") from exc
+    if len(changes) > 64:
+        return (f"Driver currently observes {len(changes)} changed paths against the base; "
+                "the list is too long for this prompt. Report all net changes you can establish; "
+                "the gate will reject omissions.")
+    changes.sort(key=lambda item: item["path"])
+    encoded = json.dumps(changes, ensure_ascii=True, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 8192:
+        return (f"Driver currently observes {len(changes)} changed paths against the base; "
+                "the list is too long for this prompt. Report all net changes you can establish; "
+                "the gate will reject omissions.")
+    return "Driver currently observes these net changes against the base: " + encoded
+
+
 def _bind_workspace_prompt(
     argv: list[str], workspace_root: Path, *, scoped: bool,
-    provider_isolation: str,
+    provider_isolation: str, base_commit: str | None = None,
 ) -> None:
     """Bind every worker's file tools to the exact provider launch cwd."""
     if argv.count("--print") != 1:
@@ -2534,6 +2607,23 @@ def _bind_workspace_prompt(
         if provider_isolation == "session" else
         "Native scoped containment limits this provider to the stated root."
     )
+    if scoped:
+        change_reference = (
+            "- In files_changed, report net changes in this Gitless stage since this "
+            "stage launched. The controller checks exactly this stage's mutations.\n"
+        )
+    elif base_commit is not None:
+        change_reference = (
+            f"- The immutable Git base commit {base_commit} is the files_changed reference. "
+            "Report cumulative net changes relative to that base commit across all cycles, "
+            "including changes already present when this attempt launched. A file created "
+            "in an earlier cycle and then edited remains created.\n"
+            f"- {_whole_worktree_change_hint(workspace_root, base_commit)}\n"
+        )
+    else:
+        change_reference = (
+            "- In files_changed, report net changes since this provider launch.\n"
+        )
     prefix = (
         "FILE-TOOL ROOT — non-negotiable:\n"
         f"- The exact absolute workspace root for this attempt is the JSON string {encoded_root}.\n"
@@ -2542,6 +2632,7 @@ def _bind_workspace_prompt(
         "relative path alone and never guess or search for another root.\n"
         "- In the final schema envelope, report each files_changed[].path relative to this "
         "workspace (for example, candidate.py), never as an absolute stage path.\n"
+        f"{change_reference}"
         f"- This is {workspace_shape}. {authority_note} Do not inspect its parent, HOME, "
         "`~/.gemini`, or any other directory. Do not call shell or terminal tools.\n\n"
     )
@@ -4720,10 +4811,16 @@ def _launch_controller_provider(
             _prepare_scoped_controller_launch(job, binding, launch)
         else:
             _confirm_whole_controller_approval(binding)
+            if binding.command["base_commit"] is not None:
+                _bound_whole_worktree_base(
+                    binding.command["workdir"], binding.command["base_commit"],
+                    binding.command["workflow"],
+                )
         _bind_workspace_prompt(
             launch.argv, Path(os.path.realpath(launch.launch_cwd)),
             scoped=launch.scope is not None,
             provider_isolation=_provider_isolation_for_command(binding.command),
+            base_commit=binding.command["base_commit"],
         )
         if launch.scoped_executable is not None and _provider_isolation_for_command(binding.command) == "native":
             _prepare_native_controller_launch(job, binding, launch)

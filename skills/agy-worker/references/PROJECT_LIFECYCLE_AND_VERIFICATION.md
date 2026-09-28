@@ -131,13 +131,15 @@ test ! -e "$RECEIPT" || { echo "receipt path already exists" >&2; exit 64; }
   --envelope "$ENVELOPE" \
   --approve-dispatch-sha "$DISPATCH_STATE_SHA" \
   --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q"]' \
   --verification-json "$STATE_DIR/verification-v2.json" \
   --assurance verified
 ```
 
-Choose commands from the candidate repository and its configured automation. Never
-execute `commands_run` or `tests_run` from the worker envelope. An explicit
+Gate and `verify-finalize --verify-argv` verifiers run in the bound candidate; use
+only commands known to be read-only there. Snapshot rejection detects a write after
+it happens, not isolation. Run Python, build, and test commands in the verification
+copy below with `PYTHONDONTWRITEBYTECODE=1`, and record those driver results in
+Verification v2. Never execute `commands_run` or `tests_run` from the worker envelope. An explicit
 `--verify-shell SCRIPT` is an advanced compatibility surface requiring both verifier
 network and credential-access acknowledgements. Historical `--verify SCRIPT` also
 requires the legacy-shell acknowledgement.
@@ -221,10 +223,11 @@ finalize work and never substitute for independent diff review and driver accept
 
 ## Isolated verification copy
 
-Driver checks may create bytecode, caches, coverage data, generated files, or other
-artifacts. Do not alter or clean the bound candidate to make those outputs disappear.
-Inspect Git-dependent facts read-only against the candidate, then create a separate
-copy for writable checks:
+Driver build/test commands and Python imports may create bytecode, caches, coverage
+data, generated files, or other artifacts. Do not alter or clean the bound candidate
+to make those outputs disappear. Inspect Git-dependent facts read-only against the
+candidate, then run those checks in a separate copy with
+`PYTHONDONTWRITEBYTECODE=1`:
 
 ```bash
 VERIFY_PARENT="$(mktemp -d -t agyworker-verify.XXXXXX)" || exit $?
@@ -232,7 +235,7 @@ VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
 VERIFY_DIR="$VERIFY_PARENT/candidate"
 "$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
   --destination "$VERIFY_DIR" --format text
-( cd "$VERIFY_DIR" && /usr/bin/python3 -m pytest -q )
+( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q )
 ```
 
 The helper rebinds result, command, schemas, root, and candidate before and after a
@@ -340,8 +343,7 @@ no-op is unacceptable, and at least one driver-authored verifier:
 ```bash
 "$PIPELINE/qa-gate.sh" --envelope "$ENVELOPE" --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'
+  --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
 Exit zero means only that the gate accepted the exact exercised state and verifier

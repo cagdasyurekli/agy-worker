@@ -27,7 +27,13 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
    [optional selected-content dispatch](USAGE.md#optional-selected-content-dispatch).
 4. Retrieve the bound candidate and inspect its Git diff without trusting the worker
    report or executing any worker-reported command. Worker envelopes are not evidence.
-5. Run writable build and test commands in a separate verification copy. Reuse
+   For whole-worktree `task` and `project` jobs, `files_changed` names cumulative net
+   changes against the immutable Git base across repair cycles. Scoped Gitless jobs
+   name the changes made in each individual stage; their reconciler checks that stage.
+5. Run driver-selected build/test commands and Python imports in a separate
+   verification copy with `PYTHONDONTWRITEBYTECODE=1`. Inspect the bound
+   candidate's diff and gate binding directly. Never manually edit, delete, or
+   chmod the bound candidate; send repairs to the same worker conversation. Reuse
    driver-owned checks only for identical candidate bytes and relevant environment;
    after changes rerun affected checks and run the required full suite once the final
    executable candidate is stable.
@@ -65,8 +71,10 @@ those exact resources for the approved second call. The facade does not infer
 assurance or duplicate the provider lifecycle state machine.
 
 The advanced raw `agy-worker.sh` initial run/start path has the same explicit mode
-requirement. Prefer selected-content provider scope; use whole-worktree approval only
-as a manifest-bound exception.
+requirement. It binds current Git HEAD as the whole-worktree base unless
+`--base-commit FULL_SHA` supplies the immutable lifecycle base; a supplied SHA must
+equal HEAD. The later gate must use that same SHA. Prefer selected-content provider
+scope; use whole-worktree approval only as a manifest-bound exception.
 
 ```bash
 ./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID"
@@ -111,7 +119,7 @@ workflow records must use the current explicit or facade format, defined by
 [`workflow.py`](../skills/agy-worker/runtime/scripts/workflow.py). The separately
 versioned workflow status output is not a persisted workflow record.
 
-Current dispatch records use state V15 and command V13, and selection records use
+Current dispatch records use state V15 and command V14, and selection records use
 V4. Earlier formats are retired, including ordinary jobs that used no removed
 feature. The new formats bind capability-based selection without a version registry.
 Workflow record formats retain their existing version constants.
@@ -151,7 +159,10 @@ The canonical gate has these core controls:
   as `HEAD` and branch names are rejected.
 - At least one driver-owned verifier is mandatory. The normal repeatable path is
   `--verify-argv CANONICAL_JSON_ARRAY`; it runs from the repository root without an
-  implicit shell. `--verify-shell` and legacy `--verify` remain advanced compatibility
+  implicit shell. It runs in the bound candidate, so choose commands known to be
+  read-only there; snapshot rejection detects writes after they happen. Run build,
+  tests, and Python imports in a verification copy, then bind their results in
+  Verification v2. `--verify-shell` and legacy `--verify` remain advanced compatibility
   paths and require their documented acknowledgements.
 - Ordinary verifier variables use `--verify-env NAME`. Credential-like names require
   `--verify-credential-env NAME` plus the credential-access acknowledgement; neither
@@ -181,8 +192,7 @@ BASE="$(git -C "$WT" rev-parse HEAD)"
 
 "$PIPELINE/qa-gate.sh" --envelope "$ENVELOPE" --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'
+  --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
 Exit `0` means only that the evidence gate accepted the exercised state and verifier
@@ -283,8 +293,8 @@ Review that bound result and build driver evidence before choosing an eligible
 `continue` or `finalize`; the controller does not choose either. If the candidate hash
 is `null`, do not construct Verification v2 for it.
 
-Driver checks that can write bytecode, caches, coverage output, generated files, or
-other artifacts must run in an isolated verification copy. Do not delete or
+Driver build/test commands and Python imports must run in an isolated verification
+copy with `PYTHONDONTWRITEBYTECODE=1`. Do not delete or
 regenerate artifacts in the candidate to make its snapshot match again: tracked,
 untracked, deleted, and ignored paths are all bound candidate bytes. First inspect
 the candidate read-only, then create a new directory under a private parent and run
@@ -297,7 +307,7 @@ VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
 VERIFY_DIR="$VERIFY_PARENT/candidate"
 "$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
   --destination "$VERIFY_DIR" --format text
-( cd "$VERIFY_DIR" && /usr/bin/python3 -m pytest -q )
+( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q )
 ```
 
 `verification-copy` rebinds the current result, command, schemas, root, and candidate
@@ -480,8 +490,7 @@ RECEIPT_DIR="$(mktemp -d -t agyworker-receipts.XXXXXX)"
 ./verify-job.sh --receipt "$RECEIPT_DIR/job.json" \
   --envelope envelope.json --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'
+  --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
 `--selection FILE` may bind one validated current selection record.

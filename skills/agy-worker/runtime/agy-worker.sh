@@ -119,6 +119,7 @@ usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
                      [--idle-timeout 10m] [--hard-timeout 2h]
                      [--max-runtime 12h]
                      [--provider-isolation session|native]
+                     [--base-commit IMMUTABLE_GIT_HEAD]
                      [--provider-env NAME]...
                      [--provider-scope FILE --approve-transmission-sha SHA256]
                      [--allow-scoped-repair]
@@ -279,6 +280,7 @@ approve_whole_worktree_seen=0; approve_whole_worktree=""
 allow_scoped_repair_seen=0
 self_verification_manifest_seen=0; self_verification_manifest=""
 provider_isolation_seen=0; provider_isolation="session"
+base_commit_seen=0; base_commit=""
 provider_env=()
 # Injection control (rec #8): worker prompts routinely embed repo content, and a
 # "/skill ..." string inside that content would otherwise expand as a real command.
@@ -334,6 +336,9 @@ while [[ $# -gt 0 ]]; do
         --provider-isolation)
             [[ $# -ge 2 && $provider_isolation_seen -eq 0 ]] || usage
             provider_isolation_seen=1; provider_isolation="$2"; shift 2 ;;
+        --base-commit)
+            [[ $# -ge 2 && $base_commit_seen -eq 0 ]] || usage
+            base_commit_seen=1; base_commit="$2"; shift 2 ;;
         --effort)
             [[ $# -ge 2 ]] || usage
             (( effort_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --effort" >&2; exit 64; }
@@ -562,6 +567,10 @@ if (( self_verification_manifest_seen )); then
         echo "agy-worker.sh: --self-verification-manifest requires task or project workflow" >&2
         exit 64
     fi
+fi
+if (( provider_scope_seen && base_commit_seen )); then
+    echo "agy-worker.sh: --base-commit applies only to whole-worktree dispatch" >&2
+    exit 64
 fi
 
 duration_seconds() {
@@ -1141,8 +1150,8 @@ OUTPUT CONTRACT — non-negotiable:
 - Your FINAL response must be a single JSON object matching the enforced schema.
 - Do NOT write your answer to a file, artifact, or brain document.
 - Do NOT reply "see the artifact" or reference an external document.
-- List every file whose final state differs from its state at provider launch in files_changed
-  as created, modified, or deleted. Omit transient touches with no net final change.
+- Follow the FILE-TOOL ROOT instruction for the files_changed reference point.
+  Report net created, modified, or deleted paths; omit transient touches.
 - __WORKSPACE_DIRECTIVE__ Do NOT run shell or terminal tools or tests.
   __PROVIDER_EXECUTION_NOTE__ The driver's environment is the only trusted execution
   context. Leave commands_run and tests_run as empty arrays.
@@ -1211,7 +1220,7 @@ python3 -I -S -B - "$SCRIPT_DIR/scripts/agy_dispatch.py" "$command_file" "$job_i
     "$idle_seconds" "$hard_seconds" "$max_seconds" "$notice_seconds" \
     "$stage_dir_arg" "$stage_file_arg" "$CALLER_UMASK" "$command_workflow" "$max_cycles" \
     "${#provider_env[@]}" ${provider_env+"${provider_env[@]}"} "$selection_file" \
-    "$provider_scope" "$approve_transmission_sha" "$approve_whole_worktree" "$allow_scoped_repair_seen" "$self_verification_manifest_file" "$provider_isolation" "${cmd[@]}" <<'PY'
+    "$provider_scope" "$approve_transmission_sha" "$approve_whole_worktree" "$allow_scoped_repair_seen" "$self_verification_manifest_file" "$provider_isolation" "$base_commit" "${cmd[@]}" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -1225,7 +1234,7 @@ import sys
 dispatch = runpy.run_path(dispatch_source, run_name="agy_dispatch_scope_reader")
 provider_env_count = int(provider_env_count)
 provider_env = sorted(remainder[:provider_env_count])
-selection_path, provider_scope_arg, approved_transmission_sha_arg, approved_whole_worktree_sha_arg, allow_scoped_repair_arg, self_verification_manifest_arg, provider_isolation_arg, *argv = remainder[provider_env_count:]
+selection_path, provider_scope_arg, approved_transmission_sha_arg, approved_whole_worktree_sha_arg, allow_scoped_repair_arg, self_verification_manifest_arg, provider_isolation_arg, base_commit_arg, *argv = remainder[provider_env_count:]
 if not isinstance(child_umask, str) or len(child_umask) not in (3, 4) or any(ch not in "01234567" for ch in child_umask):
     raise SystemExit(64)
 value = {
@@ -1268,6 +1277,7 @@ value = {
     "self_verification_manifest_sha256": None,
     "self_verification_manifest_identity": None,
     "provider_isolation": provider_isolation_arg,
+    "base_commit": None,
     "whole_worktree_content_sha256": None,
     "native_grant_profile": (
         "baseline" if provider_isolation_arg == "session"
@@ -1308,6 +1318,13 @@ if provider_scope_arg:
     value["provider_scope_identity"] = list(identity(scope_info))
     value["approved_transmission_sha256"] = approved_transmission_sha_arg
 else:
+    try:
+        value["base_commit"] = dispatch["_bound_whole_worktree_base"](
+            workdir, base_commit_arg or None, workflow,
+        )
+    except dispatch["DispatchError"] as exc:
+        sys.stderr.write(f"agy-worker.sh: whole-worktree Git base binding failed: {exc}\n")
+        raise SystemExit(64)
     try:
         content = dispatch["whole_worktree_content_manifest"](workdir)
     except Exception:

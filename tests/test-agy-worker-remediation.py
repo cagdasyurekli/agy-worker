@@ -46,7 +46,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 119
+EXPECTED_CHECKS = 120
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -56,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 70, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 71, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -128,6 +128,7 @@ def current_command_fixture(values: dict, *, bind_launch: bool = True) -> dict:
         "provider_env": [], "provider_scope_path": None, "provider_scope_sha256": None,
         "provider_scope_identity": None, "approved_transmission_sha256": None,
         "approved_whole_worktree_sha256": None, "whole_worktree_content_sha256": None,
+        "base_commit": None,
         "provider_isolation": "session", "native_grant_profile": "baseline",
         "allow_scoped_repair": False, "repair_authority_sha256": None,
         "allow_self_verification": False, "self_verification_manifest_path": None,
@@ -140,6 +141,14 @@ def current_command_fixture(values: dict, *, bind_launch: bool = True) -> dict:
         command["provider_isolation"] = "native"
     if bind_launch:
         workdir = command["workdir"]
+        if command["provider_scope_path"] is None and command["base_commit"] is None:
+            try:
+                command["base_commit"] = subprocess.check_output(
+                    ["/usr/bin/git", "-C", workdir, "rev-parse", "--verify", "HEAD^{commit}"],
+                    stderr=subprocess.DEVNULL, text=True,
+                ).strip()
+            except subprocess.CalledProcessError:
+                command["base_commit"] = "0" * 40
         manifest = MODULE._scan_readable_worktree(workdir)
         if command["provider_scope_path"] is not None and command["approved_transmission_sha256"] is None:
             scope = MODULE._parse_provider_scope(Path(command["provider_scope_path"]).read_bytes())
@@ -5941,6 +5950,113 @@ with tempfile.TemporaryDirectory() as temporary:
             assert f"--work-tree={expected_root}" in parts, command
 
     check("snapshot pins Git context while retaining initial/final root checks", snapshot_git_context_is_pinned_and_avoids_redundant_root_probes)
+
+    def whole_repair_prompt_uses_one_immutable_base() -> None:
+        origin = root / "whole-base-origin"; origin.mkdir()
+        subprocess.run(["/usr/bin/git", "init", "-q", str(origin)], check=True)
+        subprocess.run([
+            "/usr/bin/git", "-C", str(origin), "-c", "user.name=Fixture",
+            "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty",
+            "-qm", "base",
+        ], check=True)
+        repo = root / "whole-base-worktree"
+        subprocess.run([
+            "/usr/bin/git", "-C", str(origin), "worktree", "add", "-q", "-b",
+            "fixture/whole-base", str(repo),
+        ], check=True)
+        repo = repo.resolve()
+        base = subprocess.check_output(
+            ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        (repo / "preexisting.txt").write_text("approved dirty input\n", encoding="utf-8")
+        try:
+            MODULE._bound_whole_worktree_base(str(repo), "f" * len(base), "task")
+        except MODULE.DispatchError as exc:
+            assert str(exc) == "Git HEAD differs from the immutable base commit"
+        else:
+            raise AssertionError("mismatched facade base reached provider launch")
+        job = root / "whole-base-job"; job.mkdir(mode=0o700); job = job.resolve()
+        bin_dir = root / "whole-base-bin"; bin_dir.mkdir()
+        schema = root / "whole-base-provider-schema.json"; provider_schema(schema)
+        first_prompt = root / "whole-base-first-prompt"
+        second_prompt = root / "whole-base-second-prompt"
+        fake = bin_dir / "agy"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"first = pathlib.Path({str(first_prompt)!r})\n"
+            f"second = pathlib.Path({str(second_prompt)!r})\n"
+            "prompt = sys.argv[sys.argv.index('--print') + 1]\n"
+            "target = pathlib.Path.cwd() / 'artifact.txt'\n"
+            "if first.exists():\n"
+            "    second.write_text(prompt)\n"
+            "    target.write_text('repair\\n')\n"
+            "else:\n"
+            "    first.write_text(prompt)\n"
+            "    target.write_text('first\\n')\n"
+            "result = {'status':'completed','summary':'fixture','files_changed':"
+            "[{'path':'artifact.txt','change':'created'},"
+            "{'path':'preexisting.txt','change':'created'}], 'commands_run':[],"
+            "'tests_run':[], 'risks':[], 'open_questions':[], 'confidence':1,"
+            "'requires_human':False}\n"
+            "print(json.dumps({'event':'init','init':{},'conversation_id':'whole-base'}))\n"
+            "print(json.dumps({'event':'result','result':{'conversation_id':'whole-base',"
+            "'status':'SUCCESS','structured_output':result}}))\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        command = current_command_fixture({
+            "job_id": "whole-base", "workdir": str(repo),
+            "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+            "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20,
+        })
+        assert command["base_commit"] == base
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.create_state(job, "initial", resume=False)
+        assert run_controller(job, bin_dir) == 0
+        first_state, _raw, first_sha = MODULE.load_state(job)
+        assert first_state["continue_available"]
+        verification = {
+            "schema_version": 2, "summary": "repair artifact", "passed_checks": [],
+            "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
+            "candidate_sha256": first_state["result_sha256"], "coverage": "partial",
+            "verified_findings": 1, "unresolved_gaps": 1,
+            "diff_review_complete": True,
+        }
+        MODULE.create_state(
+            job, "conversation-continue", resume=True,
+            approve_sha=first_sha, verification=verification,
+        )
+        assert run_controller(job, bin_dir) == 0
+        first_text = first_prompt.read_text(encoding="utf-8")
+        second_text = second_prompt.read_text(encoding="utf-8")
+        for prompt in (first_text, second_text):
+            assert f"immutable Git base commit {base}" in prompt
+            assert "cumulative net changes relative to that base commit" in prompt
+            assert "state at provider launch" not in prompt
+        assert '"path":"preexisting.txt","change":"created"' in first_text
+        assert "artifact.txt" not in first_text
+        assert '"path":"artifact.txt","change":"created"' in second_text
+        assert (repo / "artifact.txt").read_text(encoding="utf-8") == "repair\n"
+        final, _raw, _sha = MODULE.load_state(job)
+        assert json.loads(Path(final["result_path"]).read_text())["files_changed"] == [
+            {"path": "artifact.txt", "change": "created"},
+            {"path": "preexisting.txt", "change": "created"},
+        ]
+        wrong = job / "per-attempt-envelope.json"
+        per_attempt = json.loads(Path(final["result_path"]).read_text())
+        per_attempt["files_changed"][0]["change"] = "modified"
+        wrong.write_text(json.dumps(per_attempt), encoding="utf-8")
+        for envelope, expected in ((Path(final["result_path"]), 0), (wrong, 10)):
+            gate = subprocess.run(
+                [str(ROOT / "qa-gate.sh"), "--envelope", str(envelope),
+                 "--repo", str(repo), "--base", base,
+                 "--verify-argv", '["/usr/bin/true"]'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            assert gate.returncode == expected, gate.stderr.decode("utf-8", "replace")
+
+    check("whole-worktree two-cycle prompt preserves created change against immutable base", whole_repair_prompt_uses_one_immutable_base)
 
     recovery_path = ROOT / "tests/agy_worker_remediation_recovery_cases.py"
     recovery_spec = importlib.util.spec_from_file_location(
