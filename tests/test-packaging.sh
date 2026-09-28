@@ -1310,6 +1310,9 @@ assert manifest["name"] == "agy-worker"
 assert manifest["version"] == "0.22.0"
 assert manifest["skills"] == "./skills/"
 assert manifest["license"] == "MIT"
+prompts = manifest["interface"]["defaultPrompt"]
+assert isinstance(prompts, list) and prompts
+assert all(isinstance(prompt, str) and len(prompt) <= 128 for prompt in prompts)
 assert manifest["interface"]["privacyPolicyURL"].startswith("https://")
 assert manifest["interface"]["termsOfServiceURL"].startswith("https://")
 assert not ({"apps", "mcpServers", "hooks"} & manifest.keys())
