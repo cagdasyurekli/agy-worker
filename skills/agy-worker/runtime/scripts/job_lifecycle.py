@@ -1723,6 +1723,9 @@ def command_rollback_ready(args: argparse.Namespace) -> int:
         facts = validate_ready_state(state)
         scan_deletion_domain(facts["worktree"])
         if not candidate_state_is_empty(facts["worktree"], state["base"]):
+            print("job: rollback candidate is not provably empty; preserve it for review, "
+                  "or use abort --discard-unverified after record-dispatch-failure "
+                  "for a terminal failed dispatch", file=sys.stderr)
             raise JobError("rollback candidate is not empty")
 
         _rollback_dispatch_absent(dispatch_job)
@@ -1731,6 +1734,9 @@ def command_rollback_ready(args: argparse.Namespace) -> int:
         facts = validate_ready_state(state)
         scan_deletion_domain(facts["worktree"])
         if not candidate_state_is_empty(facts["worktree"], state["base"]):
+            print("job: rollback candidate is not provably empty before removal; "
+                  "preserve it for review, or use abort --discard-unverified after "
+                  "record-dispatch-failure for a terminal failed dispatch", file=sys.stderr)
             raise JobError("rollback candidate changed before worktree removal")
         rc = run_git(
             facts["repo"], "worktree", "remove", "--force", str(facts["worktree"])

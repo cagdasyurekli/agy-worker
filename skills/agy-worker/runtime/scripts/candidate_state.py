@@ -28,6 +28,10 @@ class CandidateStateError(ValueError):
     pass
 
 
+class CandidateStateLimitError(CandidateStateError):
+    """A bounded proof could not complete; callers must preserve the candidate."""
+
+
 class GitCommitState(TypedDict):
     branch: str
     head: str
@@ -114,13 +118,13 @@ def _checked_git_reader(repo: Path) -> Callable[..., bytes]:
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
-                        raise CandidateStateError("Git index probe timed out")
+                        raise CandidateStateLimitError("Git index probe timed out")
                     chunk = os.read(process.stdout.fileno(), min(65536, max_output_bytes - size + 1))
                     if not chunk:
                         break
                     size += len(chunk)
                     if size > max_output_bytes:
-                        raise CandidateStateError("Git index listing exceeds bounded limit")
+                        raise CandidateStateLimitError("Git index listing exceeds bounded limit")
                     chunks.append(chunk)
                 if process.wait(timeout=max(0.01, deadline - time.monotonic())) != 0:
                     raise CandidateStateError("git candidate-state probe failed")
@@ -130,7 +134,9 @@ def _checked_git_reader(repo: Path) -> Callable[..., bytes]:
                     process.kill()
                     process.wait()
                 process.stdout.close()
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            raise CandidateStateLimitError("Git index probe timed out") from exc
+        except OSError as exc:
             raise CandidateStateError("Git index probe failed") from exc
 
     return read
@@ -319,6 +325,13 @@ def git_commit_state(
 
 def candidate_state_is_empty(repo: Path, base: str) -> bool:
     """Check that neither the index nor working tree adds a committable change."""
+    try:
+        return _candidate_state_is_empty(repo, base)
+    except CandidateStateLimitError:
+        return False
+
+
+def _candidate_state_is_empty(repo: Path, base: str) -> bool:
     reader = _checked_git_reader(repo)
     validate_repository(repo, base, git_reader=reader)
     state = git_commit_state(repo, git_reader=reader)
@@ -341,7 +354,18 @@ def candidate_state_is_empty(repo: Path, base: str) -> bool:
             raise CandidateStateError("Git tree listing is invalid") from exc
     if sorted(state["entries"]) != sorted(expected_entries):
         return False
-    if not _tracked_bytes_match_tree(repo, expected_entries):
+    # Override repository stat shortcuts. Git reports paths whose index stat
+    # data differs; only those need direct byte hashing, including restored mtime.
+    suspect_paths = set(reader(
+        repo, "-c", "core.trustctime=true", "-c", "core.checkStat=default",
+        "-c", "core.ignoreStat=false", "-c", "core.filemode=true",
+        "-c", "core.symlinks=true", "diff-files", "--no-ext-diff",
+        "--no-textconv", "--name-only", "-z", "--",
+        max_output_bytes=8 * 1024 * 1024, timeout_seconds=2.0,
+    ).split(b"\0"))
+    suspect_entries = [entry for entry in expected_entries
+                       if os.fsencode(entry[0]) in suspect_paths]
+    if not _tracked_bytes_match_tree(repo, suspect_entries):
         return False
     clean_digest = hashlib.sha256()
     clean_digest.update(json.dumps(state, sort_keys=True, separators=(",", ":")).encode())
@@ -351,14 +375,14 @@ def candidate_state_is_empty(repo: Path, base: str) -> bool:
 
 
 def _tracked_bytes_match_tree(repo: Path, entries: list[list[str]]) -> bool:
-    """Read tracked bytes directly; Git's stat cache can conceal worktree edits."""
+    """Hash stat-suspect tracked paths without following symlink parents."""
     deadline = time.monotonic() + 3.0
     total_bytes = 0
     root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for relative, header in entries:
             if time.monotonic() > deadline:
-                raise CandidateStateError("tracked-byte check timed out")
+                return False
             mode, oid, stage = header.split(" ")
             if stage != "0" or len(oid) not in (40, 64):
                 raise CandidateStateError("Git tree entry is unsupported")
@@ -392,12 +416,12 @@ def _tracked_bytes_match_tree(repo: Path, entries: list[list[str]]) -> bool:
                                 before.st_size, before.st_mtime_ns, before.st_ctime_ns):
                             return False
                         if total_bytes + opened.st_size > 64 * 1024 * 1024:
-                            raise CandidateStateError("tracked-byte check exceeds bounded limit")
+                            return False
                         chunks: list[bytes] = []
                         while chunk := os.read(handle, 1024 * 1024):
                             total_bytes += len(chunk)
                             if total_bytes > 64 * 1024 * 1024 or time.monotonic() > deadline:
-                                raise CandidateStateError("tracked-byte check exceeds bounded limit")
+                                return False
                             chunks.append(chunk)
                         payload_bytes = b"".join(chunks)
                         read_back = os.fstat(handle)

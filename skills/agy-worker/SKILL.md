@@ -108,8 +108,10 @@ bound candidate; send needed
 repairs to the same worker conversation. Never execute an envelope's
 `commands_run` or `tests_run`; bind only sanitized driver findings to the candidate.
 Gate and `verify-finalize --verify-argv` verifiers run in the bound candidate: choose
-only commands known to be read-only there. Snapshot rejection detects a mutation
-after it happens; it does not isolate the candidate. Feed separate copy test results
+only commands known to be read-only there. Snapshot rejection detects changes to bound candidate state
+after they happen; it does not isolate the candidate. Verifiers run untrusted
+candidate code with the user's authority; the gate does not detect changes outside
+the candidate, including Git hooks and configuration. Feed separate copy test results
 into Verification v2.
 Repair observable failures in the same conversation within budget; never silently
 fall back to direct-driver work after provider failure or exhausted budget.

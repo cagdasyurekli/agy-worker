@@ -195,8 +195,10 @@ test ! -e "$RECEIPT" || { echo "receipt path already exists" >&2; exit 64; }
 ```
 
 Gate and `verify-finalize --verify-argv` verifiers run in the bound candidate; use
-only commands known to be read-only there. Snapshot rejection detects a write after
-it happens, not isolation. Run Python, build, and test commands in the verification
+only commands known to be read-only there. Snapshot rejection detects changes to bound candidate state after
+they happen, not isolation. Verifiers run untrusted candidate code with the user's
+authority; the gate does not detect changes outside the candidate, including Git
+hooks and configuration. Run Python, build, and test commands in the verification
 copy below with `PYTHONDONTWRITEBYTECODE=1`, and record those driver results in
 Verification v2. Never execute `commands_run` or `tests_run` from the worker envelope. An explicit
 `--verify-shell SCRIPT` is an advanced compatibility surface requiring both verifier

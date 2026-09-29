@@ -921,6 +921,37 @@ check("triple-approved rejected candidate cleans exact worktree and ref", lambda
 check("cleanup retains private canonical cleaned tombstone", lambda: fixture.value()["phase"] == "cleaned" and fixture.value()["cleanup_step"] == "branch-removed" and stat.S_IMODE(fixture.state.stat().st_mode) == 0o600)
 
 
+large_clean = Fixture("large-clean")
+with (large_clean.repo / "large.bin").open("wb") as handle:
+    handle.truncate(70 * 1024 * 1024)
+git(large_clean.repo, "add", "large.bin")
+git(large_clean.repo, "commit", "-qm", "large unchanged base")
+large_clean.base = git(large_clean.repo, "rev-parse", "HEAD").decode("ascii").strip()
+assert large_clean.init(facade_created=True).returncode == 0
+check("unchanged candidate above 64 MiB is empty", lambda:
+      CANDIDATE.candidate_state_is_empty(large_clean.worktree, large_clean.base))
+original_tracked_check = CANDIDATE._tracked_bytes_match_tree
+try:
+    def exhausted_tracked_check(repo: Path, entries: list[list[str]]) -> bool:
+        raise CANDIDATE.CandidateStateLimitError("synthetic proof deadline")
+    CANDIDATE._tracked_bytes_match_tree = exhausted_tracked_check
+    check("exhausted empty proof returns not empty", lambda: not
+          CANDIDATE.candidate_state_is_empty(large_clean.worktree, large_clean.base))
+finally:
+    CANDIDATE._tracked_bytes_match_tree = original_tracked_check
+original_git_reader = CANDIDATE._checked_git_reader
+try:
+    def exhausted_git_reader(repo: Path) -> object:
+        raise CANDIDATE.CandidateStateLimitError("synthetic Git probe deadline")
+    CANDIDATE._checked_git_reader = exhausted_git_reader
+    check("exhausted Git probe returns not empty", lambda: not
+          CANDIDATE.candidate_state_is_empty(large_clean.worktree, large_clean.base))
+finally:
+    CANDIDATE._checked_git_reader = original_git_reader
+check("rollback-ready succeeds for unchanged candidate above 64 MiB", lambda:
+      large_clean.rollback().returncode == 0 and not large_clean.worktree.exists())
+
+
 abort_clean = Fixture("abort-clean")
 assert abort_clean.init().returncode == 0
 check("clean candidate has no staged or working changes", lambda: CANDIDATE.candidate_state_is_empty(abort_clean.worktree, abort_clean.base))
@@ -949,6 +980,34 @@ stat_path.write_bytes(b"hidden\n")
 os.utime(stat_path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
 check("stat-cache spoof cannot hide bytes from cleanup", lambda: not
       CANDIDATE.candidate_state_is_empty(stat_repo, stat_base))
+# A large stat-suspect path cannot be byte-proven within the bounded read.
+large_suspect = Fixture("large-suspect")
+with (large_suspect.repo / "large.bin").open("wb") as handle:
+    handle.truncate(70 * 1024 * 1024)
+git(large_suspect.repo, "add", "large.bin")
+git(large_suspect.repo, "commit", "-qm", "large base")
+large_suspect.base = git(large_suspect.repo, "rev-parse", "HEAD").decode("ascii").strip()
+assert large_suspect.init(facade_created=True).returncode == 0
+large_path = large_suspect.worktree / "large.bin"
+with large_path.open("r+b") as handle:
+    handle.write(b"X")
+large_stat = large_path.stat()
+os.utime(large_path, ns=(large_stat.st_atime_ns, large_stat.st_mtime_ns + 2_000_000_000))
+check("oversize stat-suspect proof returns not empty", lambda: not
+      CANDIDATE.candidate_state_is_empty(large_suspect.worktree, large_suspect.base))
+large_refusal = large_suspect.rollback()
+check("uncertain rollback preserves candidate and names eligible discard alternative", lambda:
+      large_refusal.returncode == 64 and large_suspect.worktree.exists()
+      and b"abort --discard-unverified" in large_refusal.stderr
+      and b"record-dispatch-failure" in large_refusal.stderr)
+large_dispatch = large_suspect.make_failed_dispatch()
+assert large_suspect.record_dispatch(large_dispatch).returncode == 0
+check("uncertain abort requires explicit discard", lambda:
+      large_suspect.abort().returncode == 64 and large_suspect.worktree.exists())
+check("explicit discard aborts uncertain large candidate", lambda:
+      large_suspect.abort(discard=True).returncode == 0
+      and not large_suspect.worktree.exists())
+
 clean_dispatch = abort_clean.make_failed_dispatch()
 check("dispatch failure recording rejects stale lifecycle SHA", lambda: abort_clean.record_dispatch(clean_dispatch, state_sha="0" * 64).returncode == 64)
 clean_record = abort_clean.record_dispatch(clean_dispatch)
