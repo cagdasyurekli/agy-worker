@@ -64,7 +64,10 @@ def run(
     *,
     runner: Path = RUNNER,
     extra: Iterable[str] = (),
-    timeout: float = 25.0,
+    # Hang guard for one whole 11-fixture run, not a performance budget. Measured:
+    # ~11.8s locally (2026-09-30); GitHub macOS runners are ~2x slower, so the
+    # former 25s left ~5% headroom and failed intermittently.
+    timeout: float = 60.0,
 ) -> subprocess.CompletedProcess[bytes]:
     gate = instrument_subprocess_gate(gate)
     return subprocess.run(

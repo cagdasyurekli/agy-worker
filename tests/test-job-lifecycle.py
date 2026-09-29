@@ -300,6 +300,18 @@ check("state schema is present", lambda: (RUNTIME / "schemas" / "job-state.schem
 
 def candidate_reference(repo: Path, base: str) -> str:
     digest = hashlib.sha256()
+    staged = git(repo, "ls-files", "--stage", "-z")
+    entries = []
+    for record in staged.split(b"\0"):
+        if record:
+            header, path = record.split(b"\t", 1)
+            entries.append([path.decode("utf-8", "surrogateescape"), header.decode("ascii")])
+    commit_state = {
+        "branch": git(repo, "rev-parse", "--symbolic-full-name", "HEAD").decode().strip(),
+        "head": git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode().strip(),
+        "entries": entries,
+    }
+    digest.update(json.dumps(commit_state, sort_keys=True, separators=(",", ":")).encode())
     tracked = git(repo, "diff", "--binary", "--no-ext-diff", "--no-textconv", "--submodule=short", base, "--")
     digest.update(len(tracked).to_bytes(8, "big")); digest.update(tracked)
     paths = set(part for part in git(repo, "ls-files", "--others", "--exclude-standard", "-z", "--").split(b"\0") if part)
@@ -324,7 +336,7 @@ repo, base = make_repo("candidate-parity")
 (repo / "untracked.txt").write_text("untracked\n", encoding="utf-8")
 (repo / "link").symlink_to("fixture.txt")
 (repo / "fixture.txt").write_text("changed\n", encoding="utf-8")
-check("shared candidate digest exactly matches legacy gate algorithm", lambda: CANDIDATE.candidate_state_digest(repo, base) == candidate_reference(repo, base))
+check("shared candidate digest binds semantic Git state and working bytes", lambda: CANDIDATE.candidate_state_digest(repo, base) == candidate_reference(repo, base))
 before = CANDIDATE.candidate_state_digest(repo, base)
 (repo / "ignored.txt").write_text("mutated\n", encoding="utf-8")
 check("shared candidate digest binds ignored artifacts", lambda: CANDIDATE.candidate_state_digest(repo, base) != before)
@@ -909,10 +921,93 @@ check("triple-approved rejected candidate cleans exact worktree and ref", lambda
 check("cleanup retains private canonical cleaned tombstone", lambda: fixture.value()["phase"] == "cleaned" and fixture.value()["cleanup_step"] == "branch-removed" and stat.S_IMODE(fixture.state.stat().st_mode) == 0o600)
 
 
+large_clean = Fixture("large-clean")
+with (large_clean.repo / "large.bin").open("wb") as handle:
+    handle.truncate(70 * 1024 * 1024)
+git(large_clean.repo, "add", "large.bin")
+git(large_clean.repo, "commit", "-qm", "large unchanged base")
+large_clean.base = git(large_clean.repo, "rev-parse", "HEAD").decode("ascii").strip()
+assert large_clean.init(facade_created=True).returncode == 0
+check("unchanged candidate above 64 MiB is empty", lambda:
+      CANDIDATE.candidate_state_is_empty(large_clean.worktree, large_clean.base))
+original_tracked_check = CANDIDATE._tracked_bytes_match_tree
+try:
+    def exhausted_tracked_check(repo: Path, entries: list[list[str]]) -> bool:
+        raise CANDIDATE.CandidateStateLimitError("synthetic proof deadline")
+    CANDIDATE._tracked_bytes_match_tree = exhausted_tracked_check
+    check("exhausted empty proof returns not empty", lambda: not
+          CANDIDATE.candidate_state_is_empty(large_clean.worktree, large_clean.base))
+finally:
+    CANDIDATE._tracked_bytes_match_tree = original_tracked_check
+original_git_reader = CANDIDATE._checked_git_reader
+try:
+    def exhausted_git_reader(repo: Path) -> object:
+        raise CANDIDATE.CandidateStateLimitError("synthetic Git probe deadline")
+    CANDIDATE._checked_git_reader = exhausted_git_reader
+    check("exhausted Git probe returns not empty", lambda: not
+          CANDIDATE.candidate_state_is_empty(large_clean.worktree, large_clean.base))
+finally:
+    CANDIDATE._checked_git_reader = original_git_reader
+check("rollback-ready succeeds for unchanged candidate above 64 MiB", lambda:
+      large_clean.rollback().returncode == 0 and not large_clean.worktree.exists())
+
+
 abort_clean = Fixture("abort-clean")
 assert abort_clean.init().returncode == 0
-clean_sha = CANDIDATE.candidate_state_digest(abort_clean.worktree, abort_clean.base)
-check("canonical clean candidate digest matches explicit empty-domain digest", lambda: clean_sha == MODULE.EMPTY_CANDIDATE_STATE_SHA256)
+check("clean candidate has no staged or working changes", lambda: CANDIDATE.candidate_state_is_empty(abort_clean.worktree, abort_clean.base))
+index_only_repo, index_only_base = make_repo("index-only-not-empty")
+(index_only_repo / "fixture.txt").write_text("unreviewed index bytes\n", encoding="utf-8")
+git(index_only_repo, "add", "fixture.txt")
+(index_only_repo / "fixture.txt").write_text("before\n", encoding="utf-8")
+check("staged bytes unlike HEAD are not an empty candidate", lambda: not CANDIDATE.candidate_state_is_empty(index_only_repo, index_only_base))
+hidden_repo, hidden_base = make_repo("assume-unchanged-not-empty")
+git(hidden_repo, "update-index", "--assume-unchanged", "fixture.txt")
+(hidden_repo / "fixture.txt").write_text("hidden unreviewed bytes\n", encoding="utf-8")
+check("assume-unchanged cannot hide bytes from cleanup", lambda: rejects(
+    lambda: CANDIDATE.candidate_state_is_empty(hidden_repo, hidden_base)))
+skip_repo, skip_base = make_repo("skip-worktree-not-empty")
+git(skip_repo, "update-index", "--skip-worktree", "fixture.txt")
+(skip_repo / "fixture.txt").write_text("hidden sparse bytes\n", encoding="utf-8")
+check("skip-worktree cannot hide bytes from cleanup", lambda: rejects(
+    lambda: CANDIDATE.candidate_state_is_empty(skip_repo, skip_base)))
+stat_repo, stat_base = make_repo("stat-cache-not-empty")
+git(stat_repo, "config", "core.trustctime", "false")
+git(stat_repo, "config", "core.checkStat", "minimal")
+stat_path = stat_repo / "fixture.txt"
+old_stat = stat_path.stat()
+git(stat_repo, "status", "--porcelain")
+stat_path.write_bytes(b"hidden\n")
+os.utime(stat_path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+check("stat-cache spoof cannot hide bytes from cleanup", lambda: not
+      CANDIDATE.candidate_state_is_empty(stat_repo, stat_base))
+# A large stat-suspect path cannot be byte-proven within the bounded read.
+large_suspect = Fixture("large-suspect")
+with (large_suspect.repo / "large.bin").open("wb") as handle:
+    handle.truncate(70 * 1024 * 1024)
+git(large_suspect.repo, "add", "large.bin")
+git(large_suspect.repo, "commit", "-qm", "large base")
+large_suspect.base = git(large_suspect.repo, "rev-parse", "HEAD").decode("ascii").strip()
+assert large_suspect.init(facade_created=True).returncode == 0
+large_path = large_suspect.worktree / "large.bin"
+with large_path.open("r+b") as handle:
+    handle.write(b"X")
+large_stat = large_path.stat()
+os.utime(large_path, ns=(large_stat.st_atime_ns, large_stat.st_mtime_ns + 2_000_000_000))
+check("oversize stat-suspect proof returns not empty", lambda: not
+      CANDIDATE.candidate_state_is_empty(large_suspect.worktree, large_suspect.base))
+large_refusal = large_suspect.rollback()
+check("uncertain rollback preserves candidate and names eligible discard alternative", lambda:
+      large_refusal.returncode == 64 and large_suspect.worktree.exists()
+      and b"abort --discard-unverified" in large_refusal.stderr
+      and b"record-dispatch-failure" in large_refusal.stderr)
+large_dispatch = large_suspect.make_failed_dispatch()
+assert large_suspect.record_dispatch(large_dispatch).returncode == 0
+check("uncertain abort requires explicit discard", lambda:
+      large_suspect.abort().returncode == 64 and large_suspect.worktree.exists())
+check("explicit discard aborts uncertain large candidate", lambda:
+      large_suspect.abort(discard=True).returncode == 0
+      and not large_suspect.worktree.exists())
+
 clean_dispatch = abort_clean.make_failed_dispatch()
 check("dispatch failure recording rejects stale lifecycle SHA", lambda: abort_clean.record_dispatch(clean_dispatch, state_sha="0" * 64).returncode == 64)
 clean_record = abort_clean.record_dispatch(clean_dispatch)
@@ -1539,7 +1634,7 @@ for old, new, label in (
     check(f"mutation removing {label} is killed", lambda mutated=mutated: not checkout_preflight_contract(mutated))
 
 def candidate_policy_contract(data: bytes) -> bool:
-    return data.count(b"git_reader=git") == 10
+    return data.count(b"git_reader=git") == 8
 
 
 check("lifecycle candidate digest uses the fixed Git policy reader", lambda: candidate_policy_contract(source))

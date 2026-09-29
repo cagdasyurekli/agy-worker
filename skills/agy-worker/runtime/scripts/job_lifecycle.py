@@ -36,6 +36,7 @@ from candidate_state import (  # noqa: E402
     CandidateStateError,
     GIT_EXECUTABLE,
     candidate_state_digest,
+    candidate_state_is_empty,
 )
 from evidence_receipt import (  # noqa: E402
     ValidationFailure,
@@ -89,7 +90,6 @@ MAX_DELETE_NODES = 100_000
 MAX_GIT_OUTPUT = 32 * 1024 * 1024
 MAX_ATTRIBUTE_PATH_BYTES = 16 * 1024 * 1024
 GIT_TIMEOUT_SECONDS = 30.0
-EMPTY_CANDIDATE_STATE_SHA256 = hashlib.sha256(b"\0" * 8).hexdigest()
 UNSAFE_GIT_CONFIG_RE = re.compile(
     rb"^(?:filter\..*\.(?:clean|smudge|process|required)|core\.(?:fsmonitor|hooksPath|pager)"
     rb"|diff\.external|interactive\.diffFilter|pager\..*|include(?:If)?\..*)$",
@@ -1722,9 +1722,10 @@ def command_rollback_ready(args: argparse.Namespace) -> int:
 
         facts = validate_ready_state(state)
         scan_deletion_domain(facts["worktree"])
-        if candidate_state_digest(
-            facts["worktree"], state["base"], git_reader=git
-        ) != EMPTY_CANDIDATE_STATE_SHA256:
+        if not candidate_state_is_empty(facts["worktree"], state["base"]):
+            print("job: rollback candidate is not provably empty; preserve it for review, "
+                  "or use abort --discard-unverified after record-dispatch-failure "
+                  "for a terminal failed dispatch", file=sys.stderr)
             raise JobError("rollback candidate is not empty")
 
         _rollback_dispatch_absent(dispatch_job)
@@ -1732,9 +1733,10 @@ def command_rollback_ready(args: argparse.Namespace) -> int:
         _rollback_dispatch_absent(dispatch_job)
         facts = validate_ready_state(state)
         scan_deletion_domain(facts["worktree"])
-        if candidate_state_digest(
-            facts["worktree"], state["base"], git_reader=git
-        ) != EMPTY_CANDIDATE_STATE_SHA256:
+        if not candidate_state_is_empty(facts["worktree"], state["base"]):
+            print("job: rollback candidate is not provably empty before removal; "
+                  "preserve it for review, or use abort --discard-unverified after "
+                  "record-dispatch-failure for a terminal failed dispatch", file=sys.stderr)
             raise JobError("rollback candidate changed before worktree removal")
         rc = run_git(
             facts["repo"], "worktree", "remove", "--force", str(facts["worktree"])
@@ -1918,9 +1920,8 @@ def command_abort(args: argparse.Namespace) -> int:
         binding = validate_dispatch_binding(state, lock_is_held=True)
         if args.approve_candidate_sha != binding["candidate_state_sha256"]:
             raise JobError("abort candidate approval does not match dispatch binding")
-        if (
-            binding["candidate_state_sha256"] != EMPTY_CANDIDATE_STATE_SHA256
-            and not args.discard_unverified
+        if not args.discard_unverified and not candidate_state_is_empty(
+            Path(state["worktree_path"]), state["base"]
         ):
             raise JobError("changed unverified candidate needs explicit discard approval")
         if state["phase"] == "abort-in-progress":
