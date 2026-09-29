@@ -117,7 +117,7 @@ usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
                      [--tier bulk|cheap|hard|hardest|default|MODEL]
                      [--model MODEL [--effort EFFORT]]
                      [--idle-timeout 10m] [--hard-timeout 2h]
-                     [--max-runtime 12h]
+                     [--max-runtime 12h] [--notice-interval 30m]
                      [--provider-isolation session|native]
                      [--base-commit IMMUTABLE_GIT_HEAD]
                      [--provider-env NAME]...
@@ -125,6 +125,7 @@ usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
                      [--allow-scoped-repair]
                      [--self-verification-manifest ABSOLUTE_PRIVATE_FILE]
                      [--approve-whole-worktree LAUNCH_APPROVAL_SHA256]
+                     --approval-record ABSOLUTE_PRIVATE_PREVIEW_FILE
                      [--add-dir DIR]... [--allow-slash-commands]
        ... task prompt on stdin ...
 
@@ -293,7 +294,7 @@ extra_dirs=()
 tier_cli_seen=0; tier_cli_value=""
 model_cli_seen=0; model_cli_value=""
 effort_cli_seen=0; effort_cli_value=""
-idle_cli_seen=0; hard_cli_seen=0; max_cli_seen=0
+idle_cli_seen=0; hard_cli_seen=0; max_cli_seen=0; notice_cli_seen=0
 job_cli_seen=0
 provider_scope_seen=0; provider_scope=""
 approve_transmission_sha_seen=0; approve_transmission_sha=""
@@ -303,6 +304,7 @@ self_verification_manifest_seen=0; self_verification_manifest=""
 provider_isolation_seen=0; provider_isolation="session"
 base_commit_seen=0; base_commit=""
 provider_env=()
+approval_record=""
 # Injection control (rec #8): worker prompts routinely embed repo content, and a
 # "/skill ..." string inside that content would otherwise expand as a real command.
 # Default OFF; only a caller who controls the whole prompt should re-enable it.
@@ -351,9 +353,16 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || usage
             (( job_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --job-id" >&2; exit 64; }
             job_cli_seen=1; job_id="$2"; shift 2 ;;
+        --notice-interval)
+            [[ $# -ge 2 ]] || usage
+            (( notice_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --notice-interval" >&2; exit 64; }
+            notice_cli_seen=1; notice_interval="$2"; shift 2 ;;
         --provider-env)
             [[ $# -ge 2 ]] || usage
             provider_env+=("$2"); shift 2 ;;
+        --approval-record)
+            [[ $# -ge 2 && -z "$approval_record" ]] || usage
+            approval_record="$2"; shift 2 ;;
         --provider-isolation)
             [[ $# -ge 2 && $provider_isolation_seen -eq 0 ]] || usage
             provider_isolation_seen=1; provider_isolation="$2"; shift 2 ;;
@@ -674,43 +683,20 @@ if (( self_verification_manifest_seen )) && ! project_log_root_is_external "$LOG
     exit 64
 fi
 
-# The advanced raw entry point keeps whole-worktree dispatch available, but never
-# chooses it implicitly.  Bind the caller's explicit exception to the same
-# provider-free, drift-checked manifest used by the primary workflow facade.  The
-# supervisor repeats this proof immediately before the initial provider launch.
-if (( provider_scope_seen == 0 )); then
-    current_manifest_sha="$(
-        /usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/agy_dispatch_worktree.py" \
-            transmission-preview --workdir "$workdir" --provider-isolation "$provider_isolation" \
-        | /usr/bin/python3 -I -S -B -c '
-import json, re, sys
-value = json.load(sys.stdin)
-digest = value.get("launch_approval_sha256") if isinstance(value, dict) else None
-if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-    raise SystemExit(64)
-print(digest)
-'
-    )" || {
-        echo "agy-worker.sh: whole-worktree transmission preview is unavailable" >&2
-        exit 64
-    }
-    if (( approve_whole_worktree_seen == 0 )); then
-        if [[ "$provider_isolation" == "session" ]]; then
-            echo "agy-worker.sh: session provider authority is normal same-user filesystem and network access; whole-worktree approval does not host-confine the provider" >&2
-        fi
-        echo "agy-worker.sh: choose provider scope, or explicitly approve whole-worktree transmission" >&2
-        echo "agy-worker.sh: rerun with --approve-whole-worktree $current_manifest_sha" >&2
-        exit 64
-    fi
-    if [[ "$approve_whole_worktree" != "$current_manifest_sha" ]]; then
-        if [[ "$provider_isolation" == "session" ]]; then
-            echo "agy-worker.sh: session provider authority is normal same-user filesystem and network access; whole-worktree approval does not host-confine the provider" >&2
-        fi
-        echo "agy-worker.sh: approved whole-worktree manifest does not match the current worktree" >&2
-        echo "agy-worker.sh: rerun with --approve-whole-worktree $current_manifest_sha" >&2
-        exit 64
-    fi
+# The record is comparison data; only its human-approved digest grants authority.
+if (( provider_scope_seen == 0 && approve_whole_worktree_seen == 0 )); then
+    echo "agy-worker.sh: choose provider scope, or explicitly approve whole-worktree transmission" >&2
+    echo "agy-worker.sh: obtain a full transmission-preview with the exact task and launch options" >&2
+    exit 64
 fi
+[[ -n "$approval_record" ]] || {
+    echo "agy-worker.sh: --approval-record is required for full launch authority" >&2
+    exit 64
+}
+approved_launch_sha="$approve_whole_worktree"
+(( provider_scope_seen == 0 )) || approved_launch_sha="$approve_transmission_sha"
+/usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/launch_authority.py" \
+    check-record "$approval_record" "$approved_launch_sha" || exit 64
 
 if [[ "$workflow" == "project" ]]; then
     # Repeat the physical containment decision after creation and canonical
@@ -1132,63 +1118,46 @@ if [[ -t 0 ]]; then
 fi
 cat > "$prompt_file"
 task="$(<"$prompt_file")"
-# $(<file) strips trailing whitespace, so a whitespace-only payload would pass a
-# byte-size check yet still hand agy an empty --print value. Check stripped content.
+# $(<file) strips trailing LF bytes; reject whitespace-only tasks before rendering.
 if [[ -z "${task//[[:space:]]/}" ]]; then
     echo "agy-worker.sh: empty task; refusing to dispatch a promptless worker" >&2
     exit 2
 fi
 
-# --- the contract preamble ---------------------------------------------------
-# agy is agentic: given an analysis prompt it will happily write its answer to an
-# internal "brain" artifact and return a stub. The envelope requirement plus this
-# directive pin the answer to stdout where the driver can actually read it.
-if [[ "$mode" == "accept-edits" ]]; then
-    workspace_directive="Use file tools to inspect and edit the approved workspace."
-else
-    workspace_directive="Use file tools to inspect the approved workspace only; do not edit files."
+# Build the exact reviewed prompt with the same code used by local previews.
+if ! /usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/launch_authority.py" \
+    render "$mode" "$provider_isolation" "$self_verification_prompt_block" \
+    < "$prompt_file" > "$full_prompt_file"; then
+    echo "agy-worker.sh: task cannot be bound to launch authority" >&2
+    exit 64
 fi
-if [[ "$provider_isolation" == "session" ]]; then
-    provider_execution_note="This job runs in a normal AGY session with same-user filesystem and network authority; the selected workspace is a task instruction, not host confinement."
-else
-    provider_execution_note="Under native isolation, shell tools run in a separate scratch area; their output is not evidence about the approved workspace."
-fi
-read -r -d '' PREAMBLE <<'EOF' || true
-You are a bounded worker. Another agent (the driver) will independently verify
-everything you claim, so inaccurate self-reporting is worse than admitting failure.
+full_prompt="$(<"$full_prompt_file")"
 
-__SELF_VERIFICATION_CHECK_REQUESTS__
-NON-INTERACTIVE RUN — this contract overrides any global or user instruction file
-(for example GEMINI.md) where they conflict:
-- Nobody can answer questions during this run. Do not ask; put assumptions,
-  blockers, and questions in the result as the output contract requires.
-- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,
-  formatters, type checkers, dependencies, or refactors the task did not ask for.
-- Ignore instructions to use a report template or suggest follow-up rules;
-  return only the required output.
-
-OUTPUT CONTRACT — non-negotiable:
-- Your FINAL response must be a single JSON object matching the enforced schema.
-- Do NOT write your answer to a file, artifact, or brain document.
-- Do NOT reply "see the artifact" or reference an external document.
-- Follow the FILE-TOOL ROOT instruction for the files_changed reference point.
-  Report net created, modified, or deleted paths; omit transient touches.
-- __WORKSPACE_DIRECTIVE__ Do NOT run shell or terminal tools or tests.
-  __PROVIDER_EXECUTION_NOTE__ The driver's environment is the only trusted execution
-  context. Leave commands_run and tests_run as empty arrays.
-- If a permission gate, missing tool, or ambiguity blocks you: set
-  status="blocked", requires_human=true, and explain in open_questions.
-  Do not silently work around it.
-
-TASK FOLLOWS:
-EOF
-PREAMBLE="${PREAMBLE/__SELF_VERIFICATION_CHECK_REQUESTS__/$self_verification_prompt_block}"
-PREAMBLE="${PREAMBLE/__WORKSPACE_DIRECTIVE__/$workspace_directive}"
-PREAMBLE="${PREAMBLE/__PROVIDER_EXECUTION_NOTE__/$provider_execution_note}"
-
-full_prompt="$PREAMBLE
-$task"
-printf '%s' "$full_prompt" > "$full_prompt_file"
+launch_preview_file="$job_dir/launch-preview.json"
+launch_preview_args=(transmission-preview --workdir "$workdir"
+    --provider-isolation "$provider_isolation" --workflow "${workflow:-legacy}"
+    --mode "$mode" --max-cycles "$max_cycles"
+    --idle-timeout "${idle_seconds}s" --hard-timeout "${hard_seconds}s"
+    --max-runtime "${max_seconds}s" --notice-interval "${notice_seconds}s"
+    --provider-schema "$SCHEMA")
+(( provider_scope_seen == 0 )) || launch_preview_args+=(--provider-scope "$provider_scope")
+(( allow_scoped_repair_seen == 0 )) || launch_preview_args+=(--allow-scoped-repair)
+[[ -z "$self_verification_manifest_file" ]] || \
+    launch_preview_args+=(--self-verification-manifest "$self_verification_manifest_file")
+(( disable_slash )) || launch_preview_args+=(--allow-slash-commands)
+(( tier_cli_seen == 0 )) || launch_preview_args+=(--tier "$tier_cli_value")
+(( model_cli_seen == 0 )) || launch_preview_args+=(--model "$model_cli_value")
+(( effort_cli_seen == 0 )) || launch_preview_args+=(--effort "$effort_cli_value")
+for provider_env_name in ${provider_env+"${provider_env[@]}"}; do
+    launch_preview_args+=(--provider-env "$provider_env_name")
+done
+for extra_dir in ${extra_dirs+"${extra_dirs[@]}"}; do
+    launch_preview_args+=(--add-dir "$extra_dir")
+done
+/usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/agy_dispatch_worktree.py" \
+    "${launch_preview_args[@]}" < "$prompt_file" > "$launch_preview_file" || exit 64
+/usr/bin/python3 -I -S -B "$SCRIPT_DIR/scripts/launch_authority.py" \
+    match-record "$approval_record" "$approved_launch_sha" "$launch_preview_file" || exit 64
 
 # --- build the command -------------------------------------------------------
 build_cmd() {
@@ -1220,10 +1189,9 @@ build_cmd() {
         chmod 0555 "$staged_dir"
         stage_used=1
         cmd+=(--add-dir "$staged_dir")
-        cmd+=(--print "Read '$staged_prompt_file' as the complete prompt, including its
-output contract and task. Follow it exactly. The staged job directory is
-read-only context; target files named in that prompt remain readable and editable
-according to --mode and --add-dir. Return the JSON envelope inline.")
+        stage_instruction="$(/usr/bin/python3 -I -S -B \
+            "$SCRIPT_DIR/scripts/launch_authority.py" stage-instruction "$staged_prompt_file")"
+        cmd+=(--print "$stage_instruction")
     else
         cmd+=(--print "$full_prompt")   # ALWAYS last, prompt as the value
     fi
@@ -1305,6 +1273,10 @@ value = {
         else dispatch["CONTAINMENT"].NEW_NATIVE_GRANT_PROFILE
     ),
 }
+with open(Path(output).parent / "launch-preview.json", "rb") as handle:
+    launch_preview = json.load(handle)
+value["launch_authority"] = launch_preview["launch_authority"]
+value["launch_approval_sha256"] = launch_preview["launch_approval_sha256"]
 descriptor = os.open(selection_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
 try:
     before = os.fstat(descriptor)

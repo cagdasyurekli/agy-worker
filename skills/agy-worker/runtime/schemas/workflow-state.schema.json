@@ -20,7 +20,7 @@
     "receipt_path"
   ],
   "properties": {
-    "schema_version": {"type": "integer", "enum": [5, 6]},
+    "schema_version": {"type": "integer", "enum": [7, 8]},
     "kind": {"type": "string", "enum": ["agy-worker-workflow-state"]},
     "job_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$"},
     "repo_path": {"type": "string", "pattern": "^/[^\\r\\n]*$"},
@@ -33,6 +33,7 @@
     "preview_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "preview_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "preview_launch_approval_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "preview_launch_authority": {"type": "object"},
     "native_grant_profile": {"type": "string", "enum": ["baseline", "A", "B", "AB"]},
     "dispatch_job_dir": {"anyOf": [{"type": "string", "pattern": "^/[^\\r\\n]*$"}, {"type": "null"}]},
     "job_state_path": {"anyOf": [{"type": "string", "pattern": "^/[^\\r\\n]*$"}, {"type": "null"}]},
@@ -46,7 +47,7 @@
     {
       "if": {
         "properties": {
-          "schema_version": {"enum": [5, 6]},
+          "schema_version": {"enum": [7, 8]},
           "provider_isolation": {"const": "session"}
         },
         "required": ["schema_version", "provider_isolation"]
@@ -58,13 +59,13 @@
     {
       "required": [
         "provider_isolation", "provider_execution", "preview_content_sha256",
-        "preview_launch_approval_sha256", "native_grant_profile"
+        "preview_launch_approval_sha256", "preview_launch_authority", "native_grant_profile"
       ],
       "not": {
         "anyOf": [{"required": ["origin"]}, {"required": ["job_state_sha256"]}]
       },
       "properties": {
-        "schema_version": {"const": 5},
+        "schema_version": {"const": 7},
         "provider_isolation": {"enum": ["session", "native"]},
         "provider_execution": {"type": "null"}
       }
@@ -72,10 +73,10 @@
     {
       "required": [
         "origin", "job_state_sha256", "provider_isolation", "provider_execution",
-        "preview_content_sha256", "preview_launch_approval_sha256", "native_grant_profile"
+        "preview_content_sha256", "preview_launch_approval_sha256", "preview_launch_authority", "native_grant_profile"
       ],
       "properties": {
-        "schema_version": {"const": 6},
+        "schema_version": {"const": 8},
         "provider_isolation": {"enum": ["session", "native"]},
         "provider_execution": {"type": "null"}
       }

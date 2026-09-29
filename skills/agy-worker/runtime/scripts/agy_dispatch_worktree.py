@@ -29,6 +29,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- standalone sibling imports follow path setup
 import model_selection as MODEL_SELECTION  # noqa: E402 -- standalone sibling imports follow path setup
+import launch_authority as LAUNCH_AUTHORITY  # noqa: E402 -- standalone sibling imports follow path setup
 
 MAX_BOUNDARY_ENTRIES = 100000
 MAX_STREAM_BYTES = 32 * 1024 * 1024
@@ -869,7 +870,8 @@ def _manifest_digest(manifest: Any) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _preview_validation_error(exc: ReadableManifestError | DispatchError) -> None:
+def _preview_validation_error(exc: ReadableManifestError | DispatchError |
+                              LAUNCH_AUTHORITY.LaunchAuthorityError) -> None:
     """Expose bounded validation reasons without emitting control bytes or file contents."""
     reason = str(exc).encode("unicode_escape").decode("ascii")
     if len(reason) > 512:
@@ -880,43 +882,13 @@ def _preview_validation_error(exc: ReadableManifestError | DispatchError) -> Non
 
 
 def _preview_main(argv: list[str]) -> int:
-    workdir: str | None = None
-    scope_path: str | None = None
-    provider_isolation = "session"
-    provider_isolation_seen = False
-    idx = 0
-    while idx < len(argv):
-        arg = argv[idx]
-        if arg in ("--workdir", "--worktree"):
-            if idx + 1 >= len(argv) or workdir is not None:
-                print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
-                return 64
-            workdir = argv[idx + 1]
-            idx += 2
-        elif arg == "--provider-scope":
-            if idx + 1 >= len(argv) or scope_path is not None:
-                print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
-                return 64
-            scope_path = argv[idx + 1]
-            idx += 2
-        elif arg == "--provider-isolation":
-            if idx + 1 >= len(argv) or provider_isolation_seen:
-                print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
-                return 64
-            provider_isolation = argv[idx + 1]
-            provider_isolation_seen = True
-            idx += 2
-        elif arg == "--format":
-            if idx + 1 >= len(argv) or argv[idx + 1] != "json":
-                print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
-                return 64
-            idx += 2
-        else:
-            print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
-            return 64
-    if workdir is None:
-        print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
+    try:
+        args = LAUNCH_AUTHORITY.preview_parser().parse_args(argv)
+    except SystemExit:
         return 64
+    workdir = args.workdir
+    scope_path = args.provider_scope
+    provider_isolation = args.provider_isolation
     if provider_isolation not in {"session", "native"} or (
         provider_isolation == "native" and scope_path is None
     ):
@@ -961,13 +933,12 @@ def _preview_main(argv: list[str]) -> int:
             result["contents_read"] = True
             result["content_manifest"] = content["manifest"]
             result["content_manifest_sha256"] = content["manifest_sha256"]
-            result["launch_approval_sha256"] = _compute_v11_launch_approval_sha256(
-                provider_isolation, native_grant_profile,
-                whole_worktree_content_sha256=result["content_manifest_sha256"],
-                readable_manifest_sha256=result["manifest_sha256"],
-            )
-        else:
-            result["launch_approval_sha256"] = result["transmission_sha256"]
+        task_raw = (args.task.encode("utf-8") if args.task is not None else
+                    sys.stdin.buffer.read(LAUNCH_AUTHORITY.MAX_TASK_BYTES + 1))
+        authority, task_text = LAUNCH_AUTHORITY.preview_authority(result, args, task_raw)
+        result["launch_authority"] = authority
+        result["task_text"] = task_text
+        result["launch_approval_sha256"] = LAUNCH_AUTHORITY.approval_sha256(authority)
         summary = {
             "local_review_only": True,
             "contents_read": result.get("contents_read", False),
@@ -988,6 +959,8 @@ def _preview_main(argv: list[str]) -> int:
             "manifest_sha256": result["manifest_sha256"],
             "launch_approval_sha256": result["launch_approval_sha256"],
             "provider_authority": result["provider_authority"],
+            "launch_authority": authority,
+            "task_text": task_text,
         }
         if provider_isolation == "session":
             summary.update({
@@ -1016,7 +989,7 @@ def _preview_main(argv: list[str]) -> int:
         else:
             summary["content_manifest_sha256"] = result["content_manifest_sha256"]
         result["authority_summary"] = summary
-    except (ReadableManifestError, DispatchError) as exc:
+    except (ReadableManifestError, DispatchError, LAUNCH_AUTHORITY.LaunchAuthorityError) as exc:
         _preview_validation_error(exc)
         return 20
     except (OSError, UnicodeError, ValueError, OverflowError, RecursionError):
@@ -3379,30 +3352,6 @@ def _compute_transmission_sha256(
     }
     raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
     return hashlib.sha256(raw).hexdigest()
-
-
-def _compute_provider_launch_approval_sha256(
-    provider_isolation: str, readable_manifest_sha256: str,
-    transmission_sha256: str | None = None,
-) -> str:
-    """Bind a preview approval to the selected provider execution authority."""
-
-    if provider_isolation not in {"session", "native"}:
-        raise ValueError("provider isolation is invalid")
-    if not isinstance(readable_manifest_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", readable_manifest_sha256) is None:
-        raise ValueError("readable manifest digest is invalid")
-    if transmission_sha256 is not None and (
-        not isinstance(transmission_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", transmission_sha256) is None
-    ):
-        raise ValueError("transmission digest is invalid")
-    payload = {
-        "kind": "agy-worker-provider-launch-approval-v1",
-        "provider_isolation": provider_isolation,
-        "readable_manifest_sha256": readable_manifest_sha256,
-        "transmission_sha256": transmission_sha256,
-    }
-    return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
 def _compute_v11_launch_approval_sha256(

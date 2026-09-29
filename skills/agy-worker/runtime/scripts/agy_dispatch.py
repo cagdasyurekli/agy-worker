@@ -43,6 +43,7 @@ import candidate_state as CANDIDATE_STATE  # noqa: E402 -- shared hardened Git r
 
 # Compatibility names share the implementation and exception identities owned by WORKTREE.
 MODEL_SELECTION = WORKTREE.MODEL_SELECTION
+LAUNCH_AUTHORITY = WORKTREE.LAUNCH_AUTHORITY
 DispatchError = WORKTREE.DispatchError
 WorktreeBaselineError = WORKTREE.WorktreeBaselineError
 ResolveUndoPresentError = WORKTREE.ResolveUndoPresentError
@@ -55,7 +56,6 @@ _bounded_git_read = WORKTREE._bounded_git_read
 _build_selected_content_manifest = WORKTREE._build_selected_content_manifest
 _canonical_digest = WORKTREE._canonical_digest
 _cleanup_stage = WORKTREE._cleanup_stage
-_compute_provider_launch_approval_sha256 = WORKTREE._compute_provider_launch_approval_sha256
 _compute_transmission_sha256 = WORKTREE._compute_transmission_sha256
 _compute_v11_launch_approval_sha256 = WORKTREE._compute_v11_launch_approval_sha256
 _confirm_safe_git_executable = WORKTREE._confirm_safe_git_executable
@@ -118,6 +118,8 @@ JOB_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 SHA_RE = re.compile(r"[0-9a-f]{64}")
 COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 CURRENT_COMMAND_FIELDS = {
+    'launch_authority',
+    'launch_approval_sha256',
     'agy_version',
     'agy_version_observed',
     'allow_scoped_repair',
@@ -164,6 +166,7 @@ SCOPED_REPAIR_POLICY_SHA256 = hashlib.sha256(
     SCOPED_REPAIR_POLICY_TEXT.encode("utf-8")
 ).hexdigest()
 CURRENT_STATE_FIELDS = {
+    'initial_content_transmission_sha256',
     'agy_returncode',
     'allow_scoped_repair',
     'allow_self_verification',
@@ -272,8 +275,8 @@ CURRENT_STATE_FIELDS = {
     'worktree_snapshot_algorithm',
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
-CURRENT_STATE_SCHEMA = 16
-CURRENT_COMMAND_SCHEMA = 14
+CURRENT_STATE_SCHEMA = 17
+CURRENT_COMMAND_SCHEMA = 15
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
 CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -281,6 +284,12 @@ FAILURE_STAGES = {
     "framing", "outer_status", "missing_structured_output", "schema_rejection",
     "binding_failure", "selection_preflight",
 }
+FAILURE_STAGES.update(
+    f"launch_authority_changed:{field}" for field in LAUNCH_AUTHORITY.AUTHORITY_FIELDS
+)
+FAILURE_STAGES.update(f"launch_authority_changed:content.{field}" for field in (
+    "manifest_sha256", "policy_sha256", "selected_content_sha256", "content_manifest_sha256",
+    "provider_isolation", "native_grant_profile"))
 LIFECYCLE_PHASES = {
     "dispatching", "awaiting-verification", "repairing", "completed",
     "blocked", "attempt-failed", "repair-failed", "self-verifying",
@@ -355,7 +364,7 @@ def scoped_repair_authority_sha256(
     payload = {
         "kind": "agy-worker-scoped-repair-authority-v1",
         "policy_sha256": SCOPED_REPAIR_POLICY_SHA256,
-        "initial_transmission_sha256": command.get("approved_transmission_sha256"),
+        "initial_launch_approval_sha256": command.get("launch_approval_sha256"),
         "provider_scope_sha256": command.get("provider_scope_sha256"),
         "selection_sha256": command.get("selection_sha256"),
         "agy_version": command.get("agy_version"),
@@ -694,6 +703,16 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
         raise DispatchError("dispatch command is not canonical")
     if value["kind"] != "agy-worker-dispatch-command":
         raise DispatchError("dispatch command version is invalid")
+    try:
+        if (LAUNCH_AUTHORITY.approval_sha256(value["launch_authority"])
+                != value["launch_approval_sha256"]
+                or value["launch_approval_sha256"] != (
+                    value["approved_transmission_sha256"]
+                    if value["provider_scope_path"] is not None
+                    else value["approved_whole_worktree_sha256"])):
+            raise DispatchError("dispatch launch approval binding changed")
+    except (LAUNCH_AUTHORITY.LaunchAuthorityError, TypeError, AttributeError) as exc:
+        raise DispatchError("dispatch launch authority is invalid") from exc
     version = value["agy_version"]
     if (not isinstance(version, str) or not version or len(version.encode("utf-8")) > 128
             or any(ord(c) < 32 or ord(c) == 127 for c in version)):
@@ -923,6 +942,7 @@ class ProjectBoundary(TypedDict):
 
 
 class DispatchState(TypedDict):
+    initial_content_transmission_sha256: str | None
     """Fields proven by validate_state; optional values remain explicitly nullable."""
     schema_version: int
     kind: str
@@ -1151,6 +1171,11 @@ def _validate_scope_state(value: Mapping[str, Any]) -> None:
     scope_sha = value.get("provider_scope_sha256")
     scope_identity = value.get("provider_scope_identity")
     approved_sha = value.get("approved_transmission_sha256")
+    initial_content_sha = value.get("initial_content_transmission_sha256")
+    if (scope_path is None) != (initial_content_sha is None) or (
+            initial_content_sha is not None and (not isinstance(initial_content_sha, str)
+                                                or SHA_RE.fullmatch(initial_content_sha) is None)):
+        raise DispatchError("dispatch initial content transmission binding is invalid")
     transmission_sha = value.get("transmission_sha256")
     selected_content_sha = value.get("selected_content_sha256")
     selected_file_count = value.get("selected_file_count")
@@ -1738,6 +1763,7 @@ def initial_state(
             "provider_scope_identity": command["provider_scope_identity"],
             "approved_transmission_sha256": command["approved_transmission_sha256"],
             "transmission_sha256": transmission_sha,
+            "initial_content_transmission_sha256": _initial_content_transmission(command),
             "selected_content_sha256": selected_sha,
             "selected_file_count": sum(1 for e in selected_manifest if e["kind"] == "file"),
             "selected_tree_count": sum(1 for e in selected_manifest if e["kind"] == "directory"),
@@ -1752,14 +1778,9 @@ def initial_state(
             content = WORKTREE.whole_worktree_content_manifest(command["workdir"])
             content_sha = content["manifest_sha256"]
             readable_manifest = WORKTREE._scan_readable_worktree(command["workdir"])
-            expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
-                _provider_isolation_for_command(command), command["native_grant_profile"],
-                whole_worktree_content_sha256=content_sha,
-                readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
-            )
             if content_sha != command["whole_worktree_content_sha256"]:
                 raise DispatchError("whole-worktree content binding changed")
-            if expected_approval != approved_whole_sha:
+            if WORKTREE._manifest_digest(readable_manifest) != command["launch_authority"]["content"]["manifest_sha256"]:
                 raise DispatchError(
                     "approved whole-worktree manifest does not match current worktree"
                 )
@@ -1768,6 +1789,7 @@ def initial_state(
             "provider_scope_sha256": None,
             "provider_scope_identity": None,
             "approved_transmission_sha256": None,
+            "initial_content_transmission_sha256": None,
             "transmission_sha256": None,
             "selected_content_sha256": None,
             "selected_file_count": None,
@@ -1932,7 +1954,7 @@ def _continue_from_facts(value: Mapping[str, Any], now: float) -> bool:
         and _total_live_elapsed(value, now) < float(value["max_seconds"])
         and (
             value.get("provider_scope_path") is None
-            or value.get("transmission_sha256") == value.get("approved_transmission_sha256")
+            or value.get("transmission_sha256") == value.get("initial_content_transmission_sha256")
             or (
                 value.get("allow_scoped_repair", False)
                 and value.get("repair_lineage_sha256") is not None
@@ -2635,7 +2657,7 @@ def _whole_worktree_change_hint(workdir: Path, base: str) -> str:
 def _bind_workspace_prompt(
     argv: list[str], workspace_root: Path, *, scoped: bool,
     provider_isolation: str, base_commit: str | None = None,
-) -> None:
+) -> str:
     """Bind every worker's file tools to the exact provider launch cwd."""
     if argv.count("--print") != 1:
         raise DispatchError("dispatch argv contract is invalid")
@@ -2643,49 +2665,15 @@ def _bind_workspace_prompt(
     if print_index + 1 >= len(argv):
         raise DispatchError("dispatch argv contract is invalid")
     prompt = argv[print_index + 1]
-    encoded_root = json.dumps(str(workspace_root), ensure_ascii=True)
     if provider_isolation not in {"session", "native"}:
         raise DispatchError("dispatch provider isolation is invalid")
-    workspace_shape = (
-        "the complete approved Gitless selected-content stage"
-        if scoped else "the complete explicitly approved whole worktree"
-    )
-    authority_note = (
-        "This session has normal same-user filesystem and network authority; this prompt "
-        "does not confine host access. Work only beneath the stated root."
-        if provider_isolation == "session" else
-        "Native scoped containment limits this provider to the stated root."
-    )
-    if scoped:
-        change_reference = (
-            "- In files_changed, report net changes in this Gitless stage since this "
-            "stage launched. The controller checks exactly this stage's mutations.\n"
-        )
-    elif base_commit is not None:
-        change_reference = (
-            f"- The immutable Git base commit {base_commit} is the files_changed reference. "
-            "Report cumulative net changes relative to that base commit across all cycles, "
-            "including changes already present when this attempt launched. A file created "
-            "in an earlier cycle and then edited remains created.\n"
-            f"- {_whole_worktree_change_hint(workspace_root, base_commit)}\n"
-        )
-    else:
-        change_reference = (
-            "- In files_changed, report net changes since this provider launch.\n"
-        )
-    prefix = (
-        "FILE-TOOL ROOT — non-negotiable:\n"
-        f"- The exact absolute workspace root for this attempt is the JSON string {encoded_root}.\n"
-        "- File tools require absolute paths. Begin by listing that exact root. For each "
-        "task-relative path, use an absolute child path beneath that root; never pass the "
-        "relative path alone and never guess or search for another root.\n"
-        "- In the final schema envelope, report each files_changed[].path relative to this "
-        "workspace (for example, candidate.py), never as an absolute stage path.\n"
-        f"{change_reference}"
-        f"- This is {workspace_shape}. {authority_note} Do not inspect its parent, HOME, "
-        "`~/.gemini`, or any other directory. Do not call shell or terminal tools.\n\n"
-    )
-    argv[print_index + 1] = prefix + prompt
+    hint = _whole_worktree_change_hint(workspace_root, base_commit) if not scoped and base_commit else ""
+    prefix = LAUNCH_AUTHORITY.workspace_prefix(
+        workspace_root, scoped=scoped, provider_isolation=provider_isolation,
+        base_commit=base_commit, change_hint=hint)
+    expected = prefix + prompt
+    argv[print_index + 1] = expected
+    return expected
 
 
 def _init_cwd_matches_launch(init_value: dict[str, Any], launch_cwd: str) -> bool:
@@ -3070,13 +3058,21 @@ def _compute_repair_lineage_sha256(
     }))
 
 
+def _initial_content_transmission(command: dict[str, Any]) -> str:
+    content = command["launch_authority"]["content"]
+    return _bound_transmission_sha256(
+        command, content["policy_sha256"], content["manifest_sha256"],
+        content["selected_content_sha256"])
+
+
 def _require_scoped_transmission_authority(
     command: dict[str, Any], state: Mapping[str, Any], *,
     selected_content_sha256: str, transmission_sha256: str,
     provider_origin: str | None = None,
 ) -> None:
     """Apply the one exact rule used at every scoped transmission check."""
-    if transmission_sha256 == command["approved_transmission_sha256"]:
+    initial_transmission_sha = _initial_content_transmission(command)
+    if transmission_sha256 == initial_transmission_sha:
         if state.get("transmission_sha256") not in {None, transmission_sha256} or (
             state.get("selected_content_sha256") not in {None, selected_content_sha256}
         ):
@@ -3587,6 +3583,9 @@ def _load_bound_command(
     command, raw, identity = load_command(job)
     if digest(raw) != state["command_sha256"] or list(identity) != state["command_identity"]:
         raise DispatchError("dispatch command binding changed")
+    expected_content = _initial_content_transmission(command) if command["provider_scope_path"] else None
+    if state["initial_content_transmission_sha256"] != expected_content:
+        raise DispatchError("dispatch initial content transmission binding changed")
     stage_sha, stage_identity = _bound_stage(command, readonly=stage_readonly)
     if stage_sha != state["stage_sha256"] or (
         stage_identity is not None and list(stage_identity[:4]) != state["stage_identity"][:4]
@@ -4315,6 +4314,7 @@ class _ControllerStreams:
 @dataclasses.dataclass
 class _ScopedLaunch:
     argv: list[str] = dataclasses.field(default_factory=list)
+    expected_print: str | None = None
     launch_cwd: str = ""
     executable_binding: tuple[str, dict[str, Any]] | None = None
     stage_dir: Path | None = None
@@ -4687,12 +4687,7 @@ def _confirm_whole_controller_approval(
         content_sha = content["manifest_sha256"]
         if content_sha != binding.command["whole_worktree_content_sha256"]:
             raise DispatchError("whole-worktree content binding changed")
-        expected_approval = WORKTREE._compute_v11_launch_approval_sha256(
-            _provider_isolation_for_command(binding.command), binding.command["native_grant_profile"],
-            whole_worktree_content_sha256=content_sha,
-            readable_manifest_sha256=WORKTREE._manifest_digest(readable_manifest),
-        )
-        if expected_approval != approved_whole_sha:
+        if WORKTREE._manifest_digest(readable_manifest) != binding.command["launch_authority"]["content"]["manifest_sha256"]:
             raise DispatchError("whole-worktree transmission binding changed")
 
 
@@ -4824,6 +4819,9 @@ def _spawn_controller_provider(
                     exact_executable = confirmed_containment.executable
                     provider_cwd = confirmed_containment.cwd
                     provider_environment = confirmed_containment.environment
+                if (launch.expected_print is None or provider_argv.count("--print") != 1
+                        or provider_argv[provider_argv.index("--print") + 1] != launch.expected_print):
+                    raise DispatchError("dispatch final transport prompt changed")
                 launch_mono = time.monotonic()
                 execution.process = subprocess.Popen(
                     provider_argv,
@@ -4847,6 +4845,101 @@ def _spawn_controller_provider(
                 binding.state, binding.prior_raw, _sha = _transition_locked(
                     job, binding.state, binding.prior_raw, {"started_epoch": time.time()},
                 )
+
+
+def _confirm_launch_authority(job: Path, command: dict[str, Any], state: Mapping[str, Any]) -> None:
+    """Recompute caller authority from actual immutable inputs before spawning."""
+    try:
+        task_raw = LAUNCH_AUTHORITY.read_bound_file(
+            job / "task.txt", LAUNCH_AUTHORITY.MAX_TASK_BYTES, private=True, label="initial task")
+        task, _text = LAUNCH_AUTHORITY.normalize_task(task_raw)
+        if digest(task) != command["launch_authority"]["task_sha256"]:
+            raise DispatchError("launch authority changed: task_sha256")
+        argv = command["argv"]
+
+        def option(name: str) -> str | None:
+            positions = [index for index, item in enumerate(argv) if item == name]
+            if len(positions) > 1 or (positions and positions[0] + 1 >= len(argv)):
+                raise DispatchError("dispatch launch argument is invalid")
+            return argv[positions[0] + 1] if positions else None
+
+        if option("--print-timeout") != f'{command["max_seconds"]}s':
+            raise DispatchError("launch authority changed: max_seconds")
+        if option("--output-format") != "stream-json":
+            raise DispatchError("dispatch launch output format is invalid")
+        selection = _load_bound_selection(command, state)
+        tier = None
+        if selection is not None and selection["selection_mode"] == "tier":
+            if selection["selected_tier_source"] != "implicit-default":
+                tier = selection["selected_tier"]
+        mode = option("--mode")
+        if mode not in {"plan", "accept-edits"}:
+            raise DispatchError("dispatch launch mode is invalid")
+        if mode != command["launch_authority"]["mode"]:
+            raise DispatchError("launch authority changed: mode")
+        block = ""
+        manifest_sha = None
+        if command["self_verification_manifest_path"] is not None:
+            raw = LAUNCH_AUTHORITY.read_bound_file(
+                Path(command["self_verification_manifest_path"]), SELF_VERIFICATION.MAX_MANIFEST_BYTES,
+                private=True, label="verification manifest")
+            manifest = SELF_VERIFICATION.parse_manifest(raw)
+            block = LAUNCH_AUTHORITY.verification_request_block(
+                [check.identifier for check in manifest.checks if check.required],
+                [check.identifier for check in manifest.checks if not check.required])
+            manifest_sha = digest(raw)
+        prompt = LAUNCH_AUTHORITY.full_prompt(
+            task, mode=mode, provider_isolation=command["provider_isolation"], verification_block=block)
+        retained_prompt = LAUNCH_AUTHORITY.read_bound_file(
+            job / "full-prompt.txt", LAUNCH_AUTHORITY.MAX_TASK_BYTES + 65536,
+            private=True, label="initial prompt")
+        if prompt != retained_prompt:
+            raise DispatchError("launch authority changed: full_prompt_sha256")
+        initial_prompt = option("--print")
+        if command["stage_file"] is not None:
+            initial_expected = LAUNCH_AUTHORITY.STAGED_INSTRUCTION.format(stage_file=command["stage_file"])
+            staged, _info = read_regular(Path(command["stage_file"]), MAX_COMMAND_BYTES,
+                                        "staged prompt", allowed_modes=(0o600, 0o444))
+            if staged != prompt:
+                raise DispatchError("launch authority changed: full_prompt_sha256")
+        else:
+            initial_expected = prompt.decode("utf-8")
+        if initial_prompt != initial_expected:
+            raise DispatchError("launch authority changed: full_prompt_sha256")
+        schema = option("--json-schema")
+        if schema is None:
+            raise DispatchError("dispatch launch schema is missing")
+        schema_raw = LAUNCH_AUTHORITY.read_bound_file(Path(schema), 512 * 1024,
+                                                     private=False, label="provider schema")
+        root = Path(command["workdir"]).resolve()
+        add_dirs = []
+        for index, argument in enumerate(argv):
+            if argument == "--add-dir":
+                path = Path(argv[index + 1]).resolve(strict=True)
+                if command["stage_dir"] is not None and path == Path(command["stage_dir"]).resolve():
+                    continue
+                add_dirs.append(path.relative_to(root).as_posix())
+        actual = LAUNCH_AUTHORITY.build_authority(
+            content=command["launch_authority"]["content"], task=task, prompt=prompt,
+            workflow=command["workflow"], mode=mode, max_cycles=command["max_cycles"],
+            idle_seconds=command["idle_seconds"], hard_seconds=command["hard_seconds"],
+            max_seconds=command["max_seconds"], notice_seconds=command["notice_seconds"],
+            tier=tier, model=option("--model"), effort=option("--effort"),
+            allow_scoped_repair=command["allow_scoped_repair"],
+            self_verification_manifest_sha256=manifest_sha,
+            provider_env_names=command["provider_env"],
+            allow_slash_commands=mode == "accept-edits" and "--disable-slash-commands" not in argv,
+            add_dirs=sorted(set(add_dirs)), provider_schema_sha256=digest(schema_raw),
+            base_commit=command["base_commit"], workdir=str(root))
+        field = LAUNCH_AUTHORITY.changed_field(command["launch_authority"], actual)
+        if field:
+            raise DispatchError(f"launch authority changed: {field}")
+        if LAUNCH_AUTHORITY.approval_sha256(actual) != command["launch_approval_sha256"]:
+            raise DispatchError("dispatch launch approval digest changed")
+    except DispatchError:
+        raise
+    except (LAUNCH_AUTHORITY.LaunchAuthorityError, ValueError, IndexError) as exc:
+        raise DispatchError("dispatch launch authority is unavailable") from exc
 
 
 def _launch_controller_provider(
@@ -4876,7 +4969,8 @@ def _launch_controller_provider(
                     binding.command["workdir"], binding.command["base_commit"],
                     binding.command["workflow"],
                 )
-        _bind_workspace_prompt(
+        _confirm_launch_authority(job, binding.command, binding.state)
+        launch.expected_print = _bind_workspace_prompt(
             launch.argv, Path(os.path.realpath(launch.launch_cwd)),
             scoped=launch.scope is not None,
             provider_isolation=_provider_isolation_for_command(binding.command),
@@ -4908,7 +5002,12 @@ def _launch_controller_provider(
         outcome.reason = "resolve_undo_present" if isinstance(exc, ResolveUndoPresentError) else "status_unavailable"
         outcome.failure_stage = "binding_failure"
         execution.returncode = EXIT_BY_REASON[outcome.reason]
-    except (DispatchError, CONTAINMENT.ContainmentError):
+    except (DispatchError, CONTAINMENT.ContainmentError) as exc:
+        message = str(exc)
+        if re.fullmatch(r"launch authority changed: [a-z0-9_]+(?:\.[a-z0-9_]+)?", message):
+            outcome.failure_stage = "launch_authority_changed:" + message.removeprefix("launch authority changed: ")
+            with contextlib.suppress(OSError):
+                os.write(streams.stderr_fd, (message + "\n").encode("ascii"))
         outcome.reason = "status_unavailable"
         execution.returncode = EXIT_BY_REASON["status_unavailable"]
     except OSError:
@@ -5690,7 +5789,7 @@ def _controller_terminal_updates(
                 and (
                     current.get("provider_scope_path") is None
                     or candidate_data.derived_transmission_sha
-                    == current.get("approved_transmission_sha256")
+                    == current.get("initial_content_transmission_sha256")
                     or repair_lineage_updates.get(
                         "repair_lineage_sha256"
                     ) is not None
@@ -5698,7 +5797,7 @@ def _controller_terminal_updates(
                         outcome.result_binding is None
                         and (
                             current.get("transmission_sha256")
-                            == current.get("approved_transmission_sha256")
+                            == current.get("initial_content_transmission_sha256")
                             or current.get("repair_lineage_sha256") is not None
                         )
                     )

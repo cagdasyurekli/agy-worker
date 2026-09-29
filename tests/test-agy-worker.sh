@@ -223,7 +223,7 @@ LOGS_REAL="$(cd "$TMP/logs" && pwd -P)"
 whole_worktree_manifest_sha() {
     local worker_path="$1" worktree_path="$2" canonical_worktree
     canonical_worktree="$(cd "$worktree_path" && pwd -P)" || return 64
-    "$worker_path" transmission-preview --workdir "$canonical_worktree" --provider-isolation session \
+    "$worker_path" transmission-preview --task fixture --workdir "$canonical_worktree" --provider-isolation session \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["launch_approval_sha256"])'
 }
 
@@ -267,7 +267,7 @@ environment["AGY_WORKER_LOG_DIR"] = str(state)
 def preview() -> tuple[subprocess.CompletedProcess[bytes], dict]:
     with prompt.open("rb") as source:
         completed = subprocess.run(
-            [worker, "transmission-preview", "--workdir", str(worktree)],
+            [worker, "transmission-preview", "--task", "fixture", "--workdir", str(worktree)],
             stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=environment, check=False,
         )
@@ -347,7 +347,7 @@ scope_path.write_text(json.dumps({
 scope_path.chmod(0o600)
 scoped_run = subprocess.run(
     [
-        worker, "transmission-preview", "--workdir", str(worktree),
+        worker, "transmission-preview", "--task", "fixture", "--workdir", str(worktree),
         "--provider-scope", str(scope_path), "--format", "json",
     ],
     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -384,7 +384,7 @@ assert whole_hardlink.returncode == 20 and not whole_hardlink.stdout
 scope_path.chmod(0o644)
 invalid_scope_run = subprocess.run(
     [
-        worker, "transmission-preview", "--workdir", str(worktree),
+        worker, "transmission-preview", "--task", "fixture", "--workdir", str(worktree),
         "--provider-scope", str(scope_path), "--format", "json",
     ],
     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -434,12 +434,12 @@ assert failed.returncode == 20 and not failed.stdout
 shutil.rmtree(nested)
 
 primary_failure = subprocess.run(
-    [worker, "transmission-preview", "--workdir", str(primary)],
+    [worker, "transmission-preview", "--task", "fixture", "--workdir", str(primary)],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert primary_failure.returncode == 20 and not primary_failure.stdout
 detached_failure = subprocess.run(
-    [worker, "transmission-preview", "--workdir", detached_text],
+    [worker, "transmission-preview", "--task", "fixture", "--workdir", detached_text],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert detached_failure.returncode == 20 and not detached_failure.stdout
@@ -451,7 +451,7 @@ fake_root.mkdir(); fake_admin.mkdir()
 (fake_admin / "gitdir").write_text(f"{fake_root / '.git'}\n")
 (fake_admin / "HEAD").write_text("ref: refs/heads/fake-preview\n")
 fake_failure = subprocess.run(
-    [worker, "transmission-preview", "--workdir", str(fake_root)],
+    [worker, "transmission-preview", "--task", "fixture", "--workdir", str(fake_root)],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert fake_failure.returncode == 20 and not fake_failure.stdout
@@ -461,7 +461,7 @@ assert b"Traceback" not in fake_failure.stderr
 alias = temp / "preview-root-alias"
 alias.symlink_to(worktree, target_is_directory=True)
 alias_failure = subprocess.run(
-    [worker, "transmission-preview", "--workdir", str(alias)],
+    [worker, "transmission-preview", "--task", "fixture", "--workdir", str(alias)],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert alias_failure.returncode == 20 and not alias_failure.stdout
@@ -1353,10 +1353,6 @@ run_worker() {
     for option in "$@"; do
         [[ "$option" != "--provider-scope" ]] || provider_scope_arg=1
     done
-    if (( provider_scope_arg == 0 )) && [[ "${AGY_TEST_SKIP_WHOLE_APPROVAL:-0}" != "1" ]]; then
-        manifest_sha="$(whole_worktree_manifest_sha "$worker_path" "$workdir")" || return 64
-        transmission_approval_args=(--approve-whole-worktree "$manifest_sha")
-    fi
     PATH="$TMP/bin:$PATH" \
     AGY_WORKER_MODE="${AGY_WORKER_MODE:-accept-edits}" \
     AGY_WORKER_LOG_DIR="${AGY_TEST_LOG_DIR:-$TMP/logs}" \
@@ -1405,7 +1401,7 @@ run_worker() {
     FAKE_CALLED_FILE="${FAKE_CALLED_FILE:-$TMP/$job.called}" \
     FAKE_SIGNAL_PARENT="${FAKE_SIGNAL_PARENT:-}" \
     FAKE_EXIT_CODE="${FAKE_EXIT_CODE:-0}" \
-    "$worker_path" --workdir "$workdir" \
+    python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$worker_path" --workdir "$workdir" \
         "${fake_provider_env_args[@]}" \
         ${transmission_approval_args+"${transmission_approval_args[@]}"} "$@"
 }
@@ -1435,7 +1431,7 @@ if [[ "$missing_transmission_rc" == 64 \
         && ! -e "$TMP/logs/missing-transmission-mode" ]] \
         && grep -Fq 'choose provider scope, or explicitly approve whole-worktree transmission' \
             "$TMP/missing-transmission-mode.err" \
-        && grep -Eq -- '--approve-whole-worktree [0-9a-f]{64}$' \
+        && grep -Fq 'obtain a full transmission-preview' \
             "$TMP/missing-transmission-mode.err"; then
     ok "raw dispatch requires an explicit transmission mode before provider or job artifacts"
 else
@@ -1451,7 +1447,7 @@ if [[ "$stale_whole_rc" == 64 \
         && ! -s "$TMP/stale-whole-worktree.out" \
         && ! -e "$TMP/stale-whole-worktree.called" \
         && ! -e "$TMP/logs/stale-whole-worktree" ]] \
-        && grep -Fq 'approved whole-worktree manifest does not match the current worktree' \
+        && grep -Fq 'approval record does not match approved digest' \
             "$TMP/stale-whole-worktree.err"; then
     ok "raw whole-worktree approval is exact and stale-safe before provider launch"
 else
@@ -1563,7 +1559,7 @@ printf '%s\n' \
 chmod 0600 "$CORE_SCOPE"
 CORE_WORKDIR="$(cd "$TMP/repo" && pwd -P)"
 CORE_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+    "$WORKER" transmission-preview --task fixture --workdir "$CORE_WORKDIR" \
         --provider-scope "$CORE_SCOPE" --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
@@ -1586,7 +1582,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 command, _raw, _identity = module.load_command(Path(job_text).resolve())
-assert command["schema_version"] == 14
+assert command["schema_version"] == 15
 assert command["provider_isolation"] == "session"
 assert command["native_grant_profile"] == "baseline"
 assert command["whole_worktree_content_sha256"] is None
@@ -1766,7 +1762,7 @@ info = copied_path.stat()
 
 assert copied == source
 assert stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
-assert command["schema_version"] == 14
+assert command["schema_version"] == 15
 assert command["provider_isolation"] == "session"
 assert command["allow_self_verification"] is True
 assert command["self_verification_manifest_path"] == str(copied_path)
@@ -1876,12 +1872,12 @@ printf '%s\n' \
     > "$NORMAL_ROOT_SCOPE"
 chmod 0600 "$NORMAL_ROOT_SCOPE"
 NORMAL_ROOT_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+    "$WORKER" transmission-preview --task fixture --workdir "$CORE_WORKDIR" \
         --provider-scope "$NORMAL_ROOT_SCOPE" --provider-isolation native --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
 NORMAL_ROOT_SESSION_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+    "$WORKER" transmission-preview --task fixture --workdir "$CORE_WORKDIR" \
         --provider-scope "$NORMAL_ROOT_SCOPE" --provider-isolation session --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
@@ -1996,7 +1992,7 @@ prompt = argv[argv.index(b"--print") + 1].decode("utf-8")
 root_marker = "The exact absolute workspace root for this attempt is the JSON string "
 root_start = prompt.index(root_marker) + len(root_marker)
 decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert command["schema_version"] == 14
+assert command["schema_version"] == 15
 assert command["provider_isolation"] == "session"
 assert b"--sandbox" not in argv
 assert command["provider_scope_path"] is None
@@ -2027,7 +2023,7 @@ whole_drift_rc=$?
 if [[ "$whole_drift_rc" == 64 \
         && ! -s "$TMP/whole-worktree-drift.out" \
         && ! -s "$TMP/whole-worktree-drift.worker-calls" ]] \
-        && grep -Fq 'approved whole-worktree manifest does not match current worktree' \
+        && grep -Fq 'launch authority changed: content.content_manifest_sha256' \
             "$TMP/whole-worktree-drift.err"; then
     ok "whole-worktree drift is rejected by the supervisor before provider launch"
 else
@@ -2634,7 +2630,7 @@ native_capability_scope="$native_capability_root/native-capability.scope.json"
 printf 'native capability fixture\n' > "$native_capability_target"
 printf '%s\n' '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"native-capability-target.txt","kind":"file"}],"write":[{"path":"native-capability-target.txt","kind":"file"}]}' > "$native_capability_scope"
 chmod 0600 "$native_capability_scope"
-native_capability_sha="$("$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+native_capability_sha="$("$WORKER" transmission-preview --task fixture --workdir "$CORE_WORKDIR" \
     --provider-scope "$native_capability_scope" --provider-isolation native --format json \
     | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
 printf 'must remain unread\n' | AGY_TEST_WORKDIR="$CORE_WORKDIR" FAKE_HELP_MODE=missing---sandbox \
@@ -3010,7 +3006,7 @@ run_without_fake_agy() {
     AGY_WORKER_LOG_DIR="$TMP/no-agy-logs" \
     AGY_WORKER_JOB_ID="$job" \
     AGY_WORKER_MAX_ATTEMPTS=1 \
-    "$WORKER" --workdir "$TMP/repo" --approve-whole-worktree "$approval_sha" "$@"
+    python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WORKER" --workdir "$TMP/repo" --approve-whole-worktree "$approval_sha" "$@"
 }
 mkdir -p "$TMP/no-agy-logs"
 chmod 0755 "$TMP/no-agy-logs"
@@ -3195,7 +3191,7 @@ wrapper_pass=1
         FAKE_DIRS_FILE="$TMP/unset-log.dirs" \
         FAKE_ARGV_FILE="$TMP/unset-log.argv" \
         FAKE_STAGE_RESULT_FILE="$TMP/unset-log.stage-result" \
-        "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
+        python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
         --approve-whole-worktree "$WRAPPER_APPROVAL_SHA" \
         --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
         > "$TMP/unset-log.out" 2> "$TMP/unset-log.err"
@@ -3219,7 +3215,7 @@ fi
         FAKE_DIRS_FILE="$TMP/empty-log.dirs" \
         FAKE_ARGV_FILE="$TMP/empty-log.argv" \
         FAKE_STAGE_RESULT_FILE="$TMP/empty-log.stage-result" \
-        "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
+        python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
         --approve-whole-worktree "$WRAPPER_APPROVAL_SHA" \
         --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
         > "$TMP/empty-log.out" 2> "$TMP/empty-log.err"
@@ -3248,7 +3244,7 @@ fi
     printf 'unsafe root\n' | PATH="$TMP/bin:$PATH" \
         XDG_STATE_HOME="relative/path" HOME="" \
         AGY_WORKER_JOB_ID=unsafe-root AGY_WORKER_MODE=accept-edits \
-        "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
+        python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
         --approve-whole-worktree "$WRAPPER_APPROVAL_SHA" \
         --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
         > "$TMP/unsafe-root.out" 2> "$TMP/unsafe-root.err"
@@ -3271,7 +3267,7 @@ mkdir -p "$EXPLICIT_EXTERNAL"
         FAKE_DIRS_FILE="$TMP/explicit-log.dirs" \
         FAKE_ARGV_FILE="$TMP/explicit-log.argv" \
         FAKE_STAGE_RESULT_FILE="$TMP/explicit-log.stage-result" \
-        "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
+        python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WRAPPER_FIXTURE/agy-worker.sh" --workdir "$TMP/repo" \
         --approve-whole-worktree "$WRAPPER_APPROVAL_SHA" \
         --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
         > "$TMP/explicit-log.out" 2> "$TMP/explicit-log.err"
@@ -3567,7 +3563,7 @@ printf 'broad audit is a usable default plan\n' | (
         FAKE_ARGV_FILE="$TMP/generic-plan.argv" \
         FAKE_STAGE_RESULT_FILE="$TMP/generic-plan.stage-result" \
         FAKE_CALLED_FILE="$TMP/generic-plan.called" \
-        "$WORKER" --workdir "$TMP/repo" \
+        python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WORKER" --workdir "$TMP/repo" \
             --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" \
             --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE --provider-env FAKE_CALLED_FILE
 ) > "$TMP/generic-plan.out" 2> "$TMP/generic-plan.err"
@@ -3719,7 +3715,7 @@ printf 'terminal failure\n' | PATH="$TMP/bin:$PATH" \
     FAKE_MODEL_FILE="$TMP/terminal.model" FAKE_PROMPT_FILE="$TMP/terminal.prompt" \
     FAKE_DIRS_FILE="$TMP/terminal.dirs" \
     FAKE_ARGV_FILE="$TMP/terminal.argv" FAKE_STAGE_RESULT_FILE="$TMP/terminal.stage-result" \
-    "$WORKER" --workdir "$TMP/repo" --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
+    python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WORKER" --workdir "$TMP/repo" --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
         --provider-env FAKE_AGY_STATUS > "$TMP/terminal.out" 2>/dev/null
 rc=$?
 expect_exit "non-success terminal status fails closed" 4 "$rc"
@@ -3730,7 +3726,7 @@ printf 'bad envelope\n' | PATH="$TMP/bin:$PATH" \
     FAKE_MODEL_FILE="$TMP/bad.model" FAKE_PROMPT_FILE="$TMP/bad.prompt" \
     FAKE_DIRS_FILE="$TMP/bad.dirs" \
     FAKE_ARGV_FILE="$TMP/bad.argv" FAKE_STAGE_RESULT_FILE="$TMP/bad.stage-result" \
-    "$WORKER" --workdir "$TMP/repo" --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
+    python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WORKER" --workdir "$TMP/repo" --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE \
         --provider-env FAKE_BAD_ENVELOPE > "$TMP/bad.out" 2>/dev/null
 rc=$?
 expect_exit "dispatcher independently rejects schema-invalid output" 4 "$rc"
@@ -3814,10 +3810,6 @@ start_worker() {
     for option in "$@"; do
         [[ "$option" != "--provider-scope" ]] || provider_scope_arg=1
     done
-    if (( provider_scope_arg == 0 )) && [[ "${AGY_TEST_SKIP_WHOLE_APPROVAL:-0}" != "1" ]]; then
-        manifest_sha="$(whole_worktree_manifest_sha "$worker_path" "$workdir")" || return 64
-        transmission_approval_args=(--approve-whole-worktree "$manifest_sha")
-    fi
     PATH="$TMP/bin:$PATH" AGY_WORKER_LOG_DIR="$TMP/logs" AGY_WORKER_JOB_ID="$job" \
         AGY_WORKER_MODE="${AGY_WORKER_MODE:-accept-edits}" \
         FAKE_MODEL_FILE="${FAKE_MODEL_FILE:-$TMP/$job.model}" FAKE_PROMPT_FILE="${FAKE_PROMPT_FILE:-$TMP/$job.prompt}" \
@@ -3835,7 +3827,7 @@ start_worker() {
         FAKE_EDIT_FROM_BOUND_ROOT="${FAKE_EDIT_FROM_BOUND_ROOT:-}" \
         FAKE_EDIT_CONTENT="${FAKE_EDIT_CONTENT:-}" \
         FAKE_WORKER_VERIFIED="${FAKE_WORKER_VERIFIED:-0}" \
-        "$worker_path" start --workdir "$workdir" \
+        python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$worker_path" start --workdir "$workdir" \
         "${fake_provider_env_args[@]}" \
         ${transmission_approval_args+"${transmission_approval_args[@]}"} "$@"
 }
@@ -3986,13 +3978,14 @@ path = Path(sys.argv[3])
 st = repo.stat()
 ident = {"dev": st.st_dev, "ino": st.st_ino, "mode": st.st_mode, "uid": st.st_uid, "gid": st.st_gid}
 value = {
-    "schema_version": 5, "kind": "agy-worker-workflow-state", "job_id": "empty-success",
+    "schema_version": 7, "kind": "agy-worker-workflow-state", "job_id": "empty-success",
     "repo_path": str(repo), "repo_identity": ident,
     "worktree_path": str(repo), "worktree_identity": ident,
     "branch": "test", "branch_ref": "refs/heads/test", "base": "0" * 40,
     "provider_isolation": "session", "provider_execution": None,
     "preview_manifest_sha256": "0" * 64, "preview_content_sha256": "0" * 64,
-    "preview_launch_approval_sha256": "0" * 64, "native_grant_profile": "baseline",
+    "preview_launch_approval_sha256": json.loads((dispatch / "dispatch-command.json").read_bytes())["launch_approval_sha256"],
+    "preview_launch_authority": json.loads((dispatch / "dispatch-command.json").read_bytes())["launch_authority"], "native_grant_profile": "baseline",
     "dispatch_job_dir": str(dispatch), "job_state_path": None, "receipt_path": None,
 }
 path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
@@ -4176,7 +4169,7 @@ PATH="$TMP/bin:$PATH" AGY_WORKER_LOG_DIR="$TMP/logs" AGY_WORKER_JOB_ID=foregroun
     FAKE_WORKER_CALLS_FILE="$TMP/foreground-signal.worker-calls" \
     FAKE_VERSION_MODE=ready FAKE_DISPATCH_MODE=heartbeat-forever \
     FAKE_SIDE_EFFECT_FILE="$FOREGROUND_SIGNAL_SIDE_EFFECT" \
-    "$WORKER" --workdir "$TMP/repo" \
+    python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WORKER" --workdir "$TMP/repo" \
     --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" \
     --idle-timeout 2s --hard-timeout 4s --max-runtime 4s \
     --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE \
@@ -4586,7 +4579,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 16
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 17
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -4902,7 +4895,7 @@ for capability_case in resume continue scoped-repair effort no-effort restart; d
         resume|restart) initial_mode=conversation-fail; recovery_action="$capability_case" ;;
         scoped-repair)
             scoped_edit=target.txt
-            capability_sha="$("$WORKER" transmission-preview --workdir "$capability_workdir" \
+            capability_sha="$("$WORKER" transmission-preview --task fixture --workdir "$capability_workdir" \
                 --provider-scope "$capability_scope" --format json \
                 | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
             capability_args+=(--provider-scope "$capability_scope" --approve-transmission-sha "$capability_sha" --allow-scoped-repair)
@@ -5799,7 +5792,7 @@ call("/usr/bin/git", "-C", str(repo), "init", "-q")
 call("/usr/bin/git", "-C", str(repo), "add", "proof.txt")
 call("/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
 workflow = str(runtime / "workflow.sh")
-preview = json.loads(call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--preview").stdout)
+preview = json.loads(call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--preview", "--tier", "bulk", "--task", "Return the unchanged synthetic candidate", *provider_arguments).stdout)
 call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--approve-whole-worktree", preview["launch_approval_sha256"], "--tier", "bulk", "--task", "Return the unchanged synthetic candidate", *provider_arguments)
 state_files = list(Path(env["XDG_STATE_HOME"]).glob("agy-worker/workflows/*/folder-only/workflow.json"))
 assert len(state_files) == 1

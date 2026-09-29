@@ -30,11 +30,12 @@ if str(SCRIPTS) not in sys.path:
 
 from candidate_state import CandidateStateError, candidate_state_digest  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import agy_dispatch as DISPATCH  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import launch_authority as LAUNCH_AUTHORITY  # noqa: E402 -- sibling imports follow startup isolation/path setup
 from delegation_policy import evaluate_policy  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 STATUS_SCHEMA_VERSION = 3
-BOUND_SCHEMA_VERSION = 5
-BOUND_FACADE_SCHEMA_VERSION = 6
+BOUND_SCHEMA_VERSION = 7
+BOUND_FACADE_SCHEMA_VERSION = 8
 JOB_STATE_SCHEMA_VERSION = 2
 KIND_WORKFLOW_STATE = "agy-worker-workflow-state"
 KIND_WORKFLOW_STATUS = "agy-worker-workflow-status"
@@ -251,6 +252,7 @@ def validate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
     }
     bound_keys = base_keys | {
         "preview_content_sha256", "preview_launch_approval_sha256", "native_grant_profile",
+        "preview_launch_authority",
     }
     bound_facade_keys = bound_keys | {"origin", "job_state_sha256"}
     expected_keys = {
@@ -316,6 +318,14 @@ def validate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
     for label in ("preview_content_sha256", "preview_launch_approval_sha256"):
         if not isinstance(state[label], str) or SHA_RE.fullmatch(state[label]) is None:
             raise WorkflowError(f"workflow state {label} is invalid")
+    authority = state["preview_launch_authority"]
+    try:
+        valid_authority = (isinstance(authority, dict) and
+            LAUNCH_AUTHORITY.approval_sha256(authority) == state["preview_launch_approval_sha256"])
+    except LAUNCH_AUTHORITY.LaunchAuthorityError:
+        valid_authority = False
+    if not valid_authority:
+        raise WorkflowError("workflow state launch authority is invalid")
     profile = state["native_grant_profile"]
     if not isinstance(profile, str) or profile not in {"baseline", "A", "B", "AB"} or (
         state["provider_isolation"] != "native" and profile != "baseline"
@@ -587,6 +597,7 @@ def validate_base_commit(repo: Path, base: str) -> None:
 def canonical_transmission_preview(
     worktree: Path, *, provider_scope: str | None = None,
     provider_isolation: str = "session",
+    launch_args: argparse.Namespace, task: bytes,
 ) -> tuple[bytes, dict[str, Any]]:
     """Delegate preview generation to the canonical public runtime command."""
 
@@ -601,10 +612,22 @@ def canonical_transmission_preview(
     ]
     if provider_scope is not None:
         command += ["--provider-scope", provider_scope, "--format", "json"]
+    else:
+        command += ["--add-dir", str(worktree)]
+    command += ["--workflow", launch_args.workflow, "--mode", launch_args.mode]
+    for name in ("tier", "model", "effort", "max_cycles", "idle_timeout",
+                 "hard_timeout", "max_runtime", "notice_interval", "self_verification_manifest"):
+        value = getattr(launch_args, name)
+        if value is not None:
+            command += ["--" + name.replace("_", "-"), str(value)]
+    if launch_args.allow_scoped_repair:
+        command.append("--allow-scoped-repair")
+    for name in launch_args.provider_env:
+        command += ["--provider-env", name]
     try:
         proc = subprocess.run(
             command,
-            stdin=subprocess.DEVNULL,
+            input=task,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             # The helper may spend up to 16s on two readable-path/Git checks,
@@ -650,7 +673,6 @@ def canonical_transmission_preview(
         if (
             not isinstance(transmission_sha, str)
             or SHA_RE.fullmatch(transmission_sha) is None
-            or transmission_sha != value["launch_approval_sha256"]
             or not isinstance(selected_sha, str)
             or SHA_RE.fullmatch(selected_sha) is None
             or value.get("provider_scope") is None
@@ -665,12 +687,18 @@ def canonical_transmission_preview(
             or value.get("content_manifest") is None
         ):
             raise WorkflowError("whole-worktree content preview contract is invalid")
+    try:
+        if (LAUNCH_AUTHORITY.approval_sha256(value["launch_authority"]) != value["launch_approval_sha256"]
+                or value["task_text"] != LAUNCH_AUTHORITY.normalize_task(task)[1]):
+            raise WorkflowError("launch authority preview contract is invalid")
+    except (LAUNCH_AUTHORITY.LaunchAuthorityError, KeyError, TypeError, AttributeError) as exc:
+        raise WorkflowError("launch authority preview contract is invalid") from exc
     return proc.stdout, value
 
 
 def preview_binding_fields(
     preview_data: dict[str, Any], *, scoped: bool,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Persist the content and authority actually selected by this preview."""
 
     return {
@@ -680,6 +708,7 @@ def preview_binding_fields(
         ),
         "preview_launch_approval_sha256": preview_data["launch_approval_sha256"],
         "native_grant_profile": preview_data["native_grant_profile"],
+        "preview_launch_authority": preview_data["launch_authority"],
     }
 
 
@@ -825,7 +854,7 @@ def transmission_choice(
             raise WorkflowError(
                 "--provider-scope conflicts with whole-worktree approval options"
             )
-        expected = preview_data["transmission_sha256"]
+        expected = preview_data["launch_approval_sha256"]
         approved = args.approve_transmission_sha
         hint = (
             f"--provider-scope {args.provider_scope} "
@@ -1163,7 +1192,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch_run(
     args: argparse.Namespace, *, worktree: Path, dispatch_job_dir: Path,
-    approved_whole_worktree: str | None, base: str | None = None,
+    approved_whole_worktree: str | None, approval_record: Path, base: str | None = None,
 ) -> int:
     runtime = SCRIPTS.parent
     cmd = [
@@ -1172,6 +1201,7 @@ def _dispatch_run(
         "--workflow", args.workflow,
         "--mode", args.mode,
         "--provider-isolation", args.provider_isolation,
+        "--approval-record", str(approval_record),
     ]
     if args.provider_scope:
         cmd += [
@@ -1211,12 +1241,9 @@ def _dispatch_run(
     env = dict(os.environ)
     env["AGY_WORKER_JOB_ID"] = args.job_id
     env["AGY_WORKER_LOG_DIR"] = str(dispatch_job_dir.parent)
-    task_input = args.task.encode("utf-8") if args.task else b""
-    if not task_input and not sys.stdin.isatty():
-        task_input = sys.stdin.buffer.read()
     proc = subprocess.run(
         cmd,
-        input=task_input if task_input else None,
+        input=args.task_input,
         cwd=str(worktree),
         env=env,
         check=False,
@@ -1247,6 +1274,7 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
         preview_raw, preview_data = canonical_transmission_preview(
             worktree, provider_scope=args.provider_scope,
             provider_isolation=args.provider_isolation,
+            launch_args=args, task=args.task_input,
         )
         manifest_sha = preview_data["manifest_sha256"]
         preview_bindings = preview_binding_fields(
@@ -1255,24 +1283,6 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
         mode, approved_sha, expected_sha, approval_hint = (
             transmission_choice(args, preview_data)
         )
-        if args.preview:
-            sys.stdout.buffer.write(preview_raw)
-            _announce_preview_delegation(args)
-            return 0
-        if approved_sha is None:
-            sys.stdout.buffer.write(preview_raw)
-            _announce_preview_delegation(args)
-            sys.stderr.write(
-                "workflow: explicit provider-transmission mode required. "
-                f"Re-run with {approval_hint}\n"
-            )
-            return 20
-        if approved_sha != expected_sha:
-            raise WorkflowError("transmission preview approval is stale or mismatched")
-        if store.value is not None:
-            raise WorkflowError(
-                "workflow state already exists; use status or the advanced recovery commands"
-            )
         if args.job_dir:
             dispatch_job_dir = real_absolute(
                 Path(args.job_dir), "dispatch job directory", must_exist=False
@@ -1284,8 +1294,7 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
             dispatch_job_dir = real_absolute(
                 log_root / args.job_id, "dispatch job directory", must_exist=False
             )
-        created_state_sha = store.create(
-            {
+        proposed_state = {
                 "schema_version": BOUND_SCHEMA_VERSION,
                 "kind": KIND_WORKFLOW_STATE,
                 "job_id": args.job_id,
@@ -1304,15 +1313,36 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
                 "job_state_path": args.job_state,
                 "receipt_path": None,
             }
-        )
+        if store.value is None:
+            created_state_sha = store.create(proposed_state)
+        else:
+            changed = LAUNCH_AUTHORITY.changed_field(
+                store.value["preview_launch_authority"], preview_data["launch_authority"])
+            if changed:
+                raise WorkflowError(f"launch authority changed: {changed}")
+            if store.value != proposed_state:
+                raise WorkflowError("workflow binding or preview changed")
+            if dispatch_job_dir.exists() or dispatch_job_dir.is_symlink():
+                raise WorkflowError("workflow already dispatched; use status or recovery commands")
         assert store.metadata is not None
         created_state_identity = identity(store.metadata)
+        if args.preview or approved_sha is None:
+            sys.stdout.buffer.write(preview_raw)
+            _announce_preview_delegation(args)
+            if args.preview:
+                return 0
+            sys.stderr.write("workflow: explicit provider-transmission mode required. "
+                             f"Re-run with {approval_hint}\n")
+            return 20
+        if approved_sha != expected_sha:
+            raise WorkflowError("transmission preview approval is stale or mismatched")
     finally:
         store.close()
 
     result = _dispatch_run(
         args, worktree=worktree, dispatch_job_dir=dispatch_job_dir,
         approved_whole_worktree=approved_sha if mode == "whole-worktree" else None,
+        approval_record=state_path,
         base=args.base,
     )
     _announce_delegation(
@@ -1398,6 +1428,7 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
             preview_raw, preview_data = canonical_transmission_preview(
                 worktree, provider_scope=args.provider_scope,
                 provider_isolation=args.provider_isolation,
+                launch_args=args, task=args.task_input,
             )
         except BaseException:
             if initialized_here:
@@ -1464,6 +1495,10 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
                     "job_state_sha256": job_sha,
                 })
             expected.update(preview_bindings)
+            changed = LAUNCH_AUTHORITY.changed_field(
+                state["preview_launch_authority"], preview_data["launch_authority"])
+            if changed:
+                raise WorkflowError(f"launch authority changed: {changed}")
             if any(state.get(key) != value for key, value in expected.items()):
                 raise WorkflowError("facade workflow binding or preview changed")
             state_sha = store.sha256
@@ -1490,6 +1525,7 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
     result = _dispatch_run(
         args, worktree=worktree, dispatch_job_dir=dispatch_job_dir,
         approved_whole_worktree=approved_sha if mode == "whole-worktree" else None,
+        approval_record=state_path,
         base=base,
     )
     _announce_delegation(
@@ -1517,6 +1553,12 @@ def _resolved_mode(args: argparse.Namespace) -> str:
 
 def command_run(args: argparse.Namespace) -> int:
     args.mode = _resolved_mode(args)
+    raw_task = (args.task.encode("utf-8") if args.task is not None else
+                sys.stdin.buffer.read(LAUNCH_AUTHORITY.MAX_TASK_BYTES + 1))
+    try:
+        args.task_input, _task_text = LAUNCH_AUTHORITY.normalize_task(raw_task)
+    except LAUNCH_AUTHORITY.LaunchAuthorityError as exc:
+        raise WorkflowError(str(exc)) from exc
     repo = real_absolute(Path(args.repo), "repository")
     if args.provider_scope:
         args.provider_scope = str(

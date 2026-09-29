@@ -159,6 +159,13 @@ STAGES: tuple[Stage, ...] = (
         {"receipt_id": "workflow-integration"},
     ),
     Stage(
+        "launch-authority",
+        "full launch approval suite",
+        "other-a",
+        ("/usr/bin/python3", "-I", "-S", "-B", "tests/test-launch-authority.py"),
+        {"receipt_id": "launch-authority"},
+    ),
+    Stage(
         "packaging",
         "Codex distribution suite",
         "other-a",

@@ -46,12 +46,13 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
 7. Preserve accepted work on its branch. Cleanup is available only for narrowly
    rejected or explicitly discarded candidates and requires current exact approvals.
 
-Neither approval digest binds task text, self-verification manifest,
-`--allow-scoped-repair`, workflow/edit mode, model/effort, budget or environment
-opt-ins. Present the exact task and selected settings alongside the digest before
-approval; material changes need renewed authority. A driver that reuses a digest for
-different work or settings can exceed the human decision even when the controller
-accepts the unchanged content binding.
+One `launch_approval_sha256` binds the full launch authority: content and scope,
+destination and Git base, exact normalized task and constructed prompt, fixed transport
+templates, workflow/edit mode, model/effort, cycles and time budgets, scoped repair,
+self-verification manifest digest, provider-env names, slash policy, additional
+directories and provider schema digest. Preview the exact task and selected settings
+before approval; material changes need renewed authority. Environment values and
+private verification commands remain outside the preview and approval payload.
 
 Assurance labels are deliberately practical. `verified` is available only when the
 strict workflow policy is satisfied; `partially_verified` records useful work with
@@ -86,13 +87,16 @@ equal HEAD. The later gate must use that same SHA. Prefer selected-content provi
 scope; use whole-worktree approval only as a manifest-bound exception.
 
 ```bash
-./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID"
+./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID" --task "$TASK"
 ./workflow.sh run --repo "$TARGET" --job-id "$JOB_ID" \
   --approve-whole-worktree "$PREVIEW_SHA" --workflow task --task "$TASK"
 ```
 
 For selected-content mode, include `--provider-scope "$SCOPE"` on both calls and
-use the preview's `transmission_sha256` as `--approve-transmission-sha` on the second.
+use the preview's `launch_approval_sha256` as `--approve-transmission-sha` on the second.
+This single digest binds content, destination, task and launch settings; provide
+the same task and options to both calls. Private environment values are excluded;
+only opt-in names are bound. The facade retains the reviewed authority record.
 Omitting both modes fails before provider launch. The removed facade flags
 `--approve-preview-sha` and `--legacy-preview-approval` cannot authorize a launch;
 use one of the explicit modes above.

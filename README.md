@@ -82,14 +82,14 @@ New jobs use the existing AGY session by default, with normal user filesystem/ne
 selected staging is not host isolation. `--provider-isolation native` optionally adds macOS containment. Scope approval
 grants no provider execution, Git action, acceptance, or publication. Read [PRIVACY.md](PRIVACY.md).
 
-Inspect a content-bound preview before approval; this starts no provider or network:
+Inspect a full launch preview before approval; this starts no provider or network:
 
 ```bash
-./agy-worker.sh transmission-preview --workdir "$WT" --provider-scope "$SCOPE" --format json
+./agy-worker.sh transmission-preview --workdir "$WT" --provider-scope "$SCOPE" --task "$TASK" --format json
 ```
 
-Review its exact `transmission_sha256` with the scope policy. See [usage](docs/USAGE.md)
-for the registered-worktree requirement and whole-worktree preview.
+Review its full `launch_approval_sha256` with the task, settings and scope policy. See [usage](docs/USAGE.md)
+for matching launch options, the registered-worktree requirement and whole-worktree preview.
 
 In a new driver session, ask:
 

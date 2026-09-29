@@ -93,6 +93,7 @@ pipeline_runtime_complete() {
         scripts/agy_dispatch_worktree.py \
         scripts/agy_dispatch_containment.py \
         scripts/agy_dispatch_verification.py \
+        scripts/launch_authority.py \
         schemas/workflow-state.schema.json \
         schemas/worker-result.schema.json \
         schemas/worker-result.provider.schema.json \
