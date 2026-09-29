@@ -596,6 +596,11 @@ snapshot_repo_with_facts() {
         --repo "$repo" --base "$base" --digest-facts
 }
 
+snapshot_repo_with_git_state() {
+    gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
+        --repo "$repo" --base "$base" --digest-git-state
+}
+
 snapshot_diagnostic_facts() {
     gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
         --repo "$repo" --facts
@@ -665,7 +670,9 @@ fi
 
 before_bundle="$(snapshot_repo_with_facts)" || gate_finish 14 driver-verification-failed
 before_snapshot="${before_bundle%%$'\n'*}"
-before_diagnostic_facts="${before_bundle#*$'\n'}"
+before_remainder="${before_bundle#*$'\n'}"
+before_diagnostic_facts="${before_remainder%%$'\n'*}"
+before_git_state="${before_remainder#*$'\n'}"
 failed_verifier=""
 for (( i=0; i<${#verify_specs[@]}; i++ )); do
     verifier_mode="${verify_modes[$i]}"
@@ -712,15 +719,22 @@ for (( i=0; i<${#verify_specs[@]}; i++ )); do
         break
     fi
 done
-after_snapshot="$(snapshot_repo)" || gate_finish 14 driver-verification-failed
-if [[ "$before_snapshot" != "$after_snapshot" ]]; then
+after_bundle="$(snapshot_repo_with_git_state)" || gate_finish 14 driver-verification-failed
+after_snapshot="${after_bundle%%$'\n'*}"
+after_git_state="${after_bundle#*$'\n'}"
+if [[ "$before_snapshot" != "$after_snapshot" || "$before_git_state" != "$after_git_state" ]]; then
+    git_state_details=""
+    if [[ "$before_git_state" != "$after_git_state" ]]; then
+        git_state_details="$(printf '%s\n%s\n' "$before_git_state" "$after_git_state" | \
+            gate_python "$SCRIPT_DIR/scripts/candidate_state.py" --compare-git-states)" || git_state_details=""
+    fi
     after_diagnostic_facts="$(snapshot_diagnostic_facts)" || after_diagnostic_facts=""
     diagnostic_details=""
     if [[ -n "$before_diagnostic_facts" && -n "$after_diagnostic_facts" ]]; then
         diagnostic_details="$(gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
             --compare-diagnostics "$before_diagnostic_facts" "$after_diagnostic_facts")" || diagnostic_details=""
     fi
-    echo "qa-gate: DRIVER VERIFICATION MUTATED THE WORKTREE${diagnostic_details:+: $diagnostic_details}; inspect paths and request same-worker repair" >&2
+    echo "qa-gate: DRIVER VERIFICATION MUTATED THE CANDIDATE${git_state_details:+: $git_state_details}${diagnostic_details:+: $diagnostic_details}; inspect paths and request same-worker repair" >&2
     [[ -z "$failed_verifier" ]] || echo "qa-gate: DRIVER VERIFICATION FAILED - $failed_verifier" >&2
     gate_finish 14 driver-verification-failed
 fi

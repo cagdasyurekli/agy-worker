@@ -43,6 +43,7 @@ names, including HOME, require `--verify-credential-env NAME` and its acknowledg
 Names bind into receipt policy; values cross a private descriptor, never the outer gate
 environment or stored receipt. Acknowledgement supplies neither a value, network
 isolation nor external-write authority. Candidate code remains untrusted.
+The gate binds semantic Git index entries and the current branch/HEAD before and after driver verification, rejecting persistent verifier changes even when worktree bytes are restored.
 
 ### Preview and staging
 

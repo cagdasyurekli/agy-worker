@@ -1130,9 +1130,16 @@ def keychain_locator_reaps_leaderless_descendants() -> bool:
             return rejects(MODULE._discover_default_keychain)
 
         def gone(pid_path: Path) -> bool:
-            pid = int(pid_path.read_text(encoding="ascii").strip())
-            deadline = time.monotonic() + 2
+            # Observe both publication and disappearance. Under concurrent load
+            # the shell may publish the PID after the locator leader exits.
+            deadline = time.monotonic() + 10
+            pid = None
             while time.monotonic() < deadline:
+                if pid is None:
+                    if not pid_path.exists():
+                        time.sleep(0.02)
+                        continue
+                    pid = int(pid_path.read_text(encoding="ascii").strip())
                 try:
                     os.kill(pid, 0)
                 except ProcessLookupError:
@@ -1154,9 +1161,9 @@ def keychain_locator_reaps_leaderless_descendants() -> bool:
             f"printf '\"%s\"\\n' '{database}'; exit 0",
         )
         holding_rejected = run(holding)
-        holding_gone = holding_pid.exists() and gone(holding_pid)
+        holding_gone = gone(holding_pid)
         closed_rejected = run(closes)
-        closed_gone = closes_pid.exists() and gone(closes_pid)
+        closed_gone = gone(closes_pid)
         passed, detail = _diagnose_locator_reap_conditions(
             holding_rejected=holding_rejected,
             holding_gone=holding_gone,

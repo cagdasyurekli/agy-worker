@@ -112,6 +112,82 @@ class GateGitHardening(unittest.TestCase):
             with self.subTest(environment=next(iter(environment))):
                 self.assert_code(0, self.gate((("tracked.txt", "modified"),), environment=environment))
 
+    def test_verifier_cannot_stage_other_bytes_then_restore_worktree(self):
+        candidate = "candidate bytes\n"
+        (self.repo / "tracked.txt").write_text(candidate)
+        script = (
+            "from pathlib import Path; import subprocess,sys; "
+            "p=Path('tracked.txt'); p.write_text('malicious staged bytes\\n'); "
+            "subprocess.run(['/usr/bin/git','add','tracked.txt'],check=True); "
+            "p.write_text(sys.argv[1])"
+        )
+        result = self.gate((("tracked.txt", "modified"),), verifier=[
+            sys.executable, "-I", "-S", "-B", "-c", script, candidate,
+        ])
+        self.assert_code(14, result)
+        self.assertIn("verifier changed the Git index for", result.stderr)
+        self.assertIn("tracked.txt", result.stderr)
+        self.assertEqual((self.repo / "tracked.txt").read_text(), candidate)
+        self.assertEqual(self.git("show", ":tracked.txt"), b"malicious staged bytes\n")
+
+    def test_verifier_read_only_git_is_accepted(self):
+        (self.repo / "tracked.txt").write_text("candidate bytes\n")
+        self.assert_code(0, self.gate((("tracked.txt", "modified"),), verifier=[
+            "/usr/bin/git", "status", "--short",
+        ]))
+
+    def test_pre_staged_candidate_is_accepted_when_verifier_only_reads(self):
+        (self.repo / "tracked.txt").write_text("candidate bytes\n")
+        self.git("add", "tracked.txt")
+        self.assert_code(0, self.gate((("tracked.txt", "modified"),), verifier=[
+            "/usr/bin/git", "status", "--short",
+        ]))
+
+    def test_assume_unchanged_cannot_hide_worktree_bytes(self):
+        self.git("update-index", "--assume-unchanged", "tracked.txt")
+        (self.repo / "tracked.txt").write_text("hidden bytes\n")
+        result = self.gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported Git index flags", result.stderr)
+
+    def test_skip_worktree_cannot_hide_worktree_bytes(self):
+        self.git("update-index", "--skip-worktree", "tracked.txt")
+        (self.repo / "tracked.txt").write_text("hidden bytes\n")
+        result = self.gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unsupported Git index flags", result.stderr)
+
+    def test_verifier_cannot_detach_same_head_commit(self):
+        (self.repo / "tracked.txt").write_text("candidate bytes\n")
+        result = self.gate((("tracked.txt", "modified"),), verifier=[
+            "/usr/bin/git", "checkout", "--detach", "-q",
+        ])
+        self.assert_code(14, result)
+        self.assertIn("verifier changed Git HEAD or the current branch", result.stderr)
+
+    def test_verifier_cannot_move_current_branch_ref(self):
+        (self.repo / "tracked.txt").write_text("candidate bytes\n")
+        result = self.gate((("tracked.txt", "modified"),), verifier=[
+            "/usr/bin/git", "commit", "--allow-empty", "-qm", "verifier",
+        ])
+        self.assert_code(14, result)
+        self.assertIn("verifier changed Git HEAD or the current branch", result.stderr)
+
+    def test_bounded_index_probe_fails_closed_on_output_cap(self):
+        script = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
+        code = (
+            "import sys; from pathlib import Path; "
+            "sys.path.insert(0,sys.argv[1]); import candidate_state as c; "
+            "r=c._checked_git_reader(Path(sys.argv[2])); "
+            "r(Path(sys.argv[2]),'ls-files','--stage','-z',max_output_bytes=1,timeout_seconds=0.5)"
+        )
+        result = subprocess.run([
+            sys.executable, "-I", "-S", "-B", "-c", code,
+            str(script.parent), str(self.repo),
+        ], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("bounded limit", result.stderr)
+
     def test_caller_path_cannot_select_git_executable(self):
         shadow_directory = self.directory / "shadow-bin"
         shadow_directory.mkdir()
