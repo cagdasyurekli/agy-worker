@@ -231,14 +231,6 @@ repo="$(cd "$repo" && pwd -P)"
 [[ -f "$SCHEMA" ]] || { echo "qa-gate.sh: schema not found: $SCHEMA" >&2; exit 64; }
 SCHEMA="$(cd "$(dirname "$SCHEMA")" && pwd)/$(basename "$SCHEMA")"
 
-gate_git() {
-    "$verifier_python" -I -S -B "$SCRIPT_DIR/scripts/candidate_state.py" \
-        --repo "$repo" --git "$@"
-}
-
-gate_git rev-parse --is-inside-work-tree >/dev/null || {
-    echo "qa-gate.sh: cannot establish trusted Git worktree: $repo" >&2; exit 64;
-}
 case "$base" in
     ''|*[!0-9a-f]*)
         echo "qa-gate.sh: --base must be the full immutable commit ID captured before dispatch" >&2
@@ -248,7 +240,9 @@ if [[ ${#base} -ne 40 && ${#base} -ne 64 ]]; then
     echo "qa-gate.sh: --base must be a full 40- or 64-character commit ID" >&2
     exit 64
 fi
-resolved_base="$(gate_git rev-parse --verify "$base^{commit}")" || {
+resolved_base="$("$verifier_python" -I -S -B \
+    "$SCRIPT_DIR/scripts/candidate_state.py" --repo "$repo" \
+    --base "$base" --verify-base)" || {
     echo "qa-gate.sh: invalid base commit: $base" >&2; exit 64;
 }
 [[ "$resolved_base" == "$base" ]] || {
@@ -454,15 +448,17 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv.pop(1))
-from candidate_state import _git
+from candidate_state import _checked_git_reader
 
 envelope_path, repo, base = sys.argv[1:4]
 allow_count, only_count = map(int, sys.argv[4:6])
 allow = sys.argv[6:6 + allow_count]
 only = sys.argv[6 + allow_count:6 + allow_count + only_count]
 
+git_reader = _checked_git_reader(Path(repo))
+
 def git_output(*args):
-    return _git(Path(repo), *args)
+    return git_reader(Path(repo), *args)
 
 def git_paths(*args):
     return {
@@ -507,6 +503,15 @@ def normalize_claim(path):
 try:
     with open(envelope_path, encoding="utf-8") as handle:
         envelope = json.load(handle)
+    envelope_status = envelope["status"]
+    requires_human = envelope["requires_human"]
+    commands_run = envelope["commands_run"]
+    tests_run = envelope["tests_run"]
+    if (envelope_status not in ("completed", "partial", "blocked", "failed")
+            or type(requires_human) is not bool
+            or type(commands_run) is not list or type(tests_run) is not list
+            or len(commands_run) > 9999 or len(tests_run) > 9999):
+        raise ValueError("envelope control fields changed after validation")
     claimed_changes = {}
     for item in envelope["files_changed"]:
         path = normalize_claim(item["path"])
@@ -533,7 +538,7 @@ try:
         "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--")
     for path in untracked | ignored:
         actual_changes.setdefault(path, "created")
-except (OSError, ValueError) as exc:
+except (OSError, ValueError, KeyError, TypeError) as exc:
     print(f"qa-gate: cannot establish scope: {exc}", file=sys.stderr)
     sys.exit(1)
 
@@ -574,7 +579,10 @@ if kind_mismatches:
 if undeclared or phantom or outside_policy or kind_mismatches:
     sys.exit(1)
 print(f"qa-gate: scope OK ({len(actual)} file(s) changed)", file=sys.stderr)
-print(len(claimed))
+if len(claimed) > 9999:
+    sys.exit(1)
+print(f"{len(claimed)} {envelope_status} {'true' if requires_human else 'false'} "
+      f"{len(commands_run)} {len(tests_run)}")
 PY
 }
 
@@ -583,9 +591,14 @@ snapshot_repo() {
         --repo "$repo" --base "$base"
 }
 
+snapshot_repo_with_facts() {
+    gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
+        --repo "$repo" --base "$base" --digest-facts
+}
+
 snapshot_diagnostic_facts() {
     gate_python "$SCRIPT_DIR/scripts/candidate_state.py" \
-        --repo "$repo" --diagnostic-facts
+        --repo "$repo" --facts
 }
 
 if [[ -n "$evidence_fd" ]]; then
@@ -608,10 +621,23 @@ else
         || gate_finish 12 invalid-envelope
 fi
 
-claimed_count="$(scope_check)" || gate_finish 10 scope-violation
+parse_scope_record() {
+    local pattern='^([0-9]{1,4}) (completed|partial|blocked|failed) (true|false) ([0-9]{1,4}) ([0-9]{1,4})$'
+    [[ "$1" =~ $pattern ]] || return 1
+    scope_claimed_count="${BASH_REMATCH[1]}"
+    scope_status="${BASH_REMATCH[2]}"
+    scope_requires_human="${BASH_REMATCH[3]}"
+    scope_command_count="${BASH_REMATCH[4]}"
+    scope_test_count="${BASH_REMATCH[5]}"
+}
 
-status="$(gate_python -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$envelope")"
-requires_human="$(gate_python -c 'import json,sys; print("true" if json.load(open(sys.argv[1]))["requires_human"] else "false")' "$envelope")"
+first_scope_record="$(scope_check)" || gate_finish 10 scope-violation
+parse_scope_record "$first_scope_record" || gate_finish 10 scope-violation
+claimed_count="$scope_claimed_count"
+status="$scope_status"
+requires_human="$scope_requires_human"
+command_count="$scope_command_count"
+test_count="$scope_test_count"
 
 # Escalation is a valid worker outcome, but never accepted work. Scope has already
 # been checked so status cannot hide edits.
@@ -627,8 +653,6 @@ fi
 
 # Never execute commands supplied by the untrusted envelope. Workers are instructed
 # to leave this list empty; a non-empty list is a contract violation, not evidence.
-command_count="$(gate_python -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["commands_run"]))' "$envelope")"
-test_count="$(gate_python -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["tests_run"]))' "$envelope")"
 if [[ "$command_count" != "0" || "$test_count" != "0" ]]; then
     echo "qa-gate: UNTRUSTED COMMAND CLAIM - commands_run and tests_run must be empty; nothing from the envelope was executed" >&2
     gate_finish 11 untrusted-worker-claim
@@ -639,8 +663,9 @@ if (( ${#verify_specs[@]} == 0 )); then
     exit 64
 fi
 
-before_snapshot="$(snapshot_repo)" || gate_finish 14 driver-verification-failed
-before_diagnostic_facts="$(snapshot_diagnostic_facts)" || before_diagnostic_facts=""
+before_bundle="$(snapshot_repo_with_facts)" || gate_finish 14 driver-verification-failed
+before_snapshot="${before_bundle%%$'\n'*}"
+before_diagnostic_facts="${before_bundle#*$'\n'}"
 failed_verifier=""
 for (( i=0; i<${#verify_specs[@]}; i++ )); do
     verifier_mode="${verify_modes[$i]}"
@@ -705,7 +730,9 @@ if [[ -n "$failed_verifier" ]]; then
 fi
 
 # Re-check path policy after verification as defense in depth.
-scope_check >/dev/null || gate_finish 10 scope-violation
+final_scope_record="$(scope_check)" || gate_finish 10 scope-violation
+parse_scope_record "$final_scope_record" || gate_finish 10 scope-violation
+[[ "$final_scope_record" == "$first_scope_record" ]] || gate_finish 10 scope-violation
 
 echo "qa-gate: ACCEPTED" >&2
 gate_finish 0 gate-passed

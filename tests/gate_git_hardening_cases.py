@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -297,6 +298,164 @@ assert candidate_state_digest(repo, base) == candidate_state_digest(repo, base, 
                                  str(scripts), str(self.repo), self.base],
                                 env=self.environment, capture_output=True, text=True)
         self.assert_code(0, result)
+
+    def test_digest_checks_effective_filters_once_per_invocation(self):
+        scripts = ROOT / "skills/agy-worker/runtime/scripts"
+        command = """
+import subprocess
+import sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+from candidate_state import CandidateStateError, _git, candidate_state_digest
+repo, base = Path(sys.argv[2]), sys.argv[3]
+actual_run = subprocess.run
+filter_checks = []
+def counted_run(command, *args, **kwargs):
+    if "config" in command and "--includes" in command:
+        filter_checks.append(command)
+    return actual_run(command, *args, **kwargs)
+with patch("subprocess.run", side_effect=counted_run):
+    candidate_state_digest(repo, base)
+    assert len(filter_checks) == 1, len(filter_checks)
+    _git(repo, "rev-parse", "--is-inside-work-tree")
+    _git(repo, "rev-parse", "--is-inside-work-tree")
+    assert len(filter_checks) == 3, len(filter_checks)
+    actual_run(["/usr/bin/git", "-C", str(repo), "config", "filter.late.required", "false"], check=True)
+    try:
+        candidate_state_digest(repo, base)
+    except CandidateStateError:
+        pass
+    else:
+        raise AssertionError("new digest did not recheck effective filters")
+    assert len(filter_checks) == 4, len(filter_checks)
+"""
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", command,
+                                 str(scripts), str(self.repo), self.base],
+                                env=self.environment, capture_output=True, text=True)
+        self.assert_code(0, result)
+
+    def test_base_preflight_rejects_extra_git_action(self):
+        helper = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
+        result = subprocess.run([
+            sys.executable, "-I", "-S", "-B", str(helper),
+            "--repo", str(self.repo), "--base", self.base,
+            "--verify-base", "--git", "rev-parse", "HEAD",
+        ], env=self.environment, capture_output=True, text=True)
+        self.assert_code(64, result)
+
+    def test_verifier_chmod_names_tracked_mode_change(self):
+        result = self.gate(verifier=[sys.executable, "-I", "-S", "-B", "-c",
+                                     "import os,sys; os.chmod(sys.argv[1], 0o755)",
+                                     str(self.repo / "tracked.txt")])
+        self.assert_code(14, result)
+        self.assertIn('"tracked.txt" (mode changed 0644 to 0755)', result.stderr)
+
+    def test_verifier_content_change_names_tracked_path(self):
+        (self.repo / "tracked.txt").write_text("before verifier\n")
+        result = self.gate((("tracked.txt", "modified"),), verifier=[
+            sys.executable, "-I", "-S", "-B", "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('after verifier\\n')",
+            str(self.repo / "tracked.txt"),
+        ])
+        self.assert_code(14, result)
+        self.assertIn('"tracked.txt" (content or Git index changed)', result.stderr)
+
+    def test_verifier_same_payload_kind_change_names_tracked_path(self):
+        tracked = self.repo / "tracked.txt"
+        tracked.chmod(0o755)
+        self.commit()
+        script = ("import os,sys; p=sys.argv[1]; "
+                  "os.unlink(p); os.symlink('original\\n', p)")
+        result = self.gate(verifier=[sys.executable, "-I", "-S", "-B", "-c",
+                                     script, str(tracked)])
+        self.assert_code(14, result)
+        self.assertIn('"tracked.txt" (kind changed)', result.stderr)
+
+    def test_diagnostic_walk_does_not_follow_symlink_or_enter_git(self):
+        outside = self.directory / "outside"
+        outside.mkdir()
+        (outside / "private.txt").write_text("private content\n")
+        (self.repo / "linked").symlink_to(outside, target_is_directory=True)
+        helper = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", str(helper),
+                                 "--repo", str(self.repo), "--facts"],
+                                env=self.environment, capture_output=True, text=True)
+        self.assert_code(0, result)
+        facts = json.loads(result.stdout)
+        self.assertTrue(facts["complete"])
+        self.assertIn("linked", [item[0] for item in facts["items"]])
+        self.assertFalse(any(item[0].startswith(".git/") for item in facts["items"]))
+        self.assertNotIn("private.txt", result.stdout)
+        self.assertNotIn("private content", result.stdout)
+
+    def test_bundled_facts_preserve_canonical_digest(self):
+        helper = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
+        command = [sys.executable, "-I", "-S", "-B", str(helper),
+                   "--repo", str(self.repo), "--base", self.base]
+        digest = subprocess.run(command, env=self.environment, capture_output=True,
+                                text=True, check=True).stdout.strip()
+        bundled = subprocess.run([*command, "--digest-facts"], env=self.environment,
+                                 capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertEqual(bundled[0], digest)
+        self.assertTrue(json.loads(bundled[1])["complete"])
+
+    def test_diagnostic_mode_and_payload_are_unambiguous(self):
+        # Without the separator, mode 44 + b"4x" and mode 444 + b"x" collide.
+        helper = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", str(helper),
+                                 "--repo", str(self.repo), "--facts"],
+                                env=self.environment, capture_output=True, text=True)
+        self.assert_code(0, result)
+        fact = next(item for item in json.loads(result.stdout)["items"]
+                    if item[0] == "tracked.txt")
+        expected = hashlib.sha256(str(fact[2]).encode("ascii") + b"\0"
+                                  + b"original\n" + b"file").hexdigest()
+        self.assertEqual(fact[3], expected)
+
+    def test_diagnostic_content_limit_is_incomplete(self):
+        (self.repo / "large.dat").write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+        helper = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", str(helper),
+                                 "--repo", str(self.repo), "--facts"],
+                                env=self.environment, capture_output=True, text=True)
+        self.assert_code(0, result)
+        self.assertEqual(json.loads(result.stdout), {"complete": False, "items": []})
+
+    def test_diagnostic_path_limit_uses_generic_mutation_message(self):
+        script = ("from pathlib import Path; import sys; "
+                  "root=Path(sys.argv[1]); "
+                  "[(root / f'bulk-{i:03d}').write_text('x') for i in range(65)]")
+        result = self.gate(verifier=[sys.executable, "-I", "-S", "-B", "-c",
+                                     script, str(self.repo)])
+        self.assert_code(14, result)
+        self.assertIn("path diagnostics incomplete", result.stderr)
+        self.assertNotIn("new path", result.stderr)
+
+    def test_direct_envelope_control_drift_after_verification_is_rejected(self):
+        if options.mode != "direct":
+            self.skipTest("receipt mode uses an immutable envelope snapshot")
+        envelope = self.directory / "envelope.json"
+        script = ("import json,sys; from pathlib import Path; "
+                  "p=Path(sys.argv[1]); value=json.loads(p.read_text()); "
+                  "value['status']='blocked'; p.write_text(json.dumps(value))")
+        result = self.gate(verifier=[sys.executable, "-I", "-S", "-B", "-c",
+                                     script, str(envelope)])
+        self.assert_code(10, result)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_direct_envelope_type_drift_fails_without_traceback(self):
+        if options.mode != "direct":
+            self.skipTest("receipt mode uses an immutable envelope snapshot")
+        envelope = self.directory / "envelope.json"
+        script = ("import json,sys; from pathlib import Path; "
+                  "p=Path(sys.argv[1]); value=json.loads(p.read_text()); "
+                  "value['requires_human']='yes'; p.write_text(json.dumps(value))")
+        result = self.gate(verifier=[sys.executable, "-I", "-S", "-B", "-c",
+                                     script, str(envelope)])
+        self.assert_code(10, result)
+        self.assertIn("cannot establish scope", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

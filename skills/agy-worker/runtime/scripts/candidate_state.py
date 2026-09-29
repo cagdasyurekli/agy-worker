@@ -12,6 +12,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from typing import Callable
 
 sys.dont_write_bytecode = True
@@ -29,10 +30,10 @@ class CandidateStateError(ValueError):
 GitReader = Callable[[Path, str], bytes]
 
 
-def _git(repo: Path, *arguments: str) -> bytes:
+def _checked_git_reader(repo: Path) -> Callable[..., bytes]:
     # Caller Git variables can redirect even `git -C`; local configuration can
-    # execute helpers or make a dirty worktree appear clean. Recheck filters on
-    # every read, including the snapshots surrounding driver verification.
+    # execute helpers or make a dirty worktree appear clean. A reader belongs
+    # to one invocation only; never carry it across driver verification.
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith("GIT_")}
     environment.update({
@@ -78,12 +79,22 @@ def _git(repo: Path, *arguments: str) -> bytes:
         )
     if filters.returncode != 1:
         raise CandidateStateError("cannot inspect repository content-filter configuration")
-    if arguments and arguments[0] == "diff":
-        arguments = ("diff", "--no-ext-diff", "--no-textconv", *arguments[1:])
-    completed = run(arguments)
-    if completed.returncode != 0:
-        raise CandidateStateError("git candidate-state probe failed")
-    return completed.stdout
+    def read(_repo: Path, *arguments: str) -> bytes:
+        if _repo != repo:
+            raise CandidateStateError("git reader repository mismatch")
+        if arguments and arguments[0] == "diff":
+            arguments = ("diff", "--no-ext-diff", "--no-textconv", *arguments[1:])
+        completed = run(arguments)
+        if completed.returncode != 0:
+            raise CandidateStateError("git candidate-state probe failed")
+        return completed.stdout
+
+    return read
+
+
+def _git(repo: Path, *arguments: str) -> bytes:
+    # Standalone reads retain their own effective-filter check.
+    return _checked_git_reader(repo)(repo, *arguments)
 
 
 def _read_git(
@@ -150,6 +161,8 @@ def candidate_state_digest(
     validate: bool = True,
     git_reader: Callable[..., bytes] | None = None,
 ) -> str:
+    if git_reader is None:
+        git_reader = _checked_git_reader(repo)
     if validate:
         repo, base = validate_repository(repo, base, git_reader=git_reader)
     digest = hashlib.sha256()
@@ -217,16 +230,108 @@ def candidate_state_digest(
     return digest.hexdigest()
 
 
+def _diagnostic_facts(repo: Path) -> dict[str, object]:
+    """Collect bounded no-follow clues; incomplete scans give generic diagnostics."""
+    items: list[list[object]] = []
+    path_bytes = 0
+    content_bytes = 0
+    # The wall-clock cap protects diagnostics on slow filesystems; allow normal
+    # scheduler delays so a small safe tree still gets useful path detail.
+    deadline = time.monotonic() + 0.5
+    try:
+        root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return {"complete": False, "items": []}
+
+    def binding(info: os.stat_result) -> tuple[int, ...]:
+        # Reads may advance atime; it is not evidence of a path replacement.
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
+                info.st_ctime_ns)
+
+    def scan(directory_fd: int, prefix: bytes) -> bool:
+        nonlocal path_bytes, content_bytes
+        with os.scandir(directory_fd) as entries:
+            for entry in entries:
+                name = os.fsencode(entry.name)
+                if not prefix and name == b".git":
+                    continue
+                path = prefix + name
+                if (time.monotonic() > deadline or len(items) >= 64
+                        or path_bytes + len(path) > 8192):
+                    return False
+                path_bytes += len(path)
+                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                mode = stat.S_IMODE(metadata.st_mode)
+                fingerprint = hashlib.sha256(str(mode).encode("ascii") + b"\0")
+                if stat.S_ISDIR(metadata.st_mode):
+                    kind = "dir"
+                elif stat.S_ISLNK(metadata.st_mode):
+                    kind = "symlink"
+                    fingerprint.update(os.readlink(name, dir_fd=directory_fd))
+                elif stat.S_ISREG(metadata.st_mode):
+                    kind = "file"
+                    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW,
+                                         dir_fd=directory_fd)
+                    try:
+                        if binding(os.fstat(descriptor)) != binding(metadata):
+                            return False
+                        while chunk := os.read(descriptor, 1024 * 1024):
+                            content_bytes += len(chunk)
+                            if content_bytes > 8 * 1024 * 1024 or time.monotonic() > deadline:
+                                return False
+                            fingerprint.update(chunk)
+                        if (binding(os.fstat(descriptor)) != binding(metadata)
+                                or binding(os.stat(name, dir_fd=directory_fd,
+                                                    follow_symlinks=False)) != binding(metadata)):
+                            return False
+                    finally:
+                        os.close(descriptor)
+                else:
+                    kind = "special"
+                fingerprint.update(kind.encode("ascii"))
+                items.append([os.fsdecode(path), kind, mode, fingerprint.hexdigest()])
+                if kind == "dir":
+                    child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=directory_fd)
+                    try:
+                        if (binding(os.fstat(child_fd)) != binding(metadata)
+                                or not scan(child_fd, path + b"/")):
+                            return False
+                    finally:
+                        os.close(child_fd)
+                    if (binding(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+                            != binding(metadata)):
+                        return False
+        return True
+
+    try:
+        original = os.fstat(root_fd)
+        complete = scan(root_fd, b"") and binding(os.fstat(root_fd)) == binding(original)
+    except (OSError, UnicodeError, RecursionError):
+        complete = False
+    finally:
+        os.close(root_fd)
+    if not complete:
+        return {"complete": False, "items": []}
+    items.sort(key=lambda item: str(item[0]))
+    return {"complete": True, "items": items}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="candidate_state.py", add_help=False)
     parser.add_argument("--repo", action="append")
     parser.add_argument("--base", action="append")
     parser.add_argument("--git", nargs=argparse.REMAINDER)
+    parser.add_argument("--verify-base", action="store_true")
+    parser.add_argument("--digest-facts", action="store_true")
+    parser.add_argument("--facts", action="store_true")
     parser.add_argument("--diagnostic-facts", action="store_true")
     parser.add_argument("--compare-diagnostics", nargs=2)
     parsed = parser.parse_args(argv)
     if parsed.compare_diagnostics is not None:
-        if parsed.repo or parsed.base or parsed.git is not None or parsed.diagnostic_facts:
+        if (parsed.repo or parsed.base or parsed.git is not None or parsed.diagnostic_facts
+                or parsed.verify_base or parsed.digest_facts or parsed.facts):
             return 64
         if any(len(raw) > 65536 for raw in parsed.compare_diagnostics):
             return 64
@@ -242,7 +347,8 @@ def main(argv: list[str] | None = None) -> int:
             return 64
         return 0
     if parsed.diagnostic_facts:
-        if not parsed.repo or len(parsed.repo) != 1 or parsed.base or parsed.git is not None:
+        if (not parsed.repo or len(parsed.repo) != 1 or parsed.base or parsed.git is not None
+                or parsed.verify_base or parsed.digest_facts or parsed.facts):
             return 64
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -257,8 +363,27 @@ def main(argv: list[str] | None = None) -> int:
         except (ImportError, ValueError):
             return 1
         return 0
+    if parsed.verify_base:
+        if (not parsed.repo or len(parsed.repo) != 1 or not parsed.base
+                or len(parsed.base) != 1 or parsed.git is not None
+                or parsed.digest_facts or parsed.facts):
+            return 64
+        try:
+            repo = Path(parsed.repo[0])
+            reader = _checked_git_reader(repo)
+            if reader(repo, "rev-parse", "--is-inside-work-tree") != b"true\n":
+                raise CandidateStateError("cannot establish trusted Git worktree")
+            resolved = reader(repo, "rev-parse", "--verify", f"{parsed.base[0]}^{{commit}}")
+            if resolved != (parsed.base[0] + "\n").encode("ascii"):
+                raise CandidateStateError("base did not resolve to the exact supplied commit")
+        except CandidateStateError as exc:
+            print(f"candidate-state: {exc}", file=sys.stderr)
+            return 1
+        print(parsed.base[0])
+        return 0
     if parsed.git is not None:
-        if not parsed.repo or len(parsed.repo) != 1 or not parsed.git or parsed.base:
+        if (not parsed.repo or len(parsed.repo) != 1 or not parsed.git or parsed.base
+                or parsed.digest_facts or parsed.facts):
             return 64
         try:
             sys.stdout.buffer.write(_git(Path(parsed.repo[0]), *parsed.git))
@@ -266,10 +391,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"candidate-state: {exc}", file=sys.stderr)
             return 1
         return 0
+    if parsed.facts:
+        if not parsed.repo or len(parsed.repo) != 1 or parsed.base or parsed.digest_facts:
+            return 64
+        repo = Path(parsed.repo[0])
+        print(json.dumps(_diagnostic_facts(repo),
+                         ensure_ascii=True, separators=(",", ":")))
+        return 0
     if not parsed.repo or len(parsed.repo) != 1 or not parsed.base or len(parsed.base) != 1:
         return 64
     try:
-        print(candidate_state_digest(Path(parsed.repo[0]), parsed.base[0]))
+        repo = Path(parsed.repo[0])
+        digest_reader = _checked_git_reader(repo) if parsed.digest_facts else None
+        digest = candidate_state_digest(repo, parsed.base[0], git_reader=digest_reader)
+        print(digest)
+        if parsed.digest_facts:
+            assert digest_reader is not None
+            print(json.dumps(_diagnostic_facts(repo), ensure_ascii=True,
+                             separators=(",", ":")))
     except CandidateStateError as exc:
         print(f"candidate-state: {exc}", file=sys.stderr)
         return 1
