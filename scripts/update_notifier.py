@@ -43,51 +43,36 @@ SOURCE_FILES = (
     "scripts/update_notifier.py",
     "scripts/update_notifier_child.py",
     "update.sh",
-    "scripts/compatibility.py",
-    "skills/agy-worker/runtime/scripts/compatibility.py",
     "scripts/compatibility_probe.py",
     "scripts/official_github.py",
-    "scripts/official_distribution.py",
-    "compat/agy-distribution-manifest.json",
-    "compat/agy-last-reviewed.txt",
-    "compat/agy-model-effort-matrix.json",
-    "compat/agy-model-effort-matrix.sha256",
-    "compat/agy-models-inventory-binding.json",
-    "compat/agy-models-inventory-binding.sha256",
-    "compat/agy-upstream-head.txt",
-    "compat/agy-verified-version.txt",
-    "compat/codex-last-reviewed.txt",
-    "compat/codex-upstream-head.txt",
-    "compat/codex-verified-version.txt",
-    "compat/model-effort-matrix.schema.json",
-)
-# This is the only historical notifier contract that refresh may authenticate.
-# Keep it literal: accepting a subset/superset would turn an untrusted private
-# ledger into an authority to remove files.
-LEGACY_V08_SOURCE_FILES = (
-    "update-notifier.sh",
-    "scripts/update_notifier.py",
-    "scripts/update_notifier_child.py",
-    "update.sh",
-    "scripts/compatibility.py",
-    "skills/agy-worker/runtime/scripts/compatibility.py",
-    "scripts/compatibility_probe.py",
-    "scripts/official_github.py",
-    "scripts/official_distribution.py",
-    "compat/agy-distribution-manifest.json",
-    "compat/agy-last-reviewed.txt",
-    "compat/agy-model-effort-matrix.json",
-    "compat/agy-upstream-head.txt",
-    "compat/agy-verified-version.txt",
-    "compat/codex-last-reviewed.txt",
-    "compat/codex-upstream-head.txt",
-    "compat/codex-verified-version.txt",
-    "compat/model-effort-matrix.schema.json",
 )
 
 
 class NotifierError(RuntimeError):
     pass
+
+
+class RetiredFormatError(NotifierError):
+    """An old installation has no lifecycle authority in this release."""
+
+
+def reject_retired_format(paths: Layout) -> None:
+    """Read only: reject unsupported records before creating any lifecycle state."""
+    _safe_components(paths.home, paths.ledger, allow_missing=True)
+    if not paths.ledger.exists():
+        return
+    value = _load_json(paths.ledger, MAX_LEDGER)
+    _validate_ledger_shape(value)
+
+
+def _reject_retired_shape(value: dict[str, object]) -> None:
+    manifest = value.get("manifest")
+    if isinstance(manifest, dict) and set(manifest) != set(SOURCE_FILES):
+        raise RetiredFormatError(
+            "retired notifier format; use the creating release at its authenticated "
+            "source location to uninstall; confirm launchd is unloaded, archive the inert "
+            "private recovery directory, then explicitly install this release"
+        )
 
 
 class Interrupted(BaseException):
@@ -430,8 +415,9 @@ def _plist(paths: Layout) -> bytes:
 
 
 def _validate_ledger_shape(
-    value: dict[str, object], source_files: tuple[str, ...] = SOURCE_FILES
+    value: dict[str, object]
 ) -> dict[str, object]:
+    _reject_retired_shape(value)
     expected = {"schema", "label", "uid", "source", "git_dir", "manifest", "plist_sha256", "shim_sha256", "secret", "phase"}
     if (
         set(value) != expected
@@ -450,7 +436,7 @@ def _validate_ledger_shape(
         or not isinstance(value.get("git_dir"), str)
         or not Path(str(value["git_dir"])).is_absolute()
         or not isinstance(manifest, dict)
-        or set(manifest) != set(source_files)
+        or set(manifest) != set(SOURCE_FILES)
         or any(not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in manifest.values())
         or not isinstance(value.get("plist_sha256"), str)
         or re.fullmatch(r"[0-9a-f]{64}", str(value["plist_sha256"])) is None
@@ -481,18 +467,6 @@ def _validate_ledger_binding(value: dict[str, object], paths: Layout) -> dict[st
     return value
 
 
-def _validate_legacy_v08_ledger_binding(
-    value: dict[str, object], paths: Layout
-) -> dict[str, object]:
-    """Authenticate exactly the v0.8 ledger, only for an explicit refresh."""
-    _validate_ledger_shape(value, LEGACY_V08_SOURCE_FILES)
-    if value.get("uid") != os.getuid() or value.get("source") != str(paths.source):
-        raise NotifierError("installed state does not bind this account and source")
-    if value.get("git_dir") != str(resolve_git_dir(paths.source)):
-        raise NotifierError("installed state does not bind this Git authority")
-    return value
-
-
 def _live_source_state(ledger: dict[str, object], paths: Layout) -> str:
     """Classify only a safe, complete live-source digest mismatch as maintenance."""
     state, _current = _live_source_manifest_state(ledger, paths)
@@ -516,10 +490,10 @@ def _validate_plist(paths: Layout, ledger: dict[str, object]) -> bool:
 
 
 def _validate_installed_sources(
-    paths: Layout, ledger: dict[str, object], source_files: tuple[str, ...] = SOURCE_FILES
+    paths: Layout, ledger: dict[str, object]
 ) -> None:
     manifest = ledger.get("manifest")
-    if not isinstance(manifest, dict) or set(manifest) != set(source_files):
+    if not isinstance(manifest, dict) or set(manifest) != set(SOURCE_FILES):
         raise NotifierError("installed behavior manifest is malformed")
     for relative, digest in manifest.items():
         if not isinstance(relative, str) or not isinstance(digest, str):
@@ -532,19 +506,15 @@ def _validate_installed_sources(
 
 
 def install(paths: Layout) -> None:
+    reject_retired_format(paths)
     with lifecycle_lock(paths):
         _install_locked(paths)
 
 
-def _install_locked(paths: Layout, *, from_legacy_completed_uninstall: bool = False) -> None:
-    legacy_secret: Optional[str] = None
-    legacy_tombstone_retained = False
+def _install_locked(paths: Layout) -> None:
     if paths.ledger.exists():
         ledger = _load_json(paths.ledger, MAX_LEDGER)
-        if from_legacy_completed_uninstall:
-            _validate_legacy_v08_ledger_binding(ledger, paths)
-        else:
-            _validate_ledger_shape(ledger)
+        _validate_ledger_shape(ledger)
         state = loaded_state(os.getuid())
         if ledger.get("phase") == "uninstalled":
             if ledger.get("source") != str(paths.source) or ledger.get("git_dir") != str(resolve_git_dir(paths.source)):
@@ -555,16 +525,8 @@ def _install_locked(paths: Layout, *, from_legacy_completed_uninstall: bool = Fa
             _validate_tombstone(tombstone, ledger)
             if tombstone.get("phase") != "completed":
                 raise NotifierError("prior uninstall recovery is incomplete")
-            if from_legacy_completed_uninstall:
-                # Write the fresh current authority before retiring this
-                # authenticated historical tombstone.  Retaining its secret in
-                # the first current record keeps a crash in that small interval
-                # recoverable without treating legacy data as current schema.
-                legacy_secret = str(ledger["secret"])
-                legacy_tombstone_retained = True
-            else:
-                os.unlink(paths.tombstone)
-                _fsync_dir(paths.state)
+            os.unlink(paths.tombstone)
+            _fsync_dir(paths.state)
         else:
             _validate_ledger(ledger, paths)
         if ledger.get("phase") != "uninstalled" and state == "loaded" and _validate_plist(paths, ledger):
@@ -575,8 +537,6 @@ def _install_locked(paths: Layout, *, from_legacy_completed_uninstall: bool = Fa
             raise NotifierError("launchd state is loaded or unknown; retained installed state")
         if ledger.get("phase") != "uninstalled":
             raise NotifierError("an incomplete notifier installation requires uninstall")
-    elif from_legacy_completed_uninstall:
-        raise NotifierError("prior legacy uninstall authority is unavailable")
     manifest = source_manifest(paths.source)
     plist_payload = _plist(paths)
     launcher_payload = (paths.source / "scripts/update_notifier_child.py").read_bytes()
@@ -590,15 +550,12 @@ def _install_locked(paths: Layout, *, from_legacy_completed_uninstall: bool = Fa
         "manifest": manifest,
         "plist_sha256": hashlib.sha256(plist_payload).hexdigest(),
         "shim_sha256": shim_digest,
-        "secret": legacy_secret if legacy_secret is not None else secrets.token_hex(32),
+        "secret": secrets.token_hex(32),
         "phase": "preparing",
     }
     # Ledger authority exists before the first installed-source write, making
     # every later install failure removable through authenticated uninstall.
     _atomic_write(paths.ledger, _canonical_json(ledger))
-    if legacy_tombstone_retained:
-        os.unlink(paths.tombstone)
-        _fsync_dir(paths.state)
     if _copy_snapshot(paths, manifest) != shim_digest:
         raise NotifierError("installed shim binding changed during installation")
     _mkdir_private(paths.plist.parent, paths.home)
@@ -627,6 +584,7 @@ def _install_locked(paths: Layout, *, from_legacy_completed_uninstall: bool = Fa
 
 
 def status(paths: Layout) -> None:
+    reject_retired_format(paths)
     with lifecycle_lock(paths):
         if not paths.ledger.exists():
             print("update notifier: not installed")
@@ -649,6 +607,8 @@ def status(paths: Layout) -> None:
                 raise NotifierError("installed plist drifted")
             _validate_installed_sources(paths, ledger)
             source = _live_source_state(ledger, paths)
+        except RetiredFormatError:
+            raise
         except (NotifierError, OSError):
             source = "drifted-or-invalid"
         print(f"update notifier: {loaded_state(os.getuid())}; source {source}")
@@ -696,28 +656,17 @@ def _unlink_if_exact(path: Path, digest: str, replacements: list[str], label: st
 
 
 def uninstall(paths: Layout) -> None:
+    reject_retired_format(paths)
     with lifecycle_lock(paths):
         _uninstall_locked(paths)
 
 
 def _uninstall_locked(paths: Layout) -> None:
-    """Public uninstall remains strict to the current closed contract."""
-    _uninstall_with_contract(paths, SOURCE_FILES)
-
-
-def _uninstall_legacy_refresh_locked(paths: Layout) -> None:
-    """Internal v0.8 removal is reachable only from explicit refresh."""
-    _uninstall_with_contract(paths, LEGACY_V08_SOURCE_FILES)
-
-
-def _uninstall_with_contract(
-    paths: Layout, source_files: tuple[str, ...] = SOURCE_FILES
-) -> None:
     if not paths.ledger.exists():
         print("update notifier: not installed")
         return
     ledger = _load_json(paths.ledger, MAX_LEDGER)
-    _validate_ledger_shape(ledger, source_files)
+    _validate_ledger_shape(ledger)
     replacements: list[str] = []
     phase = "started"
     if paths.tombstone.exists():
@@ -746,7 +695,7 @@ def _uninstall_with_contract(
         _atomic_write(paths.tombstone, _canonical_json(_tombstone_payload(ledger, phase, replacements)))
     if phase == "plist-processed":
         manifest = ledger.get("manifest")
-        if not isinstance(manifest, dict) or set(manifest) != set(source_files):
+        if not isinstance(manifest, dict) or set(manifest) != set(SOURCE_FILES):
             raise NotifierError("installed state is malformed")
         for relative, digest in manifest.items():
             if isinstance(relative, str) and isinstance(digest, str):
@@ -771,37 +720,9 @@ def _uninstall_with_contract(
         print("update notifier: uninstalled")
 
 
-def _refresh_contract(
-    ledger: dict[str, object], paths: Layout
-) -> tuple[tuple[str, ...], bool]:
-    """Return the single allowed refresh contract after binding its authority."""
-    try:
-        _validate_ledger_binding(ledger, paths)
-        return SOURCE_FILES, False
-    except NotifierError:
-        _validate_legacy_v08_ledger_binding(ledger, paths)
-        return LEGACY_V08_SOURCE_FILES, True
-
-
-def _validate_refresh_preflight(ledger: dict[str, object], paths: Layout) -> None:
-    """Validate legacy recovery authority without rejecting preserved targets.
-
-    A fresh uninstall must hash-compare each target itself so a replacement is
-    recorded in its authenticated tombstone.  On a resumed uninstall, the
-    tombstone phase is the durable authority for which targets can be absent.
-    """
-    if not paths.tombstone.exists():
-        if ledger.get("phase") == "uninstalled":
-            raise NotifierError("prior uninstall recovery is incomplete")
-        return
-    tombstone = _load_json(paths.tombstone, MAX_LEDGER)
-    _validate_tombstone(tombstone, ledger)
-    if ledger.get("phase") == "uninstalled" and tombstone.get("phase") != "completed":
-        raise NotifierError("prior uninstall recovery is incomplete")
-
-
 def refresh(paths: Layout) -> None:
     """Explicitly replace a bound installation from the current reviewed source."""
+    reject_retired_format(paths)
     with lifecycle_lock(paths):
         if not paths.ledger.exists():
             raise NotifierError("notifier is not installed; use install")
@@ -809,17 +730,8 @@ def refresh(paths: Layout) -> None:
         # A digest mismatch is expected here, but every current source component
         # must still pass the normal ownership, mode, size, and no-symlink checks.
         source_manifest(paths.source)
-        _source_files, legacy = _refresh_contract(prior, paths)
-        # Current refresh keeps its established resumable recovery behavior.
-        # The historical contract uses only its bound ledger and authenticated
-        # tombstone before delegated deletion begins.  The deletion machinery
-        # itself detects and preserves replacements.
-        if legacy:
-            _validate_refresh_preflight(prior, paths)
-        if legacy and prior.get("phase") != "uninstalled":
-            _uninstall_legacy_refresh_locked(paths)
-        elif not legacy:
-            _uninstall_locked(paths)
+        _validate_ledger_binding(prior, paths)
+        _uninstall_locked(paths)
         retained = _load_json(paths.tombstone, MAX_LEDGER)
         _validate_tombstone(retained, prior)
         replacements = retained.get("replacements")
@@ -827,10 +739,7 @@ def refresh(paths: Layout) -> None:
             raise NotifierError(
                 "refresh stopped after uninstall; preserved replacement files require review"
             )
-        if legacy:
-            _install_locked(paths, from_legacy_completed_uninstall=True)
-        else:
-            _install_locked(paths)
+        _install_locked(paths)
         print("update notifier: refreshed from current source")
 
 
@@ -972,7 +881,7 @@ def _run_child(paths: Layout) -> tuple[int, bytes, bytes]:
             or any(value not in b"SA" for value in acknowledgements)
         ):
             raise NotifierError("interrupted child lacked nested cleanup acknowledgement") from exc
-        raise interrupted
+        raise interrupted  # noqa: B904 -- preserve existing exception context and public diagnostics
     finally:
         for descriptor in (sentinel_read, sentinel_write, ack_read, ack_write):
             if descriptor >= 0:
@@ -986,6 +895,7 @@ def _run_child(paths: Layout) -> tuple[int, bytes, bytes]:
 
 
 def run(paths: Layout) -> None:
+    reject_retired_format(paths)
     with lifecycle_lock(paths):
         ledger = _validate_ledger_binding(_load_json(paths.ledger, MAX_LEDGER), paths)
         if ledger.get("phase") != "loaded" or loaded_state(os.getuid()) != "loaded":
@@ -1043,7 +953,7 @@ def _run_notification(paths: Layout, status_name: str) -> int:
     messages = {
         "drift-review": (
             "codex-agy-worker update review",
-            "Update or compatibility drift changed; run update.sh check.",
+            "A different official project release is available; run update.sh check.",
         ),
         "maintenance-required": (
             "codex-agy-worker notifier maintenance",

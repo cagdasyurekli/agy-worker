@@ -1,7 +1,7 @@
 # Installation and compatibility
 
 Use this guide when installing `agy-worker`, checking its local prerequisites, or
-diagnosing a compatibility or Codex sandbox failure. The GitHub repository is the
+diagnosing a compatibility or host sandbox failure. The GitHub repository is the
 source of truth: review the exact commit or reviewed release tag before installing.
 Installation enables the local skill only. It does **not** authorize a provider call
 or transmission of repository content through `agy` to Google/Gemini.
@@ -9,7 +9,7 @@ or transmission of repository content through `agy` to Google/Gemini.
 ## Prerequisites
 
 The maintained entrypoints require a POSIX-compatible environment with Bash, Python
-3, git with worktree support, Codex CLI, and `agy` (Antigravity CLI) on `PATH`.
+3, git with worktree support, Codex CLI or Claude Code, and `agy` (Antigravity CLI) on `PATH`.
 Native Windows is untested; WSL or another compatible environment may work on a
 best-effort basis. Some evidence commands use fixed POSIX paths, and the optional
 daily notifier is specifically a macOS LaunchAgent.
@@ -22,24 +22,16 @@ intend to delegate:
 ./doctor.sh --repo /absolute/path/to/target --format json
 ```
 
-The doctor is deterministic and read-only. It checks the bundled runtime, Bash 3.2,
-Python 3, git and worktree support, the target Git worktree, exact semantic
-`agy --version`, and checked-in compatibility records. It invokes no provider,
-network client, updater, dispatch, authentication probe, or personal-config scan,
-and it repairs nothing.
+The doctor is read-only. It checks the bundled runtime, Bash, Python, Git/worktree
+support, the target repository, and the installed AGY interface through bounded local
+version/help probes. It makes no provider call, account inspection, network request,
+update, or repair. Version text is diagnostic only; readiness requires the capabilities
+used by the worker. Doctor reports a bounded readiness category; dispatch names a
+missing capability before provider launch.
 
-| Exit | Overall | Meaning |
-|---:|---|---|
-| `0` | `ready` | All offline prerequisites match the checked-in evidence. |
-| `3` | `review-required` | Prerequisites work, but the agy version drifted or review is due. |
-| `3` | `not-ready` | A prerequisite, repository, bundle, or metadata check failed. |
-| `64` | no report | Invocation or format is invalid. |
-
-`ready` does not certify authentication, provider availability, Codex/agy sandbox
-permission, task quality, or a future dispatch. `review-required` never updates
-metadata and is not a blanket dispatch lock: agy's own default and an explicitly
-approved literal-model pass-through remain separate caller-owned surfaces.
-`not-ready` blocks dispatch.
+`ready` does not certify authentication, provider availability, native containment,
+task quality, or a future dispatch. Fix a `not-ready` prerequisite before dispatch.
+An invalid invocation exits `64`; an unavailable prerequisite exits `3`.
 
 ## Choose an installation path
 
@@ -53,6 +45,46 @@ is created.
 
 After installation, start a new Codex session so the skill is rediscovered.
 
+### Codex plugin identity migration
+
+The new plugin and marketplace identity is `agy-worker`; the repository stays
+`cagdasyurekli/codex-agy-worker`. The old installed identity will not migrate itself.
+Only after the new identity is published and available, run:
+
+```bash
+codex plugin remove codex-agy-worker@codex-agy-worker
+codex plugin marketplace remove codex-agy-worker
+codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin add agy-worker@agy-worker
+```
+
+Then start a new Codex session. These commands are supported by local
+`codex plugin --help` and `codex plugin marketplace --help`; they remove the old
+installation/cache and its marketplace source before installing the new identity.
+Review the selected marketplace source before changing an existing installation.
+
+### Claude Code
+
+Claude Code uses the same skill and runtime; its host path was exercised with
+synthetic live jobs. To review this candidate locally, from its repository root run:
+
+```bash
+claude plugin validate .
+claude plugin marketplace add .
+claude plugin install agy-worker@agy-worker
+```
+
+Start a new session and invoke `/agy-worker:agy-worker`, or describe a repository
+exploration/implementation task that matches the skill description. Once published,
+use the GitHub marketplace commands in the README. See the official
+[plugin installation](https://code.claude.com/docs/en/discover-plugins) and
+[manifest validation](https://code.claude.com/docs/en/plugins-reference) references.
+
+For a standalone skill, run `./install.sh --host claude`, or copy the complete
+`skills/agy-worker/` folder to `~/.claude/skills/agy-worker`. The installer honors
+`CLAUDE_SKILLS_DIR`; its default is `~/.claude/skills`. No host configuration is edited.
+Do not install both forms unless you intend to expose both skill names.
+
 ### GitHub clone
 
 Review the selected source commit, then install the canonical skill bundle:
@@ -63,9 +95,12 @@ cd codex-agy-worker
 ./install.sh
 ```
 
-`install.sh` installs the Codex skill only. It copies the canonical bundle and writes
+`install.sh` defaults to the Codex skill (`--host codex`); `--host claude` selects
+Claude Code. `CODEX_SKILLS_DIR` defaults to `~/.codex/skills`. It copies the canonical bundle and writes
 a local pointer so checkout-only maintenance commands remain available; it does not
-rewrite the public `SKILL.md` or install an additional runtime.
+rewrite the public `SKILL.md` or install an additional runtime. The installer copies
+current bundle files without pruning extra files already present at the destination;
+an updated installation may retain tools from an older bundle.
 
 For a released snapshot, check out the exact reviewed `vMAJOR.MINOR.PATCH` tag from
 the [GitHub Releases page](https://github.com/cagdasyurekli/codex-agy-worker/releases)
@@ -74,8 +109,8 @@ before running `./install.sh`; do not substitute an unverified tag.
 ### Folder-only or third-party copy
 
 `skills/agy-worker/` is the one canonical, self-contained Agent Skill. A folder-only
-copy contains its Bash/Python/git runtime and downloads no code when invoked. Resolve
-the installed runtime as documented in
+copy contains its Bash/Python/git core runtime and downloads no code when invoked.
+Resolve the installed core runtime as documented in
 [`skills/agy-worker/SKILL.md`](../skills/agy-worker/SKILL.md), then run:
 
 ```bash
@@ -92,11 +127,39 @@ DO_NOT_TRACK=1 npx skills add cagdasyurekli/codex-agy-worker \
 `npx` is only an optional installer. The installed skill has no Node runtime
 dependency. Review the copied files before use.
 
+## Claude Code host permissions
+
+If the Claude Code sandbox is enabled, approve only the filesystem/network access
+needed by this job. AGY's existing session needs state writes under `~/.gemini`;
+the controller also needs its exact private state, staging, and disposable-worktree
+paths when they are outside cwd/tmp. Use `sandbox.filesystem.allowWrite` for narrowly
+reviewed paths and `sandbox.network.allowedDomains` for observed hosts. Discover
+additional paths and domains through sandbox violation reports; no fixed AGY domain
+allowlist has been established by offline tests. See the official
+[sandbox guide](https://code.claude.com/docs/en/sandboxing).
+
+Never disable the sandbox for AGY or add an `excludedCommands` exemption. A Bash
+permission prompt is not provider-transmission approval. The same content/SHA,
+execution-mode, model, and budget approvals apply. For background dispatch, process
+lifetime, and status commands, read the packaged
+[Claude Code host operation](../skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#claude-code-host-operation).
+In non-interactive `claude -p` or SDK runs, use a foreground dispatch within the
+host ceiling or keep the turn alive until a background job finishes. Ending the
+headless turn cancels running background work. The synthetic live runs establish the
+exercised host path, not future authentication, provider availability or task quality.
+
+The checkout `update.sh apply` flow remains Codex-only and reinstalls the default
+Codex skill. It does not migrate plugin identities or update a Claude installation;
+review a new checkout and explicitly reinstall with `--host claude` for that host.
+
 ## Codex host permissions
 
 agy starts a local language server and writes account state. New worker jobs use
 the existing AGY session by default; an outer Codex sandbox can still prevent that
 session from working. Run with the host permissions already approved for the task.
+Native containment also needs a host that permits nested Seatbelt. A Codex
+`workspace-write` host denied `sandbox_apply` in a live attempt; keep the requested
+native mode and resolve the host prerequisite instead of falling back to session.
 For CLI sessions that intentionally use `workspace-write`, the following settings
 allow the language-server socket and writes under `~/.gemini`.
 
@@ -125,70 +188,56 @@ also needs network access. Do not use dangerous permission or approval bypass fl
 
 ## Refused actions and report paths
 
-For exact AGY 1.1.27, 1.2.2, and 1.2.11, a valid result containing `denied_actions` stops with
-`permission_required`. A valid candidate remains available for review and
-finalization; the worker does not automatically continue past a permission denial.
-The field's payload shape is not interpreted.
+The response policy is independent of the AGY version. A strictly parsed terminal
+result containing `denied_actions` stops with `permission_required` (exit `6`), even
+when the value is empty or malformed. Its payload is never interpreted as authority.
+A separately validated candidate remains available for driver review and finalization;
+same-conversation resume and continuation are blocked. A future CLI that always emits
+an empty denial list will also stop conservatively.
 
-For observed AGY 1.2.2, 1.2.6, and exact 1.2.7 (with static/offline partial-timeout warning recognition), the reviewed partial-output timeout warning stops provider
-success even when the process exits zero. A valid candidate remains available for
-independent review; an invalid report does not become a candidate. The warning must
-match the job's bound duration. Under exact AGY 1.2.7, live canary qualification confirmed
-native permission refusal (`permission_required` exit 6 with `denied_actions`), controller
-hard-deadline timeout (`hard_deadline_exceeded` exit 16 at 8 seconds with no candidate or
-resume authority; terminal ERROR exit 1 with no `AGY_ERROR` or provider print-timeout warning),
-and 44-stage offline CI; explicitly no live 1.2.7 warning sample or exit-3 sample was observed.
-AGY 1.2.11 is the current local compatibility binding, supported by the
-[bounded activation evidence](../compat/reviews/agy-1.2.11-activation.md). Its live
-qualification covers a session edit and planned same-conversation refinement.
-Native, Boost/API-key, and effective accept-edits semantics remain unqualified
-for 1.2.11; earlier native results apply only to their recorded versions.
+Without a valid structured report, denial metadata creates no candidate. Invalid JSON,
+framing, or schema never becomes a successful result. An exact partial-output timeout
+warning must match the job's bound duration; it stops provider success while preserving
+a valid candidate. A nonzero provider exit with an otherwise valid `SUCCESS` report
+also remains a failure, with the candidate available for review.
+
+Binding, cancellation, and output-limit failures retain their safety precedence.
+When a valid terminal denial coincides with a hard deadline, `permission_required`
+remains the stopping reason while the elapsed time and limit kind retain the deadline
+facts. A deadline without denial remains `hard_deadline_exceeded`. None of these
+outcomes authorizes automatic retries or changes the driver's verification duty.
 
 File tools use absolute workspace paths. Final `files_changed` reports should use
 workspace-relative paths. Scoped reconciliation also accepts canonical absolute
 paths beneath that attempt's exact staged root, subject to the same observed
 mutation and scope checks; paths elsewhere remain invalid.
 
-## Version drift and direct model selection
+## AGY capability requirements
 
-The accepted model/effort mapping, exact agy version, and evidence digests live in the
-current [activation record](../compat/reviews/agy-1.2.11-activation.md). AGY 1.2.11 is the
-current local compatibility binding from candidate-bound qualification, not a general
-live-provider guarantee. Historical observations remain history; they do not override the
-current source and checked-in matrix. Codex compatibility evidence is observational and
-grants neither dispatch nor model-selection authority.
+Every provider launch runs a bounded local `agy --version` and `agy --help` probe,
+including default/tier selection and resumed, continued, or restarted jobs. The version
+is diagnostic text; no exact-version registry, model inventory, or help-SHA approval
+gates launch. The controller rechecks the probed executable's identity and contents
+immediately before starting that same executable. Missing, malformed, oversized, or
+timed-out interface output fails closed before provider execution.
 
-Every reviewed direct selection first checks a safe executable with bounded semantic
-`agy --version` and a strict critical `agy --help` structure probe. An exact
-matrix-version match proceeds mechanically after that structural probe. Compatible
-version drift requires Codex's explicit
-`--compatibility-disposition proceed --approve-help-sha SHA256`; a structurally
-incompatible interface blocks reviewed direct selection.
+The base flags are `--add-dir`, `--disable-slash-commands`, `--json-schema`, `--mode`,
+`--model`, `--output-format`, `--print`, and `--print-timeout`. Help must expose `plan`
+and `accept-edits` modes and `stream-json` output. Additional requirements depend on
+the operation: `--sandbox` for native isolation, `--conversation` for resume or
+continuation (including repair), and `--effort` only for explicit caller effort.
+Initial session runs need no conversation flag. Doctor and ground truth check the
+base interface; each launch checks its selected operation and recorded effort.
 
-To review compatible drift without disclosing an executable pathname, inspect the
-bounded local `agy --help` bytes and calculate their raw SHA-256:
+Model and effort are forwarded as caller-selected values. AGY may reject them; help
+capability checks do not certify a model catalog, authentication, backend identity,
+cost, availability, or quality. No selector leaves AGY's default unchanged. See
+[model and effort selection](USAGE.md#model-and-effort-selection).
 
-```bash
-LC_ALL=C agy --help 2>&1 | /usr/bin/python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
-```
-
-Compare that digest with the sanitized `raw_help_sha256` review output, then retry the
-same caller-selected `--model`/`--effort` request with
-`--compatibility-disposition proceed --approve-help-sha` set to the matching digest.
-A mismatch, changed help, or unavailable probe needs a fresh review; never reuse an
-older digest.
-
-Structural acceptance is not semantic approval. Before every reviewed direct
-dispatch, including an exact-version match, Codex must inspect current bounded raw
-`agy --help` and stop if the exact caller-selected model or effort cannot be honored.
-The caller's resolved slug remains unchanged, model availability is
-`not_assessed`, and controller help prose is never availability evidence.
-
-Model and effort choices belong to the caller. With no selector, leave agy's default
-unchanged. The narrow `--literal-model` surface is an unreconciled caller-owned
-pass-through; it makes no compatibility, cost, provider, availability, or quality
-claim. See [the usage guide](USAGE.md#model-and-effort-selection) for the public
-selection boundary.
+Bounded synthetic live runs exercised AGY **1.2.12** from Codex and Claude Code,
+including a same-conversation repair and a native launch from an unsandboxed Claude
+Code host. This observation is informational; it does not gate launches or qualify
+future versions, authentication or task quality.
 
 ## agy interface cautions
 
@@ -200,12 +249,10 @@ account-owned agy state such as models, agents, plugins, and local permissions.
 - Build `--print` last: its next argument is the prompt, and print mode ignores stdin.
 - Exit 0 plus empty output is not success. The worker accepts a terminal result only
   through its bounded structured envelope.
-- agy's `--agent` disables `--json-schema`; personas are therefore injected as
-  bounded prompt text instead of using that flag.
 - In explicit native mode, agy's sandbox shell tools run in its scratch directory rather than the target
-  repository. Worker prompts use file tools; Codex owns repository commands.
-- Classify authentication, quota, timeout, or provider failures only from reviewed
-  exact signatures. Never turn free-form error prose into an automatic retry.
+  repository. Worker prompts use file tools; the driver owns repository commands.
+- Use bounded structured evidence for provider failures. Never turn free-form error
+  prose, quota text, or a retry hint into automatic retry authority.
 - The terminal answer is in `result.structured_output`.
   `result.json_schema` is the echoed schema, not the answer.
 - Unknown agy subcommands may print usage and exit 0; do not probe support by exit
@@ -225,8 +272,8 @@ account-owned agy state such as models, agents, plugins, and local permissions.
 3. Confirm the process has the approved host permissions; for a sandboxed CLI
    session, check both settings above.
 4. Run `./ground-truth.sh` before interpreting an agy interface change.
-5. For reviewed direct selection, inspect current raw help and handle drift without
-   changing the caller's model or effort.
+5. Resolve the named missing capability or executable-binding failure without
+   changing the caller's model, effort, scope, or permissions.
 6. If local prerequisites pass but a provider call fails, preserve the sanitized
    result and follow the [project workflow](PROJECT_WORKFLOW.md); do not add a shell
    retry loop.

@@ -6,7 +6,6 @@ from __future__ import annotations
 import os
 import re
 import selectors
-import shutil
 import signal
 import subprocess
 import sys
@@ -21,10 +20,6 @@ sys.dont_write_bytecode = True
 SCRIPT_DIR = Path(__file__).resolve().parent
 OFFICIAL_HELPER = SCRIPT_DIR / "official_github.py"
 SEMVER_PATTERN = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
-VERSION_PATTERNS = {
-    "agy": re.compile(rf"(?:agy\s+)?({SEMVER_PATTERN})"),
-    "codex": re.compile(rf"codex-cli\s+({SEMVER_PATTERN})"),
-}
 SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 
 
@@ -36,7 +31,6 @@ class Limits:
 
 
 OFFICIAL_LIMITS = Limits(timeout=20.0, stdout=8 * 1024, stderr=8 * 1024)
-VERSION_LIMITS = Limits(timeout=3.0, stdout=128, stderr=128)
 TERM_GRACE_SECONDS = 0.25
 KILL_GRACE_SECONDS = 0.75
 
@@ -249,37 +243,10 @@ def run_bounded(
             signal.signal(signum, handler)
 
 
-def _version_argv(tool: str) -> list[str]:
-    executable = shutil.which(tool)
-    if executable is None:
-        raise ProbeError("installed tool is unavailable")
-    return [executable, "--version"]
-
-
-def _parse_version(tool: str, raw: bytes) -> str:
-    if not raw.endswith(b"\n") or raw.count(b"\n") != 1 or b"\x00" in raw:
-        raise ProbeError("version output is malformed")
-    try:
-        line = raw[:-1].decode("ascii", "strict")
-    except UnicodeDecodeError as exc:
-        raise ProbeError("version output is malformed") from exc
-    match = VERSION_PATTERNS[tool].fullmatch(line)
-    if match is None:
-        raise ProbeError("version output lacks documented semantic content")
-    return match.group(1)
-
-
 def capture_profile(profile: str, argument: Optional[str] = None) -> bytes:
     """Run one fixed production profile and return only validated canonical stdout."""
 
-    if profile in ("agy-version", "codex-version"):
-        if argument is not None:
-            raise ProbeError("version profile does not accept an argument")
-        tool = profile[:-8]
-        stdout, _stderr = run_bounded(_version_argv(tool), VERSION_LIMITS)
-        return (_parse_version(tool, stdout) + "\n").encode("ascii")
-
-    if profile in ("official-project", "official-agy", "official-codex"):
+    if profile == "official-project":
         if argument is not None:
             raise ProbeError("latest-evidence profile does not accept an argument")
         tool = profile[len("official-") :]

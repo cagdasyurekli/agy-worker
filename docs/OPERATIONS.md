@@ -64,32 +64,23 @@ There is no automatic updater. The read-only check is explicit:
 ./update.sh check
 ```
 
-It reports the latest stable project tag without fetching it, then reports installed,
-reviewed, official stable-release/source drift, and documentation-review age
-separately for agy and Codex CLI. The agy observation includes one fixed official
-`darwin_arm64` distribution-manifest canary; it validates only the bounded JSON
-manifest and never downloads, hashes, or executes the referenced archive.
-
-The aggregate exits are:
+The check compares the current checkout with the latest stable release of this
+project, using its exact verified tag-to-commit binding. It does not inspect installed
+AGY/Codex versions, model inventories, distribution manifests, or review dates.
+`check --watch` performs the same project-release observation for the notifier.
 
 | Exit | Meaning |
 |---:|---|
-| `0` | Required evidence was available and unchanged. |
-| `3` | Established drift, a due review, or a missing installed tool. |
-| `2` | Evidence was unavailable or malformed, so the result is inconclusive. |
+| `0` | The verified release commit matches this checkout. |
+| `3` | A different verified stable release commit is available. |
+| `2` | Evidence or the expected origin is unavailable or invalid. |
 
-Both tools are reported before aggregation, and inconclusive exit `2` takes
-precedence over drift exit `3`. The stdlib-only observer uses fixed GitHub REST and
-distribution-manifest sources, disables ambient HTTP proxies, refuses redirects,
-validates response metadata and JSON, and bounds time and bytes. It also bounds local
-version probes and closes their process groups on timeout, overflow, or interruption.
-Neither `check` nor `check --watch` fetches with Git, applies an update, writes a
-baseline, or invokes a provider.
-
-The fixed sources and reviewed revisions are recorded in
-[`compat/sources.md`](../compat/sources.md). Exact compatibility decisions and their
-claim limits remain in [`compat/reviews/`](../compat/reviews/); do not reconstruct
-them from a release narrative.
+A different commit is an update observation, not proof of ordering or permission to
+downgrade; an untagged checkout is identified explicitly. Signal exits are preserved.
+The stdlib observer uses fixed project GitHub REST endpoints, disables ambient HTTP
+proxies, rejects redirects, validates bounded metadata/JSON and tag targets, and
+closes child process groups. Neither check mode fetches with Git, installs, changes
+records, or invokes AGY or a provider.
 
 ## Apply a reviewed update explicitly
 
@@ -114,29 +105,22 @@ apply path uses `git fetch` and therefore honors caller Git transport configurat
 including URL rewrites and proxies. Protect the GitHub account and tag-publication
 process as part of that trust boundary.
 
-## Observe compatibility on a schedule
+## Inspect the local AGY interface
 
-The daily/manual macOS compatibility workflow runs only the official-evidence
-observation. It writes a bounded GitHub Step Summary, preserves the same `0`/`3`/`2`
-meanings, is not a required pull-request check, and cannot update metadata, apply a
-release, or open an issue or pull request. The weekly feedback workflow is a separate
-Linux metadata-only observation because it has no macOS runtime contract.
-
-Before changing an agy-facing flag or behavioral claim, inspect the current local
-interface rather than relying on an older observation:
+Before changing AGY-facing flags or claims, inspect the current local interface:
 
 ```bash
 ./ground-truth.sh
 ```
 
-The default phase calls only `agy --version` and `agy --help`. Use
-`./ground-truth.sh --account` only after separately authorizing inspection of
-account-owned agy state such as models, agents, plugins, and local permissions.
+The default phase uses local version/help probes. `--account` remains a separate
+explicit account-state inspection; it is not part of update checks or launch readiness.
+The retired hosted compatibility watcher does not monitor project releases.
 
 ## Install the optional macOS notifier
 
 The owner-private LaunchAgent runs the same read-only watch once per day and displays
-a notification only when its sanitized drift fingerprint changes:
+a notification only when its sanitized update fingerprint changes:
 
 ```bash
 ./update-notifier.sh install
@@ -155,15 +139,33 @@ label, private state, and authenticated resumable uninstall ledger.
 Source drift enters `maintenance-required` instead of silently rebinding. At most one
 sanitized maintenance notification is sent, ordinary monitoring pauses, and only an
 explicit `refresh` may rebind through the serialized uninstall/install lifecycle.
-Refresh does not update code, compatibility metadata, or a tool. Signals, overlapping
+Refresh does not update code or a tool. Signals, overlapping
 operations, ambiguous launchctl outcomes, nested process groups, replacement files,
 and unknown or tampered legacy state fail closed. A completed uninstall deliberately
 retains an authenticated inert ledger/tombstone, prior result, and lock for resumable
 recovery and deduplication; additional private residuals may remain after drift or
 failure. A notification is an irreversible UI side effect and cannot be retracted.
 
-The separate [measurement ledger](MEASUREMENT.md) records only explicit sanitized
-public evidence. Neither the hosted watcher nor the notifier writes it automatically.
+Older notifier formats are retired; `refresh` does not migrate them. New tooling
+rejects an old record before creating locks/directories or calling launchctl/network
+helpers, leaving the installed snapshot and schedule untouched. Recovery requires
+these explicit owner actions:
+
+1. Use the actual creating release at its bound source location and Git identity to
+   run `./update-notifier.sh uninstall`.
+2. Confirm that release's `./update-notifier.sh status` reports
+   `not installed; authenticated recovery record retained` (launchd is unloaded),
+   and review any `preserved replacement files` before proceeding.
+3. Explicitly archive the now-inert
+   `$HOME/Library/Application Support/codex-agy-worker/update-notifier` directory to
+   a chosen owner-private location, preserving the recovery record. Do not archive
+   LaunchAgents or unrelated configuration. Uninstall retains the old ledger and
+   tombstone, so the new install still rejects it until this owner action is complete.
+4. From the intended new release checkout, run `./update-notifier.sh install`.
+
+An unrelated checkout has no authority to remove the old installation. Do not edit
+its private ledger to force compatibility. Current-format source drift still uses
+ordinary explicit `refresh`; there is no automatic old-format migration or cleanup.
 
 ## Render bounded evidence in automation
 
@@ -173,58 +175,16 @@ authoritative owner: [Project workflow](PROJECT_WORKFLOW.md#preserve-a-local-evi
 Use that reviewed recipe in automation; this operations guide does not maintain a
 second copy.
 
-## Draft sanitized feedback
+## Report a problem or request an improvement
 
-Drafting and public submission are separate user decisions. Create and review a
-private mode-`0600` draft first:
-
-```bash
-./bug-report.sh draft --output /tmp/agy-worker-bug.md \
-  --title "QA gate rejects an accurate created-file claim" \
-  --component qa-gate \
-  --summary "A synthetic fixture is rejected." \
-  --steps "Create a fresh fixture and run the offline gate case." \
-  --expected "The accurate claim is accepted." \
-  --actual "The gate exits 10."
-
-./bug-report.sh preview /tmp/agy-worker-bug.md
-```
-
-The generator reads no prompts, source files, envelopes, or logs. It conservatively
-redacts credential-bearing lines, common authorization tokens, complete private-key
-blocks, absolute paths, worker artifact names, and fenced or indented code. The
-printed SHA-256 review token binds the exact draft bytes.
-
-Public bug or improvement submission requires both exact confirmations and an
-authenticated GitHub CLI:
-
-```bash
-./bug-report.sh submit /tmp/agy-worker-bug.md --confirm-sha <SHA256-FROM-PREVIEW> \
-  --confirm-public-safe-sha <SAME-SHA256-FROM-PREVIEW>
-```
-
-Immediately before `gh issue create`, the command validates and prints the exact body
-again, then sends those in-memory bytes over stdin to the fixed
-`github.com/cagdasyurekli/codex-agy-worker` destination. A changed draft invalidates
-the hash. Without `gh`, or when `gh` fails, the local draft remains and nothing else
-is attempted.
-
-Security drafts are private-only and ineligible for public submission. Use the
-[private vulnerability reporting form](https://github.com/cagdasyurekli/codex-agy-worker/security/advisories/new)
-instead. The conservative keyword barrier is not proof that a report is safe. See
-[SUPPORT.md](../SUPPORT.md) for the maintained support routes.
-
-Maintainers may deliberately run `./feedback-triage.sh fetch`, or inspect its weekly
-read-only workflow summary. Fetch requests at most one metadata-only page of open
-issues and emits canonical URLs/numbers, month counts, and burst/overflow flags. It
-does not fetch titles, bodies, comments, labels, usernames, or raw issue content; it
-does not write to GitHub or feed issue prose to an agent.
+Open the appropriate issue form with a minimal synthetic reproduction and sanitized
+version, expected-result, and actual-result details. [SUPPORT.md](../SUPPORT.md) owns
+the required information, privacy precautions, and private security-report route.
 
 ## Related references
 
 - [Installation and compatibility](INSTALLATION.md)
 - [Using agy-worker](USAGE.md)
 - [Project workflow and Verification v2](PROJECT_WORKFLOW.md)
-- [Adoption measurement](MEASUREMENT.md)
 - [Repository ownership and verification commands](REPO_MAP.md)
 - [Architectural lessons](lessons_learned.md)

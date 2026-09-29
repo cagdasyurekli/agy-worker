@@ -11,14 +11,16 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
 
 ## Lifecycle at a glance
 
-1. Capture an immutable base commit and create an isolated worktree.
+1. Bind an immutable base commit; the ordinary facade creates an isolated worktree.
 2. Choose the transmission mode explicitly. The primary facade requires either
    `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`, acknowledging that every worktree entry
-   may be provider-readable and transmissible and binding its current contents, kinds,
-   permissions, symlink targets, and execution mode, or
+   may be provider-readable and transmissible and binding content, kinds, full file mode bits,
+   symlink target hashes, readable manifest, isolation and native grant profile, or
    `--provider-scope FILE --approve-transmission-sha SHA256`, which binds exact
-   reviewed read/write entries and a selected-content digest, then stages only selected
+   reviewed read/write entries, readable path/kind manifest, selected bytes and
+   executable bits, isolation and grant profile, then stages only selected
    entries in a fresh owner-private mode-`0700` Gitless provider cwd.
+   Scoped mode rejects symlinks; its digest does not bind full POSIX permissions.
 3. Dispatch only the approved task. In default mode, requested paths constrain writes
    and candidate acceptance, not provider reads. Scoped staging copies selected
    task inputs, but the controller still locally enumerates and validates worktree paths;
@@ -27,7 +29,13 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
    [optional selected-content dispatch](USAGE.md#optional-selected-content-dispatch).
 4. Retrieve the bound candidate and inspect its Git diff without trusting the worker
    report or executing any worker-reported command. Worker envelopes are not evidence.
-5. Run writable build and test commands in a separate verification copy. Reuse
+   For whole-worktree `task` and `project` jobs, `files_changed` names cumulative net
+   changes against the immutable Git base across repair cycles. Scoped Gitless jobs
+   name the changes made in each individual stage; their reconciler checks that stage.
+5. Run driver-selected build/test commands and Python imports in a separate
+   verification copy with `PYTHONDONTWRITEBYTECODE=1`. Inspect the bound
+   candidate's diff and gate binding directly. Never manually edit, delete, or
+   chmod the bound candidate; send repairs to the same worker conversation. Reuse
    driver-owned checks only for identical candidate bytes and relevant environment;
    after changes rerun affected checks and run the required full suite once the final
    executable candidate is stable.
@@ -38,6 +46,13 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
 7. Preserve accepted work on its branch. Cleanup is available only for narrowly
    rejected or explicitly discarded candidates and requires current exact approvals.
 
+Neither approval digest binds task text, self-verification manifest,
+`--allow-scoped-repair`, workflow/edit mode, model/effort, budget or environment
+opt-ins. Present the exact task and selected settings alongside the digest before
+approval; material changes need renewed authority. A driver that reuses a digest for
+different work or settings can exceed the human decision even when the controller
+accepts the unchanged content binding.
+
 Assurance labels are deliberately practical. `verified` is available only when the
 strict workflow policy is satisfied; `partially_verified` records useful work with
 unresolved evidence; `rejected` records work Codex declines; and `blocked` records a
@@ -47,8 +62,8 @@ Use initial `--allow-scoped-repair` for approved multi-turn scoped work. One exa
 upfront approval may cover predictable same-scope repairs and mechanical digest/state
 refresh; provider-launch notices are status, not repeated permission requests. New scope,
 content exposure, destination, isolation, permissions or budget still require authority.
-Preserve required current raw-help/semantic version preflight on each launch; add no cache
-or alternate controller. Preserve Goal as an ordinary-use opt-in, not a prerequisite.
+Probe required capabilities before each launch and recheck the same executable
+immediately before starting it; add no cache or alternate controller. Preserve Goal as an ordinary-use opt-in, not a prerequisite.
 
 ## Primary facade and advanced recovery
 
@@ -65,8 +80,10 @@ those exact resources for the approved second call. The facade does not infer
 assurance or duplicate the provider lifecycle state machine.
 
 The advanced raw `agy-worker.sh` initial run/start path has the same explicit mode
-requirement. Prefer selected-content provider scope; use whole-worktree approval only
-as a manifest-bound exception.
+requirement. It binds current Git HEAD as the whole-worktree base unless
+`--base-commit FULL_SHA` supplies the immutable lifecycle base; a supplied SHA must
+equal HEAD. The later gate must use that same SHA. Prefer selected-content provider
+scope; use whole-worktree approval only as a manifest-bound exception.
 
 ```bash
 ./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID"
@@ -76,9 +93,9 @@ as a manifest-bound exception.
 
 For selected-content mode, include `--provider-scope "$SCOPE"` on both calls and
 use the preview's `transmission_sha256` as `--approve-transmission-sha` on the second.
-Omitting both modes fails before provider launch. The old `--approve-preview-sha`
-spelling cannot launch alone; through at least v0.16.x it requires the explicit
-`--legacy-preview-approval` migration acknowledgement and emits a deprecation warning.
+Omitting both modes fails before provider launch. The removed facade flags
+`--approve-preview-sha` and `--legacy-preview-approval` cannot authorize a launch;
+use one of the explicit modes above.
 
 The explicit `--state`, `--worktree`, `--branch`, and full `--base` tuple remains an
 advanced compatibility mode. Partial mixing is rejected. A local pre-dispatch failure
@@ -94,12 +111,50 @@ controller phase, mechanically available actions, and advanced-recovery guidance
 It never migrates legacy bytes or moves low-level mutations into the façade.
 For a bound dispatch, copy `dispatch.state_sha256` from facade `status` and pass it as
 `--approve-dispatch-sha`; missing, stale, or changed state fails before finalization.
-The deprecated `--approve-state-sha` spelling remains an exact mutually exclusive
-alias. Gate rejection/routing preserves its receipt without finalizing assurance.
+The former facade `--approve-state-sha` alias is rejected. Gate rejection/routing
+preserves its receipt without finalizing assurance.
 
 The lower-level dispatcher, gate, receipt, and lifecycle commands documented below
 remain the advanced recovery and compatibility surfaces. They are authorities that
 the facade composes, not parallel implementations to keep in sync.
+
+## Retired job formats and flags
+
+This agy-worker release accepts only the current dispatcher state and
+command formats, defined by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
+[`agy_dispatch.py`](../skills/agy-worker/runtime/scripts/agy_dispatch.py). Persisted
+workflow records must use the current explicit or facade format, defined by
+`BOUND_SCHEMA_VERSION` and `BOUND_FACADE_SCHEMA_VERSION` in
+[`workflow.py`](../skills/agy-worker/runtime/scripts/workflow.py). The separately
+versioned workflow status output is not a persisted workflow record.
+
+Current dispatch records use state V16 and command V14, and selection records use
+V4. Earlier formats are retired, including ordinary jobs that used no removed
+feature. The new formats bind capability-based selection without a version registry.
+Workflow record formats retain their existing version constants.
+
+Older records fail closed before partial projection, migration, or job mutation.
+This includes status, result, and finalization as well as provider-launch actions.
+The runtime neither rewrites nor deletes old job artifacts.
+Finish or discard an older job with the actual release that created it. Preserve
+its job artifacts and use that release's existing approvals. The new runtime does not migrate
+the job or grant new provider, cleanup, or publication authority.
+
+The following surfaces were removed after v0.22.0:
+
+| Removed surface | Replacement |
+|---|---|
+| `workflow.sh run --approve-preview-sha` and `--legacy-preview-approval` | `--approve-whole-worktree`, or `--provider-scope` with `--approve-transmission-sha`, bound to a fresh reviewed preview |
+| `workflow.sh verify-finalize --approve-state-sha` | `--approve-dispatch-sha` copied from facade status |
+| Advanced dispatcher `--approve-migration-sha` | Finish or discard the old-format job with the release that created it; there is no in-place migration |
+| `--literal-model` | `--model` forwards the caller-owned literal value; optional `--effort` remains separate |
+| `--compatibility-disposition` and `--approve-help-sha` | Required capabilities are checked locally before every launch; no version or help-SHA approval bypass exists |
+| `--boost`, `--approve-boost-risk-sha`, and `--persona` | Use an ordinary workflow with the task instructions in its prompt; these flags fail with “removed after v0.22.0” and grant no replacement authority |
+
+Advanced dispatcher and job lifecycle commands still use `--approve-state-sha`.
+Named tiers and raw dispatch remain supported; their legacy naming is unrelated to
+retired on-disk job formats. Historical release notes describe their released trees,
+not support in this agy-worker release.
 
 ## Quality and command boundary
 
@@ -113,7 +168,10 @@ The canonical gate has these core controls:
   as `HEAD` and branch names are rejected.
 - At least one driver-owned verifier is mandatory. The normal repeatable path is
   `--verify-argv CANONICAL_JSON_ARRAY`; it runs from the repository root without an
-  implicit shell. `--verify-shell` and legacy `--verify` remain advanced compatibility
+  implicit shell. It runs in the bound candidate, so choose commands known to be
+  read-only there; snapshot rejection detects writes after they happen. Run build,
+  tests, and Python imports in a verification copy, then bind their results in
+  Verification v2. `--verify-shell` and legacy `--verify` remain advanced compatibility
   paths and require their documented acknowledgements.
 - Ordinary verifier variables use `--verify-env NAME`. Credential-like names require
   `--verify-credential-env NAME` plus the credential-access acknowledgement; neither
@@ -121,8 +179,19 @@ The canonical gate has these core controls:
 - `--only PATHGLOB` is repeatable and constrains every changed path.
 - `--allow PATHGLOB` permits a known undeclared artifact but does not override
   `--only`.
+- `PATHGLOB` uses repository-relative segments: `*` and `?` stay within one
+  segment, while `**` matches zero or more whole segments.
 - `--expect-edits` turns a completed no-op into exit `13`.
 - Exit `15` routes questions to a human; it is never acceptance.
+
+Gate Git reads ignore inherited `GIT_*` variables and system/global configuration,
+disable fsmonitor, hooks, untracked-cache shortcuts, external diff and textconv,
+and reject any effective repository `filter.*.clean`, `.process`, or `.required`
+definition, including empty/false values and included/worktree configuration. Repos
+using Git LFS or another configured content filter must use a reviewed worktree
+without those definitions; the gate reports this restriction without running the
+filter. Provider-scope entries remain literal file/tree entries, user denylist paths
+remain worker instructions, and the workflow facade forwards gate patterns unchanged.
 
 For a direct gate invocation, capture the base before dispatch and review the diff
 after the gate accepts the exact state:
@@ -132,8 +201,7 @@ BASE="$(git -C "$WT" rev-parse HEAD)"
 
 "$PIPELINE/qa-gate.sh" --envelope "$ENVELOPE" --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'
+  --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
 Exit `0` means only that the evidence gate accepted the exercised state and verifier
@@ -161,8 +229,13 @@ symbolic launcher `"$PIPELINE/agy-worker.sh"`; export `PIPELINE` before copying 
 It is not a provider-success or acceptance claim. `extend` and `cancel` require the
 current state SHA. Eligible `resume` preserves the exact stored conversation;
 `restart` starts a fresh attempt. Neither happens automatically.
+For a facade-backed advanced restart, pass the saved workflow state as
+`--state "$WORKFLOW_STATE"` with `--job-id "$JOB_ID"` and the current
+`--approve-state-sha "$STATE_SHA"`. It resolves the bound private log root; a
+restart still requires an explicit user decision and provider notice.
 
-Lifecycle state v10 uses these controller phases:
+The current lifecycle state uses these controller phases (see `CURRENT_STATE_SCHEMA`
+in `skills/agy-worker/runtime/scripts/agy_dispatch.py`):
 
 | Phase | Meaning |
 |---|---|
@@ -208,13 +281,12 @@ Read public lifecycle JSON in this order: first `status` for `state_sha256`,
 `available_actions`. `worktree_changes_present` describes current ambient dirtiness;
 `worktree_changed_since_dispatch` is the attribution-relevant signal.
 
-For new bound jobs, `provider_isolation` names `session` or `native`, and
+For current bound jobs, `provider_isolation` names `session` or `native`, and
 `provider_execution` describes `scope`, `agy_sandbox`, `native_containment`, and
-`legacy`. Legacy jobs expose a null isolation label and facts derived from their
-bound command: scoped command V1–V8 jobs do not acquire native containment, while
-scoped V9 jobs retain it. Unbound jobs may have no execution facts yet.
+`legacy` (false). Unbound jobs may have no execution facts yet. Retired-format jobs
+are rejected rather than projected into these current facts.
 
-Controller-private V14 state also persists a sanitized
+Current controller-private state also persists a sanitized
 `provider_terminal_status`: `unknown`, `success`, `error`, or `cancelled`, derived
 only from the exact attempt's structurally valid outer terminal event. The public
 `status`, `wait`, and `result` JSON intentionally omit it. It is not candidate
@@ -223,9 +295,9 @@ acceptance, or billing evidence. A terminal without a recognized structured repo
 can retain that private enum while public `candidate_recognized` is false and
 `failure_stage` is `missing_structured_output`.
 
-V11 introduced this private diagnostic field. Current V14 preserves prior bound
-transitions while adding explicitly opted-in scoped repair and local verification;
-migration never grants those opt-ins or creates new acceptance authority. See the
+Scoped repair and local verification require explicit opt-ins in the current
+command and state; reading a job never grants those opt-ins or creates new
+acceptance authority. See the
 [optional checks and scoped repair guide](../skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#optional-checks-and-scoped-repair).
 Then use `candidate_sha256` only
 when `result_available` is
@@ -234,21 +306,24 @@ Review that bound result and build driver evidence before choosing an eligible
 `continue` or `finalize`; the controller does not choose either. If the candidate hash
 is `null`, do not construct Verification v2 for it.
 
-Driver checks that can write bytecode, caches, coverage output, generated files, or
-other artifacts must run in an isolated verification copy. Do not delete or
+Driver build/test commands and Python imports must run in an isolated verification
+copy with `PYTHONDONTWRITEBYTECODE=1`. Do not delete or
 regenerate artifacts in the candidate to make its snapshot match again: tracked,
 untracked, deleted, and ignored paths are all bound candidate bytes. First inspect
 the candidate read-only, then create a new directory under a private parent and run
 build or test commands in that copy. The copy deliberately omits `.git`, so
-Git-dependent checks stay read-only against the original candidate:
+Git-dependent checks stay read-only against the original candidate. For facade-backed
+jobs, set `WORKFLOW_STATE` to the exact derived or explicit workflow state path;
+the advanced copy command binds the existing job and resolves its private log root:
 
 ```bash
+WORKFLOW_STATE=/absolute/private/workflow.json
 VERIFY_PARENT="$(mktemp -d -t agyworker-verify.XXXXXX)" || exit $?
 VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
 VERIFY_DIR="$VERIFY_PARENT/candidate"
-"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
+"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" --state "$WORKFLOW_STATE" \
   --destination "$VERIFY_DIR" --format text
-( cd "$VERIFY_DIR" && /usr/bin/python3 -m pytest -q )
+( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q )
 ```
 
 `verification-copy` rebinds the current result, command, schemas, root, and candidate
@@ -431,8 +506,7 @@ RECEIPT_DIR="$(mktemp -d -t agyworker-receipts.XXXXXX)"
 ./verify-job.sh --receipt "$RECEIPT_DIR/job.json" \
   --envelope envelope.json --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'
+  --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
 `--selection FILE` may bind one validated current selection record.

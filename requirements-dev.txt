@@ -1,0 +1,9 @@
+# Development/CI only. Runtime modules never import these tools.
+ruff==0.16.9
+mypy==1.19.1
+# Exact transitive dependencies of the pinned tools (Python 3.9 baseline).
+librt==0.15.0
+mypy_extensions==1.1.0
+pathspec==1.1.1
+tomli==2.4.1
+typing_extensions==4.16.0

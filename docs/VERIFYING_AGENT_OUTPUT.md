@@ -50,7 +50,10 @@ parses those fields as claims; it never executes worker-supplied shell text.
 ## 3. Derive scope from Git
 
 Declare the paths that the task is allowed to change and compare the actual candidate
-against both that policy and the envelope:
+against both that policy and the envelope. Run Python/test/build checks in an
+[isolated verification copy](PROJECT_WORKFLOW.md#progress-aware-local-jobs)
+with `PYTHONDONTWRITEBYTECODE=1`, then use only a read-only gate verifier against
+the bound candidate:
 
 ```bash
 ./qa-gate.sh \
@@ -59,13 +62,15 @@ against both that policy and the envelope:
   --base "$BASE" \
   --only 'tests/**' \
   --expect-edits \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'
+  --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
 The maintained gate rejects undeclared or missing paths, outside-policy edits,
 malformed envelopes, an unexpected no-op, mutable base evidence, and verifier-created
 mutations. It also accounts for nontracked paths, including ignored files, within its
 documented trust boundary.
+The copy's check results are driver evidence for Verification v2; the gate's snapshot
+detects candidate writes after they occur and does not isolate those verifier commands.
 
 This is a write-acceptance boundary applied after dispatch. In whole-worktree mode,
 `--only`, `--allow`, prompt denylists, and `--add-dir` do not prevent reads elsewhere

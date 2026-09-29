@@ -4,10 +4,246 @@ from __future__ import annotations
 
 import base64
 
+from typing import TYPE_CHECKING
+
+# run() receives these names from test-agy-worker-remediation.py globals.
+# These declarations are static only; the live objects still come from context.
+if TYPE_CHECKING:
+    from types import ModuleType
+    from typing import cast
+    from typing import Callable, Optional
+    FOCUSED_CHECK: Optional[str] = cast(Optional[str], ...)
+    MODULE: ModuleType = cast(ModuleType, ...)
+    from pathlib import Path
+    ROOT: Path = cast(Path, ...)
+    SOURCE: Path = cast(Path, ...)
+    WORKTREE_SOURCE: Path = cast(Path, ...)
+    def assert_symbolic_action_commands(actions: list[dict], expected: set[str]) -> None: ...
+    def candidate_snapshot_actions_reject(job: Path, state: dict, label: str, *, continuation_error: str='candidate worktree reconciliation is unavailable') -> None: ...
+    def check(label: str, action: Callable[[], object]) -> None: ...
+    def initialize_linked_fixture(worktree: Path) -> None: ...
+    def current_command_fixture(values: dict, *, bind_launch: bool=True) -> dict: ...
+    def current_candidate_fixture(label: str, *, selection: bool=False, staged: bool=False, wrapper_addressable: bool=False, workflow: str='task', linked: bool=True, inside_worktree: bool=False) -> tuple[Path, dict, str, Path]: ...
+    import hashlib
+    import io
+    import json
+    import os
+    def provider_schema(path: Path) -> None: ...
+    def report(**updates: object) -> dict: ...
+    root: Path = cast(Path, ...)
+    def run_controller(job: Path, bin_dir: Path) -> int: ...
+    def run_scoped_controller(job: Path, bin_dir: Path, *, fixture_kind: str='normal', native_containment: bool=True) -> int: ...
+    def scoped_controller_uses_portable_fixture() -> bool: ...
+    import shlex
+    import shutil
+    import signal
+    import stat
+    import subprocess
+    import sys
+    import threading
+    import tempfile
+    import time
+
 
 def run(context: dict[str, object]) -> None:
     """Run the retained tail with the canonical suite's exact context."""
     globals().update(context)
+    def retired_dispatch_formats_reject_before_effects() -> None:
+        job, _state, _sha, _envelope = current_candidate_fixture("schema-rejection")
+        for lock_name in (MODULE.LOCK_NAME, MODULE.STATE_LOCK_NAME):
+            (job / lock_name).unlink(missing_ok=True)
+        original_state = (job / MODULE.STATE_NAME).read_bytes()
+        original_command = (job / MODULE.COMMAND_NAME).read_bytes()
+        command = json.loads(original_command)
+        verification = json.dumps({
+            "schema_version": 2, "summary": "driver found a bounded defect", "passed_checks": [],
+            "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
+            "candidate_sha256": _state["result_sha256"], "coverage": "partial",
+            "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
+        }).encode("utf-8")
+        fake_bin = root / "schema-no-provider"; fake_bin.mkdir()
+        marker = root / "schema-provider-called"
+        fake = fake_bin / "agy"
+        fake.write_text("#!/bin/sh\nprintf called > " + shlex.quote(str(marker)) + "\nexit 99\n")
+        fake.chmod(0o700)
+        environment = {**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", "")}
+        common_git = Path(_state["worktree_root_identity"]["common_dir"]["realpath"])
+        # An otherwise valid queued state would be orphan-recovered by status
+        # if the command format were not checked before lifecycle projection.
+        queued = MODULE.initial_state(
+            command, "initial", 1, command_sha=MODULE.digest(original_command),
+            command_identity=MODULE._identity((job / MODULE.COMMAND_NAME).stat()),
+            stage_sha=None, stage_identity=None, schema_bindings=MODULE._schema_bindings(command),
+        )
+        MODULE.validate_state(queued)
+        invalid = [("missing", None), ("bool", True), ("string", "PRIVATE-VERSION-SENTINEL"),
+                   ("fractional", 1.5), ("zero", 0), ("negative", -1), ("future", 999999999)]
+        cases = []
+        for surface, current in (("state", MODULE.CURRENT_STATE_SCHEMA),
+                                 ("command", MODULE.CURRENT_COMMAND_SCHEMA)):
+            cases.extend((surface, f"retired-{version}", version) for version in range(1, current))
+            cases.extend((surface, label, version) for label, version in invalid)
+        cases.extend(("command", "retired-11-" + feature, 11) for feature in ("boost", "persona"))
+
+        def manifest() -> dict:
+            paths = [job, *job.rglob("*"), Path(command["workdir"]),
+                     *Path(command["workdir"]).rglob("*"), common_git, *common_git.rglob("*")]
+            result = {}
+            for path in paths:
+                info = path.lstat()
+                payload = os.readlink(path) if path.is_symlink() else path.read_bytes() if path.is_file() else None
+                result[str(path)] = (info.st_ino, info.st_mode, info.st_size, info.st_mtime_ns, payload)
+            return result
+
+        for surface, label, version in cases:
+            (job / MODULE.STATE_NAME).write_bytes(original_state)
+            (job / MODULE.COMMAND_NAME).write_bytes(original_command)
+            value = json.loads(original_state if surface == "state" else original_command)
+            if label == "missing":
+                value.pop("schema_version")
+            else:
+                value["schema_version"] = version
+            if surface == "command" and version == 11:
+                value.update({"boost": False, "boost_policy_sha256": None,
+                              "approved_boost_risk_sha256": None})
+            if label == "retired-11-boost":
+                value.update({"boost": True, "boost_policy_sha256": "a" * 64,
+                              "approved_boost_risk_sha256": "b" * 64})
+                value["argv"][1:1] = ["--agent", "Boost"]
+            elif label == "retired-11-persona":
+                value["argv"][-1] = "Read-only repository surveyor persona. " + value["argv"][-1]
+            if label in {"retired-11-boost", "retired-11-persona"}:
+                for lock_name in (MODULE.LOCK_NAME, MODULE.STATE_LOCK_NAME):
+                    (job / lock_name).write_text("lock sentinel\n")
+                    (job / lock_name).chmod(0o644)
+            filename = MODULE.STATE_NAME if surface == "state" else MODULE.COMMAND_NAME
+            MODULE.write_atomic(job, filename, value)
+            if surface == "command":
+                MODULE.write_atomic(job, MODULE.STATE_NAME, queued)
+            state_sha = MODULE.digest((job / MODULE.STATE_NAME).read_bytes())
+            before = manifest()
+            operations = [
+                ["status"], ["wait", "--after-state-sha", state_sha, "--timeout", "1s"],
+                ["result"], ["run"], ["start"],
+                ["resume", "--approve-state-sha", state_sha],
+                ["restart", "--approve-state-sha", state_sha],
+                ["continue", "--approve-state-sha", state_sha],
+                ["finalize", "--approve-state-sha", state_sha, "--assurance", "partially_verified"],
+                ["cancel", "--approve-state-sha", state_sha],
+                ["extend", "--approve-state-sha", state_sha, "--by", "1s"],
+                ["self-verify", "--approve-state-sha", state_sha],
+                ["verification-copy", "--destination", str(job / "forbidden-copy")],
+            ]
+            for arguments in operations:
+                completed = subprocess.run(
+                    [sys.executable, "-I", "-S", "-B", str(SOURCE), *arguments, "--job-dir", str(job)],
+                    input=verification, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                )
+                diagnostic = completed.stderr.decode("utf-8", "replace")
+                context = (surface, label, arguments[0], diagnostic)
+                assert completed.returncode != 0 and not completed.stdout, context
+                assert f"dispatch {surface} schema" in diagnostic, context
+                assert f"supported: v{MODULE.CURRENT_STATE_SCHEMA if surface == 'state' else MODULE.CURRENT_COMMAND_SCHEMA}" in diagnostic, context
+                assert "Finish or discard the job with the release that created it" in diagnostic, context
+                assert "v0.22.0" not in diagnostic and "Traceback" not in diagnostic, context
+                assert "PRIVATE-VERSION-SENTINEL" not in diagnostic and "999999999" not in diagnostic, context
+                if label.startswith("retired-"):
+                    assert f"schema v{version} is not supported" in diagnostic, context
+                assert not marker.exists(), context
+                assert manifest() == before, context
+
+    check("retired and malformed dispatch schemas reject every entrypoint without effects", retired_dispatch_formats_reject_before_effects)
+
+    def removed_migration_flag_rejects_before_effects() -> None:
+        fixture = root / "removed-migration"; fixture.mkdir()
+        worker = ROOT / "agy-worker.sh"
+        for option in (["--approve-migration-sha"], ["--approve-migration-sha", "a" * 64], ["--approve-migration-sha=" + "a" * 64]):
+            for prefix in ([sys.executable, "-I", "-S", "-B", str(SOURCE)], [str(worker)]):
+                for action in ("resume", "restart", "continue", "finalize"):
+                    current = ["--approve-state-sha", "b" * 64]
+                    current += ["--assurance", "partially_verified"] if action == "finalize" else []
+                    job_args = ["--job-dir", str(fixture / "job")] if prefix[0] == sys.executable else ["--job-id", "removed"]
+                    completed = subprocess.run(
+                        [*prefix, action, *job_args, *current, *option], input=b"{}\n",
+                        env={**os.environ, "AGY_WORKER_LOG_DIR": str(fixture / "logs")},
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                    )
+                    assert completed.returncode != 0 and not completed.stdout, completed
+                    assert b"--approve-migration-sha was removed after v0.22.0" in completed.stderr
+                    assert b"finish or discard the old job with the release that created it" in completed.stderr
+                    assert b"Traceback" not in completed.stderr
+                    assert not list(fixture.iterdir())
+        help_result = subprocess.run(
+            [str(worker), "--workdir", "--approve-migration-sha", "--help"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+        )
+        assert help_result.returncode == 0 and b"usage:" in help_result.stderr.lower()
+        assert b"was removed" not in help_result.stderr
+
+    check("removed migration flags fail before artifacts while option-looking values retain parsing", removed_migration_flag_rejects_before_effects)
+
+    def retired_feature_flags_reject_before_effects() -> None:
+        fixture = root / "retired-feature-flags"; fixture.mkdir()
+        fake_bin = fixture / "bin"; fake_bin.mkdir()
+        marker = fixture / "provider-called"
+        fake = fake_bin / "agy"
+        fake.write_text("#!/bin/sh\nprintf called > " + shlex.quote(str(marker)) + "\nexit 99\n")
+        fake.chmod(0o700)
+        environment = {**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                       "AGY_WORKER_LOG_DIR": str(fixture / "logs")}
+        for entrypoint in (ROOT / "agy-worker.sh", ROOT / "skills/agy-worker/runtime/agy-worker.sh",
+                           ROOT / "workflow.sh", ROOT / "skills/agy-worker/runtime/workflow.sh"):
+            for flag in ("--boost", "--approve-boost-risk-sha", "--persona"):
+                for arguments in ([flag], [flag, "PRIVATE-VALUE"], [flag + "=PRIVATE-VALUE"], [flag, flag]):
+                    with tempfile.TemporaryFile() as task:
+                        task.write(b"PRIVATE-TASK\n"); task.seek(0)
+                        result = subprocess.run(
+                            [str(entrypoint), "run", *arguments], stdin=task, env=environment,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                        )
+                        assert result.returncode == 64 and not result.stdout, result
+                        assert (flag + " was removed after v0.22.0").encode() in result.stderr, result
+                        assert b"PRIVATE" not in result.stderr and b"Traceback" not in result.stderr, result
+                        assert task.tell() == 0
+                    assert not marker.exists() and not (fixture / "logs").exists()
+        for flag in ("--boost", "--approve-boost-risk-sha", "--persona"):
+            for entrypoint in (ROOT / "workflow.sh", ROOT / "skills/agy-worker/runtime/workflow.sh"):
+                for arguments in (["--task", "describe " + flag], ["--task=" + flag]):
+                    result = subprocess.run([str(entrypoint), "run", *arguments, "--help"],
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+                    assert result.returncode == 0 and b"was removed" not in result.stderr, result
+
+    check("retired feature flags reject before effects and preserve prompt values", retired_feature_flags_reject_before_effects)
+
+    def current_commands_reject_retired_feature_authority() -> None:
+        job, _state, _sha, _envelope = current_candidate_fixture("retired-authority")
+        original = json.loads((job / MODULE.COMMAND_NAME).read_bytes())
+        for flag in ("--agent", "--boost", "--approve-boost-risk-sha", "--persona"):
+            for spelling in ([flag, "Boost"], [flag + "=Boost"]):
+                command = {**original, "argv": [original["argv"][0], *spelling, *original["argv"][1:]]}
+                MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+                try:
+                    MODULE.load_command(job)
+                except MODULE.DispatchError as exc:
+                    assert str(exc) == "dispatch argv contains a retired feature", exc
+                else:
+                    raise AssertionError("current command accepted a retired feature argument")
+        for field, value in (("boost", False), ("boost_policy_sha256", None),
+                             ("approved_boost_risk_sha256", None)):
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, {**original, field: value})
+            try:
+                MODULE.load_command(job)
+            except MODULE.DispatchError as exc:
+                assert str(exc) == "dispatch command fields are invalid", exc
+            else:
+                raise AssertionError("current command accepted a retired feature field")
+        command = {**original, "argv": list(original["argv"])}
+        command["argv"][command["argv"].index("--print") + 1] = "--agent"
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.load_command(job)
+
+    check("current commands reject retired feature authority and preserve prompt text", current_commands_reject_retired_feature_authority)
+
     def linked_preview_authorizes_v11_initial_and_prelaunch_binding() -> None:
         """The public preview digest is the exact V11 launch authorization."""
         fixture = root / "linked-preview-v11"; fixture.mkdir()
@@ -33,22 +269,16 @@ def run(context: dict[str, object]) -> None:
             }
             scope_raw = json.dumps(scope, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
             scope_path.write_bytes(scope_raw); scope_path.chmod(0o600)
-            # V6 stored the unwrapped scoped transmission digest.  The current
-            # preview is session-bound, so derive the historical canonical value
-            # from the frozen scope and manifests rather than treating a new-mode
-            # preview as authority for an old command.
-            parsed_scope = MODULE._parse_provider_scope(scope_raw)
-            readable_manifest = MODULE._scan_readable_worktree(str(linked))
-            selected_manifest = MODULE._build_selected_content_manifest(linked, parsed_scope)
-            approved = MODULE._compute_transmission_sha256(
-                MODULE._canonical_digest(parsed_scope),
-                MODULE._manifest_digest(readable_manifest),
-                MODULE._selected_content_digest(selected_manifest),
+            preview = subprocess.run(
+                [str(ROOT / "agy-worker.sh"), "transmission-preview", "--workdir", str(linked),
+                 "--provider-scope", str(scope_path), "--provider-isolation", "session"],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
+            approved = json.loads(preview.stdout)["transmission_sha256"]
             schema = fixture / "provider.json"; provider_schema(schema)
             scope_info = scope_path.stat()
-            command = {
-                "schema_version": 6, "kind": "agy-worker-dispatch-command", "job_id": "linked-preview-v11",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "linked-preview-v11",
                 "workdir": str(linked), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
                 "agy_version": "1.1.22", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
@@ -59,13 +289,14 @@ def run(context: dict[str, object]) -> None:
                 "provider_scope_sha256": hashlib.sha256(scope_raw).hexdigest(),
                 "provider_scope_identity": list(MODULE._identity(scope_info)),
                 "approved_transmission_sha256": approved,
-            }
+            })
             job = fixture / "job"; job.mkdir(mode=0o700)
             state = MODULE.initial_state(
                 command, "initial", 1, command_sha="0" * 64,
                 command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
                 schema_bindings=MODULE._schema_bindings(command),
             )
+            assert command["approved_transmission_sha256"] == approved
             assert state["transmission_sha256"] == approved
             rebound_command, rebound_state = MODULE._bound_lifecycle_inputs(job, state, command)
             assert rebound_command is command and rebound_state is state
@@ -238,13 +469,13 @@ def run(context: dict[str, object]) -> None:
         }
         selected = MODULE._build_selected_content_manifest(source, scope)
         original_fchmod = MODULE.os.fchmod
-        original_cleanup = MODULE._cleanup_stage
+        original_cleanup = MODULE.WORKTREE._cleanup_stage
         def fail_stage_chmod(_descriptor, _mode):
             raise OSError("injected pre-chmod failure")
         def fail_cleanup(_stage, _identity):
             raise OSError("injected cleanup failure")
         MODULE.os.fchmod = fail_stage_chmod
-        MODULE._cleanup_stage = fail_cleanup
+        MODULE.WORKTREE._cleanup_stage = fail_cleanup
         try:
             try:
                 MODULE._materialize_stage(source, stage, scope, selected)
@@ -256,7 +487,7 @@ def run(context: dict[str, object]) -> None:
                 raise AssertionError("materialization hid an injected cleanup failure")
         finally:
             MODULE.os.fchmod = original_fchmod
-            MODULE._cleanup_stage = original_cleanup
+            MODULE.WORKTREE._cleanup_stage = original_cleanup
         assert stage.is_dir()
         shutil.rmtree(fixture)
 
@@ -307,12 +538,10 @@ def run(context: dict[str, object]) -> None:
         stage_declaration: str = "relative",
         init_cwd: str | None = None,
         nested_directory_ops: bool = False,
-        command_schema: int = 9,
+
         include_denial: bool = False,
     ):
-        """Create a V10/V9 native or V8 historical scoped controller fixture."""
-        assert command_schema in {8, 9, 10}
-        assert not allow_self_verification or command_schema in {9, 10}
+        """Create a current native scoped fixture with explicit optional grants."""
         assert stage_declaration in {"relative", "absolute", "other-root", "dot", "dotdot", "empty", "root"}
         source_repo = (root / f"scope-acceptance-source-{label}").resolve(); source_repo.mkdir()
         repo = (root / f"scope-acceptance-repo-{label}").resolve()
@@ -364,10 +593,13 @@ def run(context: dict[str, object]) -> None:
         readable_manifest = MODULE._scan_readable_worktree(str(repo))
         MODULE._validate_scope_against_worktree(parsed_scope, str(repo), readable_manifest)
         selected_manifest = MODULE._build_selected_content_manifest(repo, parsed_scope)
-        approved = MODULE._compute_transmission_sha256(
+        base_transmission = MODULE._compute_transmission_sha256(
             MODULE._canonical_digest(parsed_scope),
             MODULE._manifest_digest(readable_manifest),
             MODULE._selected_content_digest(selected_manifest),
+        )
+        approved = MODULE.WORKTREE._compute_v11_launch_approval_sha256(
+            "native", "baseline", transmission_sha256=base_transmission,
         )
 
         job = (root / f"scope-acceptance-job-{label}").resolve(); job.mkdir(mode=0o700)
@@ -514,8 +746,8 @@ def run(context: dict[str, object]) -> None:
         )
         fake.chmod(0o755)
         scope_info = scope_path.stat()
-        command = {
-            "schema_version": 9, "kind": "agy-worker-dispatch-command",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
             "job_id": f"scope-acceptance-{label}", "workdir": str(repo),
             "argv": ["agy", "--sandbox", "--json-schema", str(schema), "--print", "task"],
             "agy_version": "1.2.11" if include_denial else "1.1.22", "agy_version_observed": True,
@@ -528,15 +760,13 @@ def run(context: dict[str, object]) -> None:
             "provider_scope_identity": list(MODULE._identity(scope_info)),
             "approved_transmission_sha256": approved,
             "approved_whole_worktree_sha256": None,
-            "boost": False, "boost_policy_sha256": None,
-            "approved_boost_risk_sha256": None,
             "allow_scoped_repair": allow_scoped_repair,
             "repair_authority_sha256": None,
             "allow_self_verification": False,
             "self_verification_manifest_path": None,
             "self_verification_manifest_sha256": None,
             "self_verification_manifest_identity": None,
-        }
+        })
         if allow_self_verification:
             manifest_path = job / "self-verification-manifest.json"
             manifest_raw = MODULE.canonical({
@@ -557,26 +787,8 @@ def run(context: dict[str, object]) -> None:
                 "self_verification_manifest_sha256": MODULE.digest(manifest_raw),
                 "self_verification_manifest_identity": list(MODULE._identity(manifest_path.stat())),
             })
-        if command_schema == 8:
-            command["schema_version"] = 8
-            for field in (
-                "allow_scoped_repair", "repair_authority_sha256",
-                "allow_self_verification", "self_verification_manifest_path",
-                "self_verification_manifest_sha256", "self_verification_manifest_identity",
-            ):
-                command.pop(field)
-        elif allow_scoped_repair:
+        if allow_scoped_repair:
             command["repair_authority_sha256"] = MODULE._repair_authority_for_command(command)
-        if command_schema == 10:
-            command["schema_version"] = 10
-            command["provider_isolation"] = "native"
-            command["approved_transmission_sha256"] = MODULE._bound_transmission_sha256(
-                command, MODULE._canonical_digest(parsed_scope),
-                MODULE._manifest_digest(readable_manifest),
-                MODULE._selected_content_digest(selected_manifest),
-            )
-            if allow_scoped_repair:
-                command["repair_authority_sha256"] = MODULE._repair_authority_for_command(command)
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         return repo, job, bin_dir, sentinel, initial_payload, initial_tool
@@ -635,7 +847,7 @@ def run(context: dict[str, object]) -> None:
         state, _raw, _sha = MODULE.load_state(job)
         assert state["status"] == "succeeded" and state["reconciliation_manifest_sha256"] is not None
         assert MODULE.bound_provider_execution(job, state) == {
-            "legacy": True, "scope": "provider-scope", "agy_sandbox": True,
+            "legacy": False, "scope": "provider-scope", "agy_sandbox": True,
             "native_containment": True,
         }
         assert state["provider_stage_path"] == str(stage_path) and not stage_path.exists()
@@ -643,37 +855,6 @@ def run(context: dict[str, object]) -> None:
         assert state["repair_lineage_sha256"] is None
         assert state["continue_available"] is False
 
-        legacy_home = root / "legacy-v8-scoped-caller-home"
-        legacy_home.mkdir(mode=0o700)
-        prior_home = os.environ.get("HOME")
-        os.environ["HOME"] = str(legacy_home)
-        try:
-            legacy_repo, legacy_job, legacy_bin, legacy_sentinel, _, _ = scoped_controller_fixture(
-                "legacy-v8-scoped", "no-net-effect", command_schema=8,
-            )
-            assert run_scoped_controller(
-                legacy_job, legacy_bin, native_containment=False,
-            ) == 0
-        finally:
-            if prior_home is None:
-                os.environ.pop("HOME", None)
-            else:
-                os.environ["HOME"] = prior_home
-        legacy_command, legacy_raw, _legacy_identity = MODULE.load_command(legacy_job)
-        legacy_state, _legacy_state_raw, _legacy_state_sha = MODULE.load_state(legacy_job)
-        legacy_observed = json.loads(legacy_sentinel.read_text(encoding="utf-8"))
-        assert legacy_command["schema_version"] == 8
-        assert legacy_command["argv"].count("--sandbox") == 1
-        assert legacy_raw == MODULE.canonical({
-            key: value for key, value in legacy_command.items()
-            if key in MODULE.COMMAND_V8_FIELDS
-        })
-        assert legacy_observed["environment"]["HOME"] == str(legacy_home)
-        assert MODULE.bound_provider_execution(legacy_job, legacy_state) == {
-            "legacy": True, "scope": "provider-scope", "agy_sandbox": True,
-            "native_containment": False,
-        }
-        assert not (legacy_job / "test-only-linux-containment.json").exists()
 
         repair_repo, repair_job, repair_bin, _repair_sentinel, _, _ = scoped_controller_fixture(
             "repair-lineage", "positive", allow_scoped_repair=True,
@@ -1138,7 +1319,7 @@ def run(context: dict[str, object]) -> None:
 
     check("interrupted empty-directory reconciliation recovers durably and idempotently", interrupted_empty_directory_recovery_is_durable_and_idempotent)
 
-    def normal_standard_and_linked_worktrees_create_bound_v14_state() -> None:
+    def standard_snapshot_and_linked_current_launch_boundaries() -> None:
         fixture = root / "bound-positive-controls"; fixture.mkdir()
         source_repo = fixture / "source"; source_repo.mkdir()
         linked = fixture / "linked-worktree"
@@ -1156,20 +1337,32 @@ def run(context: dict[str, object]) -> None:
             for label, worktree in (("standard", source_repo), ("linked", linked)):
                 snapshot = MODULE._worktree_snapshot(str(worktree))
                 assert snapshot is not None and snapshot["entries"] == 0, label
+                assert MODULE._dispatch_root_identity(str(worktree)) is not None, label
+                if label == "standard":
+                    preview = subprocess.run(
+                        [str(ROOT / "agy-worker.sh"), "transmission-preview", "--workdir", str(worktree)],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    assert preview.returncode == 20 and not preview.stdout
+                    assert preview.stderr == (
+                        b"agy-worker.sh: transmission preview invalid: control marker is not regular; "
+                        b"use a branch-backed linked worktree\n"
+                    )
+                    continue
                 job = fixture / f"{label}-job"; job.mkdir(mode=0o700)
                 schema = fixture / f"{label}-provider.json"; provider_schema(schema)
-                command = {
-                    "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"bound-{label}",
+                command = current_command_fixture({
+                    "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"bound-{label}",
                     "workdir": str(worktree), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
                     "agy_version": "1.1.16", "agy_version_observed": True,
                     "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                     "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                     "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-                }
+                })
                 MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
                 state, _state_sha = MODULE.create_state(job, "initial", resume=False)
                 persisted = json.loads((job / MODULE.STATE_NAME).read_text(encoding="utf-8"))
-                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14, label
+                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16, label
                 assert state["worktree_snapshot_algorithm"] == MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM, label
                 assert state["worktree_baseline"] is not None, label
                 assert state["worktree_root_identity"] is not None, label
@@ -1197,15 +1390,15 @@ def run(context: dict[str, object]) -> None:
                 check=True,
             )
             linked = linked.resolve()
-            direct_reader = MODULE._WORKTREE_HELPER._IMPLEMENTATION_DEFAULTS["_bounded_git_read"]
-            facade_reader = MODULE._bounded_git_read
+            direct_reader = MODULE.WORKTREE._bounded_git_read
+            facade_reader = MODULE.WORKTREE._bounded_git_read
 
             def with_reader(reader, action):
-                MODULE._bounded_git_read = reader
+                MODULE.WORKTREE._bounded_git_read = reader
                 try:
                     return action()
                 finally:
-                    MODULE._bounded_git_read = facade_reader
+                    MODULE.WORKTREE._bounded_git_read = facade_reader
 
             aliases: set[tuple[str, ...]] = set()
             def var_alias_reader(*args, **kwargs):
@@ -1216,8 +1409,8 @@ def run(context: dict[str, object]) -> None:
                 return result
 
             for label, worktree in (("standard", source_repo), ("linked", linked)):
-                assert with_reader(var_alias_reader, lambda: MODULE._git_boundary_identity(str(worktree))) is not None, label
-                assert with_reader(var_alias_reader, lambda: MODULE._worktree_snapshot(str(worktree))) is not None, label
+                assert with_reader(var_alias_reader, lambda: MODULE._git_boundary_identity(str(worktree))) is not None, label  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                assert with_reader(var_alias_reader, lambda: MODULE._worktree_snapshot(str(worktree))) is not None, label  # noqa: B023 -- callback is invoked and restored within this loop iteration
             # The compatibility exception is deliberately only /var to
             # /private/var.  This fixture may instead live under /private/tmp
             # (whose /tmp alias is not accepted), so no /var observation is
@@ -1243,8 +1436,8 @@ def run(context: dict[str, object]) -> None:
                 (source_repo, ("rev-parse", "--absolute-git-dir"), b"/tmp/has\0nul\n"),
             ):
                 reader = replaced_reader(arguments, replacement)
-                assert with_reader(reader, lambda: MODULE._git_boundary_identity(str(worktree))) is None
-                assert with_reader(reader, lambda: MODULE._worktree_snapshot(str(worktree))) is None
+                assert with_reader(reader, lambda: MODULE._git_boundary_identity(str(worktree))) is None  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                assert with_reader(reader, lambda: MODULE._worktree_snapshot(str(worktree))) is None  # noqa: B023 -- callback is invoked and restored within this loop iteration
         finally:
             if linked.exists():
                 subprocess.run(["git", "-C", str(source_repo), "worktree", "remove", "--force", str(linked)], check=True)
@@ -1252,10 +1445,10 @@ def run(context: dict[str, object]) -> None:
 
     # Keep the established current dispatch-state case as the inventory owner: this
     # is its plumbing-alias integration branch, not a new suite count.
-    check("normal standard and linked worktrees persist a bound V14 dispatch state", normal_standard_and_linked_worktrees_create_bound_v14_state)
+    check("standard snapshots remain supported while current launch requires a linked worktree", standard_snapshot_and_linked_current_launch_boundaries)
 
-    def extracted_worktree_facade_preserves_all_signatures_and_patch_seams() -> None:
-        """The split keeps the old module surface and its intentional test seams."""
+    def worktree_module_preserves_single_ownership_and_patch_seams() -> None:
+        """Compatibility names preserve signatures while the owner keeps every lookup."""
         import ast
         import inspect
 
@@ -1287,15 +1480,71 @@ def run(context: dict[str, object]) -> None:
             node.name: node for node in helper_tree.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
-        assert set(extracted) <= set(facade_nodes) & set(helper_nodes)
+        assert set(extracted) <= set(helper_nodes)
+        assert not set(facade_nodes) & set(helper_nodes)
         assert len(extracted) == 16
         for name in extracted:
-            assert ast.dump(facade_nodes[name].args, include_attributes=False) == ast.dump(
-                helper_nodes[name].args, include_attributes=False,
-            ), name
+            assert getattr(MODULE, name) is getattr(MODULE.WORKTREE, name), name
             assert inspect.signature(getattr(MODULE, name)) == inspect.signature(
-                getattr(MODULE._WORKTREE_HELPER, name),
+                getattr(MODULE.WORKTREE, name),
             ), name
+            assert getattr(MODULE.WORKTREE, name).__globals__ is vars(MODULE.WORKTREE), name
+        assert MODULE.MODEL_SELECTION is MODULE.WORKTREE.MODEL_SELECTION
+        assert MODULE.CONTAINMENT is MODULE.WORKTREE.CONTAINMENT
+        assert MODULE.DispatchError is MODULE.WORKTREE.DispatchError
+        assert MODULE.WorktreeBaselineError is MODULE.WORKTREE.WorktreeBaselineError
+        assert MODULE.ResolveUndoPresentError is MODULE.WORKTREE.ResolveUndoPresentError
+        assert not issubclass(MODULE.DispatchError, MODULE.WORKTREE.ReadableManifestError)
+        assert not issubclass(MODULE.WORKTREE.ReadableManifestError, MODULE.DispatchError)
+        assert not hasattr(MODULE.WORKTREE, "call")
+        assert not hasattr(MODULE.WORKTREE, "_IMPLEMENTATION_DEFAULTS")
+        assert MODULE.canonical is MODULE.WORKTREE.canonical
+        assert MODULE.canonical({"unicode": "é"}) == b'{"unicode":"\\u00e9"}\n'
+        recursive = []
+        for _ in range(2000):
+            recursive = [recursive]
+        original_dumps = MODULE.json.dumps
+        def recursive_dump(*_args: object, **_kwargs: object) -> str:
+            raise RecursionError("fixture nesting limit")
+        MODULE.json.dumps = recursive_dump
+        try:
+            try:
+                MODULE.canonical(recursive)
+            except MODULE.DispatchError as exc:
+                assert str(exc) == "JSON structure is invalid"
+                assert isinstance(exc.__cause__, RecursionError)
+            else:
+                raise AssertionError("canonical encoding lost its classified recursion failure")
+        finally:
+            MODULE.json.dumps = original_dumps
+        for reader, error_type in (
+            (MODULE.WORKTREE._read_provider_scope_file, MODULE.WORKTREE.ReadableManifestError),
+            (MODULE._read_provider_scope_file, MODULE.DispatchError),
+        ):
+            try:
+                reader("invalid\0scope", 1024)
+            except error_type as exc:
+                assert str(exc) == "provider scope path is invalid"
+            else:
+                raise AssertionError("scope reader lost its classified error family")
+        original_raw_snapshot = MODULE.WORKTREE._worktree_snapshot_raw
+        try:
+            for internal, public, message in (
+                (MODULE.WORKTREE._UnsupportedWorktreeError, MODULE.WorktreeBaselineError, "unsupported"),
+                (MODULE.WORKTREE._ResolveUndoPresentError, MODULE.ResolveUndoPresentError, "resolve_undo_present"),
+            ):
+                def unavailable(*_args, **_kwargs):
+                    raise internal(message)  # noqa: B023 -- invoked synchronously within this iteration
+                MODULE.WORKTREE._worktree_snapshot_raw = unavailable
+                try:
+                    MODULE.WORKTREE._worktree_snapshot("unused")
+                except public as exc:
+                    assert str(exc) == message
+                    assert exc.__cause__ is None
+                else:
+                    raise AssertionError("snapshot adapter lost its public error contract")
+        finally:
+            MODULE.WORKTREE._worktree_snapshot_raw = original_raw_snapshot
 
         repo = root / "extracted-facade-seams"; repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -1304,17 +1553,17 @@ def run(context: dict[str, object]) -> None:
         subprocess.run(["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "base"], check=True)
         baseline = MODULE._worktree_snapshot(str(repo))
         assert baseline is not None
-        original_marker = MODULE._marker_only_preflight
-        original_safe_git = MODULE._safe_git_executable
+        original_marker = MODULE.WORKTREE._marker_only_preflight
+        original_safe_git = MODULE.WORKTREE._safe_git_executable
         try:
-            MODULE._marker_only_preflight = lambda *_args, **_kwargs: False
+            MODULE.WORKTREE._marker_only_preflight = lambda *_args, **_kwargs: False
             assert MODULE._worktree_snapshot(str(repo)) is None
-            MODULE._marker_only_preflight = original_marker
-            MODULE._safe_git_executable = lambda: None
+            MODULE.WORKTREE._marker_only_preflight = original_marker
+            MODULE.WORKTREE._safe_git_executable = lambda: None
             assert MODULE._worktree_snapshot(str(repo)) is None
         finally:
-            MODULE._marker_only_preflight = original_marker
-            MODULE._safe_git_executable = original_safe_git
+            MODULE.WORKTREE._marker_only_preflight = original_marker
+            MODULE.WORKTREE._safe_git_executable = original_safe_git
 
     def nested_git_entries_fail_closed_without_opening_them() -> None:
         """Only the root marker may be bound; nested markers are never content."""
@@ -1350,12 +1599,12 @@ def run(context: dict[str, object]) -> None:
             def no_nested_marker_open(name, flags, mode=0o777, *, dir_fd=None):
                 if (
                     name == ".git" and dir_fd is not None
-                    and os.fstat(dir_fd).st_dev == parent_info.st_dev
-                    and os.fstat(dir_fd).st_ino == parent_info.st_ino
+                    and os.fstat(dir_fd).st_dev == parent_info.st_dev  # noqa: B023 -- callback is invoked and restored within this loop iteration
+                    and os.fstat(dir_fd).st_ino == parent_info.st_ino  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 ):
-                    denied.append(kind)
+                    denied.append(kind)  # noqa: B023 -- callback is invoked and restored within this loop iteration
                     raise AssertionError("nested Git marker was opened")
-                return original_open(name, flags, mode, dir_fd=dir_fd)
+                return original_open(name, flags, mode, dir_fd=dir_fd)  # noqa: B023 -- callback is invoked and restored within this loop iteration
             MODULE.os.open = no_nested_marker_open
             try:
                 assert MODULE._worktree_snapshot(str(linked)) is None, kind
@@ -1384,20 +1633,20 @@ def run(context: dict[str, object]) -> None:
         )
 
         preflight_repo = root / "nested-git-preflight"; preflight_repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(preflight_repo)], check=True)
-        (preflight_repo / "nested").mkdir()
-        (preflight_repo / "nested" / ".git").write_text("nested authority\n", encoding="utf-8")
+        initialize_linked_fixture(preflight_repo)
         preflight_job = root / "nested-git-preflight-job"; preflight_job.mkdir(mode=0o700)
         schema = root / "nested-git-preflight-provider.json"; provider_schema(schema)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "nested-git-preflight",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "nested-git-preflight",
             "workdir": str(preflight_repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(preflight_job, MODULE.COMMAND_NAME, command)
+        (preflight_repo / "nested").mkdir()
+        (preflight_repo / "nested" / ".git").write_text("nested authority\n", encoding="utf-8")
         try:
             MODULE.create_state(preflight_job, "initial", resume=False)
         except MODULE.DispatchError as exc:
@@ -1477,7 +1726,7 @@ def run(context: dict[str, object]) -> None:
         vulnerable_snapshot = MODULE._worktree_snapshot(str(candidate_repo))
         if vulnerable_snapshot is not None:
             state.update({
-                "worktree_baseline": vulnerable_snapshot,
+                "worktree_baseline": {key: vulnerable_snapshot[key] for key in ("sha256", "entries")},
                 "candidate_worktree_sha256": vulnerable_snapshot["sha256"],
                 "candidate_worktree_entries": vulnerable_snapshot["entries"],
             })
@@ -1489,20 +1738,20 @@ def run(context: dict[str, object]) -> None:
         # The initial controller path must reject before the fake provider can
         # run; this covers shell-created state as well as status/action reads.
         preflight_repo = root / "casefold-nested-git-preflight"; preflight_repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(preflight_repo)], check=True)
-        (preflight_repo / "nested").mkdir()
-        (preflight_repo / "nested" / ".GIT").write_text("nested authority\n", encoding="utf-8")
+        initialize_linked_fixture(preflight_repo)
         preflight_job = root / "casefold-nested-git-preflight-job"; preflight_job.mkdir(mode=0o700)
         schema = root / "casefold-nested-git-preflight-provider.json"; provider_schema(schema)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "casefold-nested-git-preflight",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "casefold-nested-git-preflight",
             "workdir": str(preflight_repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(preflight_job, MODULE.COMMAND_NAME, command)
+        (preflight_repo / "nested").mkdir()
+        (preflight_repo / "nested" / ".GIT").write_text("nested authority\n", encoding="utf-8")
         try:
             MODULE.create_state(preflight_job, "initial", resume=False)
         except MODULE.DispatchError as exc:
@@ -1570,8 +1819,6 @@ def run(context: dict[str, object]) -> None:
         object_length = len(raw.split(b" ", 2)[1])
         parsed = MODULE._parse_resolve_undo(raw, object_length)
         assert parsed is not None and len(parsed) == 3
-        legacy_before = MODULE._worktree_snapshot(str(repo), legacy=True)
-        assert legacy_before is not None
         assert MODULE._worktree_snapshot(str(repo)) is None
         staged_before = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "--stage", "-z"], check=True, stdout=subprocess.PIPE,
@@ -1585,9 +1832,7 @@ def run(context: dict[str, object]) -> None:
             ["git", "-C", str(repo), "ls-files", "--stage", "-z"], check=True, stdout=subprocess.PIPE,
         ).stdout == staged_before
         assert (repo / "tracked.txt").read_bytes() == bytes_before
-        legacy_after = MODULE._worktree_snapshot(str(repo), legacy=True)
         semantic_after = MODULE._worktree_snapshot(str(repo))
-        assert legacy_after is not None and legacy_after["sha256"] != legacy_before["sha256"]
         assert semantic_after is not None
 
         job, state, _sha, _envelope = current_candidate_fixture("resolve-undo")
@@ -1596,7 +1841,7 @@ def run(context: dict[str, object]) -> None:
         leave_resolve_undo(candidate_repo)
         candidate_snapshot_actions_reject(job, state, "resolve-undo")
 
-    check("resolve-undo state fails closed for v7 and result continue finalize parity while v6 remains exact", resolve_undo_semantics_fail_closed_and_block_candidate_actions)
+    check("resolve-undo state fails closed for current snapshots and result continue finalize parity", resolve_undo_semantics_fail_closed_and_block_candidate_actions)
 
     def malformed_duplicate_and_racing_resolve_undo_fail_closed() -> None:
         repo = root / "resolve-undo-shape-repo"; repo.mkdir()
@@ -1655,7 +1900,7 @@ def run(context: dict[str, object]) -> None:
     def resolve_undo_observation_fails_closed_before_provider_launch() -> None:
         """A valid non-empty REUC observation immediately before launch yields resolve_undo_present."""
         repo = root / "resolve-undo-preflight-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         subprocess.run(["git", "-C", str(repo), "config", "user.email", "fixture@example.invalid"], check=True)
         subprocess.run(["git", "-C", str(repo), "config", "user.name", "Fixture"], check=True)
         tracked = repo / "tracked.txt"; tracked.write_text("base\n", encoding="utf-8")
@@ -1696,14 +1941,14 @@ def run(context: dict[str, object]) -> None:
             encoding="utf-8",
         )
         fake_agy.chmod(0o755)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "resolve-undo-preflight",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "resolve-undo-preflight",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         state_init, _init_sha = MODULE.create_state(job, "initial", resume=False)
         assert state_init["status"] == "queued"
@@ -1826,7 +2071,7 @@ def run(context: dict[str, object]) -> None:
         subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
         baseline = MODULE._worktree_snapshot(str(repo)); assert baseline is not None
         state.update({
-            "worktree_baseline": baseline,
+            "worktree_baseline": {key: baseline[key] for key in ("sha256", "entries")},
             "candidate_worktree_sha256": baseline["sha256"],
             "candidate_worktree_entries": baseline["entries"],
             "continue_available": True,
@@ -1885,7 +2130,7 @@ def run(context: dict[str, object]) -> None:
         # of merely testing a synthetic flag parser.
         if intent_snapshot is not None:
             state.update({
-                "worktree_baseline": intent_snapshot,
+                "worktree_baseline": {key: intent_snapshot[key] for key in ("sha256", "entries")},
                 "candidate_worktree_sha256": intent_snapshot["sha256"],
                 "candidate_worktree_entries": intent_snapshot["entries"],
             })
@@ -1896,811 +2141,27 @@ def run(context: dict[str, object]) -> None:
 
     check("intent-to-add fails closed for snapshots and result continue finalize parity", intent_to_add_flags_fail_closed_and_cannot_authorize_candidate_actions)
 
-    def v6_snapshot_readback_uses_legacy_digest_and_rejects_semantic_substitution() -> None:
-        """Persisted v6 candidates must never be silently reinterpreted as v7."""
-        job, state, _sha, _envelope = current_candidate_fixture("v6-snapshot")
-        command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
-        legacy = MODULE._worktree_snapshot(command["workdir"], legacy=True)
-        semantic = MODULE._worktree_snapshot(command["workdir"])
-        assert legacy is not None and semantic is not None and legacy["sha256"] != semantic["sha256"]
-        state.update({
-            "schema_version": 6,
-            "worktree_baseline": legacy,
-            "candidate_worktree_sha256": legacy["sha256"],
-            "candidate_worktree_entries": legacy["entries"],
-            "continue_available": True,
-        })
-        state.pop("worktree_snapshot_algorithm")
-        state.pop("provider_terminal_status")
-        for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            state.pop(field)
-        root_identity = state.pop("worktree_root_identity")
-        legacy_raw, legacy_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-        loaded, _raw, loaded_sha = MODULE.load_state(job)
-        assert loaded_sha == legacy_sha
-        assert "worktree_root_identity" not in loaded
-        hybrid = dict(loaded)
-        hybrid["worktree_root_identity"] = root_identity
-        try:
-            MODULE.validate_state(hybrid)
-        except MODULE.DispatchError as exc:
-            assert str(exc) == "dispatch state fields are invalid"
-        else:
-            raise AssertionError("v6 state accepted a v9 root identity")
-        assert (job / MODULE.STATE_NAME).read_bytes() == legacy_raw
-        MODULE._bound_candidate_worktree(loaded, command)
-        actions = {item["action"] for item in MODULE.public_status(loaded, loaded_sha, job=job)["available_actions"]}
-        assert {"result", "continue", "finalize"} <= actions
-        substituted = dict(loaded)
-        substituted["candidate_worktree_sha256"] = semantic["sha256"]
-        persisted_substituted = dict(substituted)
-        for field in {*MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            persisted_substituted.pop(field)
-        substituted_raw, substituted_sha = MODULE.write_atomic(
-            job, MODULE.STATE_NAME, persisted_substituted,
-        )
-        stale = MODULE.public_status(substituted, substituted_sha, job=job)
-        assert {item["action"] for item in stale["available_actions"]} == {"result"}
-        assert stale["result_available"] is True
-        assert stale["candidate_sha256"] == substituted["result_sha256"]
-        assert stale["continue_available"] is False
-        try:
-            MODULE._bound_candidate_worktree(substituted, command)
-        except MODULE.DispatchError as exc:
-            assert str(exc).startswith("candidate worktree binding changed")
-        else:
-            raise AssertionError("v6 candidate silently accepted a v7 semantic digest")
-        delivered = subprocess.run(
-            [sys.executable, str(SOURCE), "result", "--job-dir", str(job)],
-            check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        assert delivered.returncode == 0, delivered.stderr.decode("utf-8", "replace")
-        assert delivered.stdout == _envelope.read_bytes() and delivered.stderr == b""
-        assert (job / MODULE.STATE_NAME).read_bytes() == substituted_raw
 
-        bin_dir = root / "v6-substituted-provider-bin"; bin_dir.mkdir()
-        provider_called = root / "v6-substituted-provider-called"
-        fake = bin_dir / "agy"
-        fake.write_text("#!/bin/sh\nprintf called > " + shlex.quote(str(provider_called)) + "\n", encoding="utf-8")
-        fake.chmod(0o755)
-        verification = {
-            "schema_version": 2, "summary": "legacy driver repair", "passed_checks": [],
-            "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": substituted["result_sha256"], "coverage": "partial",
-            "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
-        }
-        for arguments in (
-            ("restart", "--job-dir", str(job), "--approve-state-sha", substituted_sha),
-            ("continue", "--job-dir", str(job), "--approve-state-sha", substituted_sha),
-            ("finalize", "--job-dir", str(job), "--approve-state-sha", substituted_sha,
-             "--assurance", "partially_verified"),
-        ):
-            rejected = subprocess.run(
-                [sys.executable, str(SOURCE), *arguments], input=json.dumps(verification).encode("utf-8"),
-                env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
-                check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            assert rejected.returncode != 0 and rejected.stdout == b"", arguments
-            assert (job / MODULE.STATE_NAME).read_bytes() == substituted_raw, arguments
-            assert not provider_called.exists(), arguments
-            assert not (job / "continue-staged").exists(), arguments
-            assert not list(job.glob("*stream.ndjson")), arguments
-        persisted_loaded = dict(loaded)
-        for field in {*MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            persisted_loaded.pop(field)
-        _raw, loaded_sha = MODULE.write_atomic(
-            job, MODULE.STATE_NAME, persisted_loaded,
-        )
-        verification = {
-            "schema_version": 2, "summary": "legacy driver repair", "passed_checks": [],
-            "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": loaded["result_sha256"], "coverage": "partial",
-            "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
-        }
-        queued, _queued_sha = MODULE.create_state(
-            job, "conversation-continue", resume=True,
-            approve_sha=loaded_sha, verification=verification,
-        )
-        assert queued["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
-        assert queued["worktree_baseline"] == semantic
-        assert queued["candidate_worktree_sha256"] == semantic["sha256"]
-        assert queued["candidate_worktree_entries"] == semantic["entries"]
-        assert queued["worktree_root_identity"] == MODULE._dispatch_root_identity(command["workdir"])
 
-    check("v6 candidate readback retains its legacy digest then atomically migrates to a fresh v9 semantic binding", v6_snapshot_readback_uses_legacy_digest_and_rejects_semantic_substitution)
 
-    def v5_through_v9_status_parity_and_migration_are_exact() -> None:
-        """Legacy status is read-only; eligible writes acquire one V11 binding."""
-        for version in (5, 6, 7, 8, 9):
-            job, state, _sha, _envelope = current_candidate_fixture(
-                f"v{version}-migration", selection=version == 9,
-            )
-            command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
-            legacy = MODULE._worktree_snapshot(command["workdir"], legacy=True)
-            semantic = MODULE._worktree_snapshot(command["workdir"])
-            assert legacy is not None and semantic is not None
-            state["schema_version"] = version
-            if version in {5, 6}:
-                expected = legacy
-            else:
-                expected = semantic
-            state.update({
-                "worktree_baseline": expected,
-                "candidate_worktree_sha256": expected["sha256"],
-                "candidate_worktree_entries": expected["entries"],
-                "continue_available": True,
-            })
-            if version == 5:
-                state.pop("selection_sha256"); state.pop("selection_identity")
-            if version < 8:
-                state.pop("worktree_snapshot_algorithm")
-            if version < 9:
-                state.pop("worktree_root_identity")
-            if version < MODULE.CURRENT_STATE_SCHEMA:
-                state.pop("provider_terminal_status")
-                for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-                    state.pop(field)
-            _raw, legacy_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-            loaded, _raw, loaded_sha = MODULE.load_state(job)
-            assert loaded_sha == legacy_sha and loaded["schema_version"] == version
-            actions = {
-                item["action"] for item in MODULE.public_status(loaded, loaded_sha, job=job)["available_actions"]
-            }
-            assert {"result", "continue", "finalize"} <= actions, version
-            verification = {
-                "schema_version": 2, "summary": f"v{version} migration", "passed_checks": [],
-                "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
-                "candidate_sha256": loaded["result_sha256"], "coverage": "partial",
-                "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
-            }
-            queued, _queued_sha = MODULE.create_state(
-                job, "conversation-continue", resume=True,
-                approve_sha=loaded_sha, verification=verification,
-            )
-            assert queued["schema_version"] == MODULE.CURRENT_STATE_SCHEMA, version
-            assert queued["worktree_snapshot_algorithm"] == MODULE.WORKTREE_SNAPSHOT_SEMANTIC_V1
-            assert queued["worktree_baseline"] == semantic
-            assert queued["candidate_worktree_sha256"] == semantic["sha256"]
-            assert queued["candidate_worktree_entries"] == semantic["entries"]
-            assert queued["worktree_root_identity"] == MODULE._dispatch_root_identity(command["workdir"])
-            assert queued["provider_terminal_status"] == "unknown"
 
-        # A V9 state cannot acquire V11 authority from a different selection
-        # binding, even when the command, root, schemas, and worktree remain valid.
-        _job, v9_state, _sha, _envelope = current_candidate_fixture(
-            "v9-selection-drift", selection=True,
-        )
-        v9_command = json.loads((_job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
-        v9_state["schema_version"] = 9
-        v9_state.pop("provider_terminal_status")
-        for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            v9_state.pop(field)
-        v9_state["selection_sha256"] = "0" * 64
-        MODULE.validate_state(v9_state)
-        try:
-            MODULE._upgrade_legacy_state(v9_state, v9_command)
-        except MODULE.DispatchError as exc:
-            assert str(exc) == "dispatch selection binding changed"
-        else:
-            raise AssertionError("V9 selection drift acquired V11 authority")
 
-    def v1_candidate_status_is_read_only_and_all_mutations_fail_without_writes() -> None:
-        """V1 result evidence remains readable but has no lifecycle authority."""
-        fake_bin = root / "legacy-mutation-fake-bin"; fake_bin.mkdir(mode=0o700)
-        provider_marker = root / "legacy-mutation-provider-called"
-        fake_agy = fake_bin / "agy"
-        fake_agy.write_text(
-            "#!/bin/sh\nprintf called > " + shlex.quote(str(provider_marker)) + "\nexit 99\n",
-            encoding="utf-8",
-        )
-        fake_agy.chmod(0o700)
-        environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
 
-        for version in (1,):
-            for workflow in ("task", "project"):
-                job, state, _sha, envelope = current_candidate_fixture(
-                    f"v{version}-{workflow}-readonly",
-                    workflow=workflow, linked=workflow == "project",
-                )
-                state["schema_version"] = version
-                removed = {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}
-                if version == 1:
-                    removed.update(MODULE.STATE_PROJECT_FIELDS)
-                    removed.update({"provider_retry_after_seconds", "provider_retry_observed_epoch"})
-                for key in removed:
-                    state.pop(key, None)
-                old_raw, old_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-                loaded, loaded_raw, loaded_sha = MODULE.load_state(job)
-                assert loaded_raw == old_raw and loaded_sha == old_sha
 
-                direct_public = MODULE.public_status(loaded, loaded_sha, job=job)
-                assert {item["action"] for item in direct_public["available_actions"]} == {"result"}, (
-                    version, workflow, direct_public["available_actions"],
-                )
-                commands = (
-                    [sys.executable, str(SOURCE), "status", "--job-dir", str(job)],
-                    [sys.executable, str(SOURCE), "wait", "--job-dir", str(job),
-                     "--after-state-sha", loaded_sha, "--timeout", "1s"],
-                )
-                projected = []
-                for command_line in commands:
-                    outcome = subprocess.run(
-                        command_line, env=environment, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, check=False,
-                    )
-                    assert outcome.returncode == 0 and not outcome.stderr
-                    projected.append(json.loads(outcome.stdout))
-                assert projected[0]["available_actions"] == projected[1]["available_actions"]
-                assert {item["action"] for item in projected[0]["available_actions"]} == {"result"}
-                delivered = subprocess.run(
-                    [sys.executable, str(SOURCE), "result", "--job-dir", str(job)],
-                    env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    check=False,
-                )
-                assert delivered.returncode == 0 and delivered.stdout == envelope.read_bytes()
-                assert not delivered.stderr and (job / MODULE.STATE_NAME).read_bytes() == old_raw
 
-                verification = {
-                    "schema_version": 2, "summary": "historical candidate cannot mutate",
-                    "passed_checks": [], "failed_checks": ["legacy-authority"],
-                    "advisory_checks": 0, "missing_checks": 0,
-                    "candidate_sha256": loaded["result_sha256"], "coverage": "partial",
-                    "verified_findings": 1, "unresolved_gaps": 1,
-                    "diff_review_complete": True,
-                }
-                attempts = (
-                    ("resume", 21, []),
-                    ("restart", 64, []),
-                    ("continue", 64, []),
-                    ("finalize", 64, ["--assurance", "partially_verified"]),
-                )
-                for action, expected_exit, suffix in attempts:
-                    command_line = [
-                        sys.executable, str(SOURCE), action, "--job-dir", str(job),
-                        "--approve-state-sha", loaded_sha, *suffix,
-                    ]
-                    outcome = subprocess.run(
-                        command_line, env=environment,
-                        input=(json.dumps(verification).encode("utf-8")
-                               if action in {"continue", "finalize"} else None),
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                    )
-                    assert outcome.returncode == expected_exit and not outcome.stdout, (
-                        version, workflow, action, outcome.returncode, outcome.stderr,
-                    )
-                    assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-                    assert not list(job.glob("attempt-*.stream.ndjson"))
-                copy_parent = root / f"v{version}-{workflow}-copy-parent"; copy_parent.mkdir(mode=0o700)
-                copied = subprocess.run(
-                    [sys.executable, str(SOURCE), "verification-copy", "--job-dir", str(job),
-                     "--destination", str(copy_parent.resolve() / "candidate")],
-                    env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                )
-                assert copied.returncode == MODULE.EXIT_BY_REASON["status_unavailable"] and not copied.stdout
-                assert not (copy_parent / "candidate").exists()
-                assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-                assert not provider_marker.exists()
 
-    def v3_v4_migration_requires_state_command_agreement_before_any_write() -> None:
-        """Only an internally coherent V3/V4 state may obtain a migration capability."""
 
-        verification_template = {
-            "schema_version": 2, "summary": "legacy migration binding",
-            "passed_checks": [], "failed_checks": ["fixture"],
-            "advisory_checks": 0, "missing_checks": 0,
-            "coverage": "partial", "verified_findings": 1,
-            "unresolved_gaps": 1, "diff_review_complete": True,
-        }
-
-        def downgrade(
-            label: str, version: int, *, patch: dict | None = None, linked: bool = False,
-            inside_worktree: bool = False,
-        ) -> tuple[Path, dict, bytes, str]:
-            job, state, _sha, _envelope = current_candidate_fixture(
-                f"v{version}-{label}", workflow="task", linked=linked,
-                inside_worktree=inside_worktree,
-            )
-            command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
-            state["schema_version"] = version
-            for key in {
-                *MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS,
-                *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS,
-                *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS,
-            }:
-                state.pop(key, None)
-            if version == 3:
-                state.pop("provider_retry_after_seconds", None)
-                state.pop("provider_retry_observed_epoch", None)
-            state.update({
-                "phase": None, "assurance": None, "continue_available": False,
-                "project_boundary": None,
-            })
-            if patch is not None:
-                state.update(patch)
-            if state["workflow"] == "project":
-                state.update({
-                    "phase": "awaiting-verification", "assurance": "pending",
-                    "project_boundary": MODULE._project_boundary(command["workdir"]),
-                })
-            raw, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-            loaded, loaded_raw, loaded_sha = MODULE.load_state(job)
-            assert loaded_raw == raw and loaded_sha == sha
-            return job, loaded, raw, sha
-
-        # Both V3 and V4 retain a bounded positive path.  It needs the separate
-        # status-time migration digest, and its first write upgrades atomically.
-        for version in (3, 4):
-            job, loaded, raw, sha = downgrade("positive", version)
-            public = MODULE.public_status(loaded, sha, job=job)
-            migration_sha = public["migration_binding_sha256"]
-            assert isinstance(migration_sha, str) and len(migration_sha) == 64
-            actions = {item["action"] for item in public["available_actions"]}
-            assert {"result", "restart", "finalize"} <= actions, (version, actions)
-            assert "verification-copy" not in actions, (version, actions)
-            copy_parent = root / f"legacy-v{version}-copy-parent"; copy_parent.mkdir(mode=0o700)
-            copied = subprocess.run(
-                [sys.executable, str(SOURCE), "verification-copy", "--job-dir", str(job),
-                 "--destination", str(copy_parent.resolve() / "candidate")],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert copied.returncode == MODULE.EXIT_BY_REASON["status_unavailable"] and not copied.stdout
-            assert not (copy_parent / "candidate").exists()
-            assert (job / MODULE.STATE_NAME).read_bytes() == raw
-            verification = dict(verification_template, candidate_sha256=loaded["result_sha256"])
-            missing = subprocess.run(
-                [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-                 "--approve-state-sha", sha, "--assurance", "partially_verified"],
-                input=json.dumps(verification).encode("utf-8"),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert missing.returncode == 64 and not missing.stdout
-            assert b"legacy migration approval" in missing.stderr
-            assert (job / MODULE.STATE_NAME).read_bytes() == raw
-            approved = subprocess.run(
-                [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-                 "--approve-state-sha", sha, "--approve-migration-sha", migration_sha,
-                 "--assurance", "partially_verified"],
-                input=json.dumps(verification).encode("utf-8"),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert approved.returncode == 0 and not approved.stderr
-            current, _current_raw, _current_sha = MODULE.load_state(job)
-            assert current["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
-            assert current["driver_disposition"] == "partially_verified"
-
-        # A V3/V4 record may be syntactically valid after a same-UID state
-        # substitution.  It still must not advertise or use any migration
-        # route unless it agrees with the frozen command's immutable lifecycle
-        # contract.  ``hard_seconds`` is deliberately absent: extend may alter
-        # it while every listed field remains immutable.
-        mismatch_cases = (
-            ("job-id", {"job_id": "different-legacy-job"}, False),
-            ("workflow-explore", {"workflow": "explore"}, False),
-            ("workflow-project", {"workflow": "project"}, True),
-            ("max-cycles", {"max_cycles": 1}, False),
-            ("idle-budget", {"idle_seconds": 1.0}, False),
-            ("max-budget", {"max_seconds": 19.0}, False),
-        )
-        fake_bin = root / "legacy-migration-binding-bin"; fake_bin.mkdir(mode=0o700)
-        provider_marker = root / "legacy-migration-binding-provider-called"
-        fake_agy = fake_bin / "agy"
-        fake_agy.write_text(
-            "#!/bin/sh\nprintf called > " + shlex.quote(str(provider_marker)) + "\nexit 99\n",
-            encoding="utf-8",
-        )
-        fake_agy.chmod(0o700)
-        environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
-        for version in (3, 4):
-            for label, patch, linked in mismatch_cases:
-                job, loaded, raw, sha = downgrade(label, version, patch=patch, linked=linked)
-                public = MODULE.public_status(loaded, sha, job=job)
-                actions = {item["action"] for item in public["available_actions"]}
-                assert public["migration_binding_sha256"] is None, (version, label, public)
-                assert not ({"resume", "restart", "continue", "finalize"} & actions), (
-                    version, label, public["available_actions"],
-                )
-                verification = dict(verification_template, candidate_sha256=loaded["result_sha256"])
-                for action, suffix in (
-                    ("continue", ()),
-                    ("finalize", ("--assurance", "partially_verified")),
-                ):
-                    rejected = subprocess.run(
-                        [sys.executable, str(SOURCE), action, "--job-dir", str(job),
-                         "--approve-state-sha", sha, "--approve-migration-sha", "0" * 64,
-                         *suffix],
-                        env=environment, input=json.dumps(verification).encode("utf-8"),
-                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                    )
-                    assert rejected.returncode == 64 and not rejected.stdout, (
-                        version, label, action, rejected.returncode, rejected.stderr,
-                    )
-                    assert b"immutable lifecycle binding changed" in rejected.stderr
-                    assert (job / MODULE.STATE_NAME).read_bytes() == raw
-                    assert not (job / "continue-staged").exists()
-                    assert not list(job.glob("attempt-*.stream.ndjson"))
-                assert not provider_marker.exists()
-
-        for version in (3, 4):
-            unsafe_job, loaded, raw, sha = downgrade("unsafe-worktree", version, inside_worktree=True)
-            public = MODULE.public_status(loaded, sha, job=unsafe_job)
-            assert public["migration_binding_sha256"] is None
-            actions = {item["action"] for item in public["available_actions"]}
-            assert "result" in actions
-            assert not ({"restart", "continue", "resume", "finalize"} & actions)
-
-            status_res = subprocess.run(
-                [sys.executable, str(SOURCE), "status", "--job-dir", str(unsafe_job)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert status_res.returncode == 0
-            assert json.loads(status_res.stdout)["migration_binding_sha256"] is None
-
-            result_res = subprocess.run(
-                [sys.executable, str(SOURCE), "result", "--job-dir", str(unsafe_job)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert result_res.returncode == 0 and json.loads(result_res.stdout)["status"] == "completed"
-
-            restart_res = subprocess.run(
-                [sys.executable, str(SOURCE), "restart", "--job-dir", str(unsafe_job),
-                 "--approve-state-sha", sha, "--approve-migration-sha", "0" * 64],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert restart_res.returncode != 0
-            assert (unsafe_job / MODULE.STATE_NAME).read_bytes() == raw
-
-    def v5_through_v8_status_commands_project_only_proved_actions_and_finalize_to_v11() -> None:
-        """Every migratable legacy generation can prove and use its actions."""
-        for version in (5, 6, 7, 8):
-            job, state, _sha, _envelope = current_candidate_fixture(f"v{version}-status-positive")
-            command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
-            legacy = MODULE._worktree_snapshot(command["workdir"], legacy=True)
-            semantic = MODULE._worktree_snapshot(command["workdir"])
-            assert legacy is not None and semantic is not None
-            expected = legacy if version in {5, 6} else semantic
-            state.update({
-                "schema_version": version,
-                "worktree_baseline": expected,
-                "candidate_worktree_sha256": expected["sha256"],
-                "candidate_worktree_entries": expected["entries"],
-                "continue_available": True,
-            })
-            if version == 5:
-                state.pop("selection_sha256"); state.pop("selection_identity")
-            if version < 8:
-                state.pop("worktree_snapshot_algorithm")
-            state.pop("worktree_root_identity")
-            state.pop("provider_terminal_status")
-            for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-                state.pop(field)
-            old_raw, old_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-            loaded, _raw, loaded_sha = MODULE.load_state(job)
-            assert loaded_sha == old_sha
-            public = MODULE.public_status(loaded, loaded_sha, job=job)
-            assert {item["action"] for item in public["available_actions"]} == {
-                "result", "restart", "continue", "finalize",
-            }, (version, public["available_actions"])
-            status = subprocess.run(
-                [sys.executable, str(SOURCE), "status", "--job-dir", str(job)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            wait = subprocess.run(
-                [sys.executable, str(SOURCE), "wait", "--job-dir", str(job),
-                 "--after-state-sha", loaded_sha, "--timeout", "1s"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert status.returncode == wait.returncode == 0
-            assert json.loads(status.stdout)["available_actions"] == json.loads(wait.stdout)["available_actions"]
-            assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-            verification = {
-                "schema_version": 2, "summary": f"v{version} bounded finalization",
-                "passed_checks": [], "failed_checks": ["fixture"],
-                "advisory_checks": 0, "missing_checks": 0,
-                "candidate_sha256": loaded["result_sha256"], "coverage": "partial",
-                "verified_findings": 1, "unresolved_gaps": 1,
-                "diff_review_complete": True,
-            }
-            finalized = subprocess.run(
-                [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-                 "--approve-state-sha", loaded_sha, "--assurance", "partially_verified"],
-                input=json.dumps(verification).encode("utf-8"),
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-            )
-            assert finalized.returncode == 0 and not finalized.stderr, (version, finalized.stderr)
-            current, _raw, _sha = MODULE.load_state(job)
-            assert current["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
-            assert current["worktree_snapshot_algorithm"] == MODULE.WORKTREE_SNAPSHOT_SEMANTIC_V1
-            assert current["worktree_baseline"] == semantic
-            assert current["candidate_worktree_sha256"] == semantic["sha256"]
-            assert current["worktree_root_identity"] == MODULE._dispatch_root_identity(command["workdir"])
-
-    def v13_projection_and_approved_migration_keep_historical_authority() -> None:
-        """V13 readback cannot synthesize V14 content or native grant authority."""
-        job, current, _sha, _envelope = current_candidate_fixture("v13-to-v14")
-        command_raw = (job / MODULE.COMMAND_NAME).read_bytes()
-        command = json.loads(command_raw)
-        assert command["schema_version"] < 11
-        legacy = dict(current)
-        legacy["schema_version"] = 13
-        legacy["continue_available"] = True
-        for field in MODULE.STATE_V14_FIELDS:
-            legacy.pop(field)
-        old_raw, old_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, legacy)
-        loaded, read_raw, read_sha = MODULE.load_state(job)
-        assert read_raw == old_raw and read_sha == old_sha
-        assert loaded["schema_version"] == 13
-        assert loaded["whole_worktree_content_sha256"] is None
-        assert loaded["native_grant_profile"] == "baseline"
-        bound_command, bound_state = MODULE._bound_lifecycle_inputs(
-            job, loaded, MODULE.load_command(job)[0], read_legacy=True,
-        )
-        assert bound_state is loaded and bound_command["schema_version"] < 11
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        public = MODULE.public_status(loaded, read_sha, job=job)
-        actions = {item["action"] for item in public["available_actions"]}
-        assert {"result", "continue", "finalize"} <= actions, actions
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-
-        hybrid = dict(legacy, native_grant_profile="A")
-        try:
-            MODULE.validate_state(hybrid)
-        except MODULE.DispatchError as exc:
-            assert str(exc) == "dispatch state fields are invalid"
-        else:
-            raise AssertionError("V13 raw state accepted a V14 grant field")
-        for field, invalid, expected_error in (
-            ("worktree_snapshot_algorithm", "legacy-v6", "dispatch worktree snapshot algorithm is invalid"),
-            ("provider_terminal_status", "unbound", "dispatch provider terminal status is invalid"),
-        ):
-            broken = dict(legacy, **{field: invalid})
-            try:
-                MODULE.validate_state(broken)
-            except MODULE.DispatchError as exc:
-                assert str(exc) == expected_error, (field, str(exc))
-            else:
-                raise AssertionError(f"V13 {field} validation was skipped")
-        root_drift = json.loads(json.dumps(loaded))
-        root_drift["worktree_root_identity"]["root"]["ino"] += 1
-        try:
-            MODULE._bound_lifecycle_inputs(
-                job, root_drift, bound_command, read_legacy=True,
-            )
-        except MODULE.DispatchError as exc:
-            assert str(exc) == "dispatch worktree root binding changed"
-        else:
-            raise AssertionError("V13 root identity drift was accepted")
-        schema_drift = dict(loaded, provider_schema_sha256="0" * 64)
-        try:
-            MODULE._bound_lifecycle_inputs(
-                job, schema_drift, bound_command, read_legacy=True,
-            )
-        except MODULE.DispatchError as exc:
-            assert str(exc) == "dispatch schema binding changed"
-        else:
-            raise AssertionError("V13 schema binding drift was accepted")
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-
-        verification = {
-            "schema_version": 2, "summary": "V13 migration retains historical authority",
-            "passed_checks": [], "failed_checks": ["fixture"],
-            "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": loaded["result_sha256"], "coverage": "partial",
-            "verified_findings": 1, "unresolved_gaps": 1,
-            "diff_review_complete": True,
-        }
-        queued, _queued_sha = MODULE.create_state(
-            job, "conversation-continue", resume=True,
-            approve_sha=old_sha, verification=verification,
-        )
-        assert queued["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14
-        assert queued["whole_worktree_content_sha256"] is None
-        assert queued["native_grant_profile"] == "baseline"
-        assert (job / MODULE.COMMAND_NAME).read_bytes() == command_raw
-
-        scoped_repo, scoped_job, scoped_bin, _sentinel, _, _ = scoped_controller_fixture(
-            "v13-scoped-repair", "positive", allow_scoped_repair=True,
-            allow_self_verification=True,
-            command_schema=10,
-        )
-        scoped_rc = run_scoped_controller(scoped_job, scoped_bin)
-        if scoped_rc != 0:
-            failed_scoped, _, _ = MODULE.load_state(scoped_job)
-            raise AssertionError((
-                scoped_rc, failed_scoped["reason"], failed_scoped["failure_stage"],
-                (scoped_job / "stderr.txt").read_text(encoding="utf-8", errors="replace"),
-            ))
-        scoped_command, scoped_command_raw, _ = MODULE.load_command(scoped_job)
-        scoped_current, _, _ = MODULE.load_state(scoped_job)
-        assert scoped_command["schema_version"] == 10
-        assert scoped_current["allow_scoped_repair"] is True
-        assert scoped_current["allow_self_verification"] is True
-        assert scoped_current["repair_lineage_attempt"] == 1
-        assert scoped_current["transmission_sha256"] != scoped_command["approved_transmission_sha256"]
-        scoped_legacy = dict(scoped_current, schema_version=13)
-        # A completed optional verifier's accounting is historical state; this
-        # synthetic fixture exercises preservation without launching a verifier.
-        scoped_legacy["self_verification_run"] = 1
-        scoped_legacy["self_verification_elapsed_seconds"] = 0.125
-        for field in MODULE.STATE_V14_FIELDS:
-            scoped_legacy.pop(field)
-        scoped_raw, scoped_sha = MODULE.write_atomic(
-            scoped_job, MODULE.STATE_NAME, scoped_legacy,
-        )
-        scoped_loaded, loaded_raw, loaded_sha = MODULE.load_state(scoped_job)
-        assert (loaded_raw, loaded_sha) == (scoped_raw, scoped_sha)
-        migrated = MODULE._upgrade_legacy_state(scoped_loaded, scoped_command)
-        assert migrated["schema_version"] == 14
-        assert all(migrated[key] == scoped_legacy[key] for key in scoped_legacy if key != "schema_version")
-        assert migrated["whole_worktree_content_sha256"] is None
-        assert migrated["native_grant_profile"] == "baseline"
-        assert (scoped_job / MODULE.STATE_NAME).read_bytes() == scoped_raw
-        for field, drift in (
-            ("provider_scope_sha256", "0" * 64),
-            ("repair_authority_sha256", "0" * 64),
-            ("provider_isolation", "session"),
-            ("allow_self_verification", False),
-        ):
-            altered = dict(scoped_loaded, **{field: drift})
-            try:
-                MODULE._upgrade_legacy_state(altered, scoped_command)
-            except MODULE.DispatchError:
-                pass
-            else:
-                raise AssertionError(f"V13 {field} drift was normalized by migration")
-            assert (scoped_job / MODULE.STATE_NAME).read_bytes() == scoped_raw
-        scoped_verification = {
-            "schema_version": 2, "summary": "scoped V13 approved repair",
-            "passed_checks": [], "failed_checks": ["focused"],
-            "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": scoped_loaded["result_sha256"], "coverage": "partial",
-            "verified_findings": 1, "unresolved_gaps": 1,
-            "diff_review_complete": True,
-        }
-        next_scoped, _ = MODULE.create_state(
-            scoped_job, "conversation-continue", resume=True,
-            approve_sha=scoped_sha, verification=scoped_verification,
-        )
-        assert next_scoped["schema_version"] == 14
-        assert next_scoped["repair_lineage_sha256"] == scoped_legacy["repair_lineage_sha256"]
-        assert next_scoped["attempt"] == 2
-        assert next_scoped["self_verification_run"] == 1
-        assert next_scoped["self_verification_elapsed_seconds"] == 0.125
-        assert next_scoped["provider_isolation"] == "native"
-        assert next_scoped["native_grant_profile"] == "baseline"
-        assert run_scoped_controller(scoped_job, scoped_bin) == 0
-        repaired, _, _ = MODULE.load_state(scoped_job)
-        assert repaired["repair_parent_result_sha256"] == scoped_legacy["result_sha256"]
-        assert repaired["repair_parent_worktree_sha256"] == scoped_legacy["candidate_worktree_sha256"]
-        assert repaired["repair_lineage_attempt"] == 2
-        assert (scoped_job / MODULE.COMMAND_NAME).read_bytes() == scoped_command_raw
-        assert (scoped_repo / "payload.bin").read_bytes() == b"\x00reconciled-binary-2\xfd\xff\n"
-
-        whole_repo, whole_job, _whole_bin, _whole_sentinel, _, _ = scoped_controller_fixture(
-            "v13-whole-session", "no-net-effect", command_schema=10,
-        )
-        whole_projected, _, _ = MODULE.load_command(whole_job)
-        whole_command = {
-            key: value for key, value in whole_projected.items()
-            if key in MODULE.COMMAND_V10_FIELDS
-        }
-        whole_command.update({
-            "provider_isolation": "session",
-            "argv": [arg for arg in whole_command["argv"] if arg != "--sandbox"],
-            "provider_scope_path": None,
-            "provider_scope_sha256": None,
-            "provider_scope_identity": None,
-            "approved_transmission_sha256": None,
-            "approved_whole_worktree_sha256": MODULE._compute_provider_launch_approval_sha256(
-                "session", MODULE._manifest_digest(MODULE._scan_readable_worktree(str(whole_repo))),
-            ),
-        })
-        MODULE.write_atomic(whole_job, MODULE.COMMAND_NAME, whole_command)
-        (whole_job / MODULE.STATE_NAME).unlink()
-        whole_current, _ = MODULE.create_state(whole_job, "initial", resume=False)
-        assert whole_current["provider_isolation"] == "session"
-        whole_legacy = dict(whole_current, schema_version=13)
-        for field in MODULE.STATE_V14_FIELDS:
-            whole_legacy.pop(field)
-        whole_raw, _ = MODULE.write_atomic(whole_job, MODULE.STATE_NAME, whole_legacy)
-        whole_loaded, _, _ = MODULE.load_state(whole_job)
-        whole_bound_command, whole_bound_state = MODULE._bound_lifecycle_inputs(
-            whole_job, whole_loaded, MODULE.load_command(whole_job)[0], read_legacy=True,
-        )
-        assert whole_bound_state["provider_isolation"] == "session"
-        whole_migrated = MODULE._upgrade_legacy_state(whole_bound_state, whole_bound_command)
-        assert all(whole_migrated[key] == whole_legacy[key] for key in whole_legacy if key != "schema_version")
-        assert whole_migrated["whole_worktree_content_sha256"] is None
-        assert whole_migrated["native_grant_profile"] == "baseline"
-        assert (whole_job / MODULE.STATE_NAME).read_bytes() == whole_raw
-
-    def legacy_read_and_mutation_authority_contracts() -> None:
-        v5_through_v9_status_parity_and_migration_are_exact()
-        v1_candidate_status_is_read_only_and_all_mutations_fail_without_writes()
-        v3_v4_migration_requires_state_command_agreement_before_any_write()
-        v5_through_v8_status_commands_project_only_proved_actions_and_finalize_to_v11()
-        legacy_active_controls_preserve_raw_shape()
-
-    def legacy_active_controls_preserve_raw_shape() -> None:
-        """Cheap cancel/extend must not turn active V1/V3/V4 bytes into V14."""
-        for version in (1, 3, 4):
-            for action in ("cancel", "extend"):
-                job = root / f"legacy-active-{version}-{action}"
-                job.mkdir(mode=0o700)
-                command = {
-                    "workdir": str(root), "workflow": "legacy", "max_cycles": 1,
-                    "job_id": job.name, "hard_seconds": 2, "max_seconds": 4,
-                    "idle_seconds": 1,
-                }
-                state = MODULE.initial_state(
-                    command, "initial", 1, command_sha="0" * 64,
-                    command_identity=(1, 2, 3, 4, 5), stage_sha=None,
-                    stage_identity=None, state_schema=8,
-                )
-                started = time.time()
-                state.update({
-                    "schema_version": version, "status": "running",
-                    "controller_pid": os.getpid(), "started_epoch": started,
-                    "progress_count": 1, "last_progress_epoch": started,
-                    "phase": None, "assurance": None,
-                })
-                omitted = {
-                    *MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS,
-                    *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS,
-                    *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS,
-                    *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS,
-                    *MODULE.STATE_V14_FIELDS,
-                }
-                if version == 3:
-                    omitted |= {"provider_retry_after_seconds", "provider_retry_observed_epoch"}
-                if version == 1:
-                    omitted |= set(MODULE.STATE_PROJECT_FIELDS) | {
-                        "provider_retry_after_seconds", "provider_retry_observed_epoch",
-                    }
-                for field in omitted:
-                    state.pop(field, None)
-                raw, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-                projected, _, _ = MODULE.load_state(job)
-                assert projected["schema_version"] == version
-                with contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
-                    MODULE.command_control(job, action, sha, 1.0 if action == "extend" else None)
-                updated = json.loads((job / MODULE.STATE_NAME).read_bytes())
-                assert updated["schema_version"] == version
-                assert set(updated) == set(state)
-                assert updated["sequence"] == state["sequence"] + 1
-                assert updated["previous_state_sha256"] == MODULE.digest(raw)
-                if action == "cancel":
-                    assert updated["cancel_requested"] is True
-                    assert updated["status"] == "cancel-requested"
-                    assert updated["hard_seconds"] == state["hard_seconds"]
-                else:
-                    assert updated["cancel_requested"] is False
-                    assert updated["status"] == "running"
-                    assert updated["hard_seconds"] == state["hard_seconds"] + 1.0
-
-    if FOCUSED_CHECK == "V3/V4 migration state-command binding rejects before any write":
-        check(FOCUSED_CHECK, v3_v4_migration_requires_state_command_agreement_before_any_write)
-    elif FOCUSED_CHECK == "V1 legacy evidence remains result-only":
-        check(FOCUSED_CHECK, v1_candidate_status_is_read_only_and_all_mutations_fail_without_writes)
-    elif FOCUSED_CHECK == "legacy active controls preserve raw V1/V3/V4 shapes":
-        check(FOCUSED_CHECK, legacy_active_controls_preserve_raw_shape)
-    else:
-        check("legacy status separates readback from proved v5-v9 mutation authority", legacy_read_and_mutation_authority_contracts)
-    check(
-        "V13 state projects and migrates without new V14 authority",
-        v13_projection_and_approved_migration_keep_historical_authority,
-    )
-
-    def current_v11_candidate_inside_worktree_is_driver_only() -> None:
+    def current_candidate_relocated_inside_worktree_is_driver_only() -> None:
         """Preserve current evidence without reviving provider authority.
 
-        This is intentionally distinct from the V3/V4 migration fixture above
-        and the no-candidate recovery fixture below: it is one current V11 bound
-        candidate whose controller directory already exists inside its worktree.
+        The current externally bound command is moved inside the candidate
+        without refreshing launch approval. Exact report bindings remain useful
+        for driver readback while provider and verified authority stay denied.
         """
         job, state, _sha, _envelope = current_candidate_fixture(
-            "v10-inside-worktree", inside_worktree=True,
+            "current-inside-worktree", inside_worktree=True,
         )
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16
         state["continue_available"] = True
         before, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
         state, loaded_raw, loaded_sha = MODULE.load_state(job)
@@ -2724,7 +2185,7 @@ def run(context: dict[str, object]) -> None:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         assert delivered.returncode == 0 and not delivered.stderr
-        assert json.loads(delivered.stdout)["summary"] == "candidate-v10-inside-worktree"
+        assert json.loads(delivered.stdout)["summary"] == "candidate-current-inside-worktree"
         assert (job / MODULE.STATE_NAME).read_bytes() == before
 
         verification = {
@@ -2735,8 +2196,8 @@ def run(context: dict[str, object]) -> None:
             "verified_findings": 1, "unresolved_gaps": 1,
             "diff_review_complete": True,
         }
-        provider_marker = root / "v10-inside-worktree-provider-called"
-        fake_bin = root / "v10-inside-worktree-bin"; fake_bin.mkdir(mode=0o700)
+        provider_marker = root / "current-inside-worktree-provider-called"
+        fake_bin = root / "current-inside-worktree-bin"; fake_bin.mkdir(mode=0o700)
         fake_agy = fake_bin / "agy"
         fake_agy.write_text(
             "#!/bin/sh\nprintf called > " + shlex.quote(str(provider_marker)) + "\nexit 99\n",
@@ -2798,15 +2259,15 @@ def run(context: dict[str, object]) -> None:
             env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         assert final_result.returncode == 0 and not final_result.stderr
-        assert json.loads(final_result.stdout)["summary"] == "candidate-v10-inside-worktree"
+        assert json.loads(final_result.stdout)["summary"] == "candidate-current-inside-worktree"
 
     check(
-        "current V11 inside-worktree candidate remains result-finalize only without provider mutation",
-        current_v11_candidate_inside_worktree_is_driver_only,
+        "relocated current candidate remains result-finalize only without provider mutation",
+        current_candidate_relocated_inside_worktree_is_driver_only,
     )
 
-    def independent_nonempty_snapshot_reference_preserves_v6_v7_and_v8() -> None:
-        """Freeze full per-path v6/v7 bytes without dispatcher's serializers."""
+    def independent_nonempty_snapshot_reference_preserves_current_digest() -> None:
+        """Freeze semantic-v1 path bytes without dispatcher serializers."""
         repo = root / "snapshot-compatibility-reference"; repo.mkdir()
         subprocess.run(["git", "init", "-q", "--object-format=sha1", str(repo)], check=True)
         subprocess.run(["git", "-C", str(repo), "config", "user.email", "fixture@example.invalid"], check=True)
@@ -2929,11 +2390,11 @@ def run(context: dict[str, object]) -> None:
         index_path = git_path("rev-parse", "--git-path", "index")
         assert stat.S_ISDIR(marker_info.st_mode) and git_dir.is_dir() and common_dir.is_dir() and index_path.is_file()
 
-        def persistent(info: os.stat_result, *, legacy: bool) -> tuple[int, ...]:
+        def persistent(info: os.stat_result) -> tuple[int, ...]:
             value = binding(info)
-            return value if legacy else (stat.S_IFMT(value[2]), stat.S_IMODE(value[2]))
+            return stat.S_IFMT(value[2]), stat.S_IMODE(value[2])
 
-        def directory_reference(path: Path, *, is_root: bool, legacy: bool) -> tuple[bytes, int]:
+        def directory_reference(path: Path, *, is_root: bool) -> tuple[bytes, int]:
             records: list[tuple[bytes, bytes, tuple[int, ...], bytes]] = []
             empty_directories = 0
             for entry in os.scandir(path):
@@ -2942,13 +2403,13 @@ def run(context: dict[str, object]) -> None:
                     continue
                 info = os.lstat(entry.path)
                 if stat.S_ISDIR(info.st_mode):
-                    payload, nested_empty = directory_reference(Path(entry.path), is_root=False, legacy=legacy)
-                    metadata = persistent(info, legacy=legacy)
+                    payload, nested_empty = directory_reference(Path(entry.path), is_root=False)
+                    metadata = persistent(info)
                     kind = b"directory"
                     empty_directories += nested_empty
                 elif stat.S_ISLNK(info.st_mode):
                     payload = hashlib.sha256(os.fsencode(os.readlink(entry.path))).digest()
-                    metadata = persistent(info, legacy=legacy)
+                    metadata = persistent(info)
                     kind = b"symlink"
                 elif stat.S_ISREG(info.st_mode):
                     payload = b""; metadata = (); kind = b"file"
@@ -2966,19 +2427,16 @@ def run(context: dict[str, object]) -> None:
                 empty_directories += 1
             return digest.digest(), empty_directories
 
-        def reference(*, legacy: bool) -> dict[str, object]:
+        def reference() -> dict[str, object]:
             digest = hashlib.sha256()
-            digest.update(b"agy-worker-worktree-v5\0" if legacy else b"agy-worker-worktree-v7\0")
+            digest.update(b"agy-worker-worktree-v7\0")
             root_bytes = os.fsencode(str(repo.resolve()))
             digest.update(len(root_bytes).to_bytes(8, "big")); digest.update(root_bytes)
             digest.update(canonical_reference([root_info.st_dev, root_info.st_ino]))
             digest.update(canonical_reference(["directory", authority(marker_info), hashlib.sha256(b"").hexdigest()]))
-            index_raw = index_path.read_bytes()
             digest.update(canonical_reference([
                 str(git_dir), authority(os.lstat(git_dir)), str(common_dir), authority(os.lstat(common_dir)),
-                str(index_path.resolve()) if legacy else None,
-                hashlib.sha256(index_raw).hexdigest() if legacy else None,
-                authority(os.lstat(index_path)) if legacy else None,
+                None, None, None,
             ]))
             changed = 0
             for relative in sorted(set(head) | set(index) | other | ignored):
@@ -2998,7 +2456,7 @@ def run(context: dict[str, object]) -> None:
                     digest.update(b"missing\0")
                     differs = indexed is not None
                 else:
-                    digest.update(canonical_reference(list(persistent(info, legacy=legacy))))
+                    digest.update(canonical_reference(list(persistent(info))))
                     if stat.S_ISLNK(info.st_mode):
                         payload = os.fsencode(os.readlink(path))
                         digest.update(b"symlink\0"); digest.update(len(payload).to_bytes(8, "big")); digest.update(payload)
@@ -3017,28 +2475,26 @@ def run(context: dict[str, object]) -> None:
                         differs = True
                 if is_other or indexed != head_entry or differs:
                     changed += 1
-            manifest, empty_directories = directory_reference(repo, is_root=True, legacy=legacy)
+            manifest, empty_directories = directory_reference(repo, is_root=True)
             digest.update(b"directory-manifest-v1\0"); digest.update(manifest)
             digest.update(empty_directories.to_bytes(8, "big"))
             assert changed == 6 and empty_directories == 1
             return {"sha256": digest.hexdigest(), "entries": changed + empty_directories}
 
-        expected_v6 = reference(legacy=True)
-        expected_v7 = reference(legacy=False)
-        expected_v8 = dict(expected_v7)
-        assert expected_v6["sha256"] != expected_v7["sha256"] and expected_v7["entries"] == 7
-        assert MODULE._worktree_snapshot(str(repo), legacy=True) == expected_v6
-        assert MODULE._worktree_snapshot(str(repo)) == expected_v7
-        assert MODULE._state_worktree_snapshot({"schema_version": 6}, str(repo)) == expected_v6
-        assert MODULE._state_worktree_snapshot({"schema_version": 7}, str(repo)) == expected_v7
-        assert MODULE._state_worktree_snapshot({
-            "schema_version": 8, "worktree_snapshot_algorithm": "semantic-v1",
-        }, str(repo)) == expected_v8
+        expected = reference()
+        assert expected["entries"] == 7
+        observed = MODULE._worktree_snapshot(str(repo))
+        assert observed is not None and {key: observed[key] for key in expected} == expected
+        state_observed = MODULE._state_worktree_snapshot({
+            "schema_version": MODULE.CURRENT_STATE_SCHEMA,
+            "worktree_snapshot_algorithm": MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM,
+        }, str(repo))
+        assert state_observed is not None and {key: state_observed[key] for key in expected} == expected
 
-    check("independent non-empty per-path reference preserves frozen v6 v7 and named v8 snapshot digests", independent_nonempty_snapshot_reference_preserves_v6_v7_and_v8)
+    check("independent non-empty per-path reference preserves the current semantic snapshot digest", independent_nonempty_snapshot_reference_preserves_current_digest)
 
-    def current_snapshot_algorithm_is_explicit_and_v7_remains_exact() -> None:
-        extracted_worktree_facade_preserves_all_signatures_and_patch_seams()
+    def current_snapshot_algorithm_is_explicit_and_portable() -> None:
+        worktree_module_preserves_single_ownership_and_patch_seams()
         job, state, _sha, _envelope = current_candidate_fixture("snapshot-algorithm")
         assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
         assert state["worktree_snapshot_algorithm"] == MODULE.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -3054,31 +2510,44 @@ def run(context: dict[str, object]) -> None:
         else:
             raise AssertionError("new state accepted an unrecognized snapshot algorithm")
 
-        v7 = dict(state)
-        v7["schema_version"] = 7
-        v7.pop("worktree_snapshot_algorithm")
-        v7.pop("worktree_root_identity")
-        v7.pop("provider_terminal_status")
-        for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            v7.pop(field)
-        assert MODULE.validate_state(v7)["schema_version"] == 7
-        assert MODULE._state_worktree_snapshot(v7, command["workdir"]) == MODULE._worktree_snapshot(command["workdir"])
-
         copied_scripts = root / "copied-runtime-scripts"
         shutil.copytree(SOURCE.parent, copied_scripts)
-        copied_source = copied_scripts / "agy_dispatch.py"
-        copied_spec = importlib.util.spec_from_file_location("agy_dispatch_copied", copied_source)
-        assert copied_spec is not None and copied_spec.loader is not None
-        copied_module = importlib.util.module_from_spec(copied_spec)
-        copied_spec.loader.exec_module(copied_module)
-        assert Path(copied_module._WORKTREE_HELPER.__file__).resolve() == (
-            copied_scripts / "agy_dispatch_worktree.py"
-        ).resolve()
-        assert Path(copied_module._WORKTREE_HELPER.__file__).resolve() != Path(
-            MODULE._WORKTREE_HELPER.__file__
-        ).resolve()
+        imported_roots = []
+        for scripts in (SOURCE.parent, copied_scripts):
+            # Each installed runtime owns its ordinary imports in a fresh process;
+            # Python's shared sys.modules cache is not an isolation boundary.
+            observed = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", """
+import json, os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+import agy_dispatch as dispatch
+assert dispatch.MODEL_SELECTION is dispatch.WORKTREE.MODEL_SELECTION
+assert dispatch.CONTAINMENT is dispatch.WORKTREE.CONTAINMENT
+selection = dispatch.MODEL_SELECTION
+assert selection.ACTIVE_CHILD_ENV == []
+os.environ['AGY_TEST_FIRST'] = 'first'
+os.environ['AGY_TEST_SECOND'] = 'second'
+selection.ACTIVE_CHILD_ENV = ['AGY_TEST_FIRST']
+assert selection.child_environment()['AGY_TEST_FIRST'] == 'first'
+assert 'AGY_TEST_FIRST' not in selection.child_environment([])
+selection.ACTIVE_CHILD_ENV = ['AGY_TEST_SECOND']
+assert 'AGY_TEST_FIRST' not in selection.child_environment()
+assert selection.child_environment()['AGY_TEST_SECOND'] == 'second'
+selection.ACTIVE_CHILD_ENV = []
+assert 'AGY_TEST_SECOND' not in selection.child_environment()
+print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
+    (dispatch, dispatch.WORKTREE, dispatch.CONTAINMENT, dispatch.MODEL_SELECTION)]))
+""", str(scripts)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            paths = json.loads(observed.stdout)
+            assert paths == [str((scripts / name).resolve()) for name in (
+                "agy_dispatch.py", "agy_dispatch_worktree.py",
+                "agy_dispatch_containment.py", "model_selection.py",
+            )]
+            imported_roots.append(paths)
+        assert all(first != second for first, second in zip(*imported_roots))
 
-    check("new states persist one snapshot algorithm while v7 readback remains semantic-v1", current_snapshot_algorithm_is_explicit_and_v7_remains_exact)
+    check("current states persist the independently checked semantic-v1 snapshot algorithm", current_snapshot_algorithm_is_explicit_and_portable)
 
 
     def privileged_agy_executable_is_never_safe() -> None:
@@ -3522,7 +2991,9 @@ def run(context: dict[str, object]) -> None:
         """A command binding drift must hide recovery before it can mutate state."""
         job, state, sha, _envelope = current_candidate_fixture("action-parity")
         command = job / MODULE.COMMAND_NAME
-        command.write_bytes(b"{}\n"); command.chmod(0o600)
+        tampered = json.loads(command.read_bytes())
+        tampered["argv"][-1] += " tampered prompt"
+        command.write_bytes(MODULE.canonical(tampered)); command.chmod(0o600)
         public = MODULE.public_status(state, sha, job=job)
         actions = {item["action"] for item in public["available_actions"]}
         assert not ({"result", "continue", "finalize", "restart"} & actions), actions
@@ -3548,8 +3019,11 @@ def run(context: dict[str, object]) -> None:
             "continue_available": False,
         })
         _raw, resume_sha = MODULE.write_atomic(resume_job, MODULE.STATE_NAME, resume_state)
-        (resume_job / MODULE.COMMAND_NAME).write_bytes(b"{}\n")
-        (resume_job / MODULE.COMMAND_NAME).chmod(0o600)
+        resume_command = resume_job / MODULE.COMMAND_NAME
+        tampered_resume = json.loads(resume_command.read_bytes())
+        tampered_resume["argv"][-1] += " tampered prompt"
+        resume_command.write_bytes(MODULE.canonical(tampered_resume))
+        resume_command.chmod(0o600)
         resume_actions = {item["action"] for item in MODULE.public_status(resume_state, resume_sha, job=resume_job)["available_actions"]}
         assert not ({"resume", "restart"} & resume_actions), resume_actions
         before_resume = (resume_job / MODULE.STATE_NAME).read_bytes()
@@ -3745,7 +3219,7 @@ def run(context: dict[str, object]) -> None:
         assert current == [
             "Provider attempt: succeeded; reason: none; failure stage: none; bound result available: yes; driver disposition: unreviewed.",
             "Driver evidence: 0 passed, 0 failed, 0 advisory, 0 missing; cycle: 1/2.",
-            'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id current-text --format json; review it and run driver checks, construct Verification v2, then Codex—not the controller—may choose the eligible finalize action.',
+            'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id current-text --format json; review it and run driver checks, construct Verification v2, then the driver may choose the eligible finalize action.',
         ]
 
         cancelled = dict(state)
@@ -3759,7 +3233,7 @@ def run(context: dict[str, object]) -> None:
         cancelled_lines = render(cancelled, bound_job=job)
         assert cancelled_lines[2] == (
             'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id current-text --format json; '
-            "review it and run driver checks, construct Verification v2, then Codex—not the controller—may choose the eligible finalize action. "
+            "review it and run driver checks, construct Verification v2, then the driver may choose the eligible finalize action. "
             'Available fresh restart command: "$PIPELINE/agy-worker.sh" restart --job-id current-text --approve-state-sha ' + sha + " --format text."
         )
         assert "continue" not in cancelled_lines[2]
@@ -3914,7 +3388,7 @@ def run(context: dict[str, object]) -> None:
         assert lines[2] == (
             'Next safe action: retrieve current bound result JSON with "$PIPELINE/agy-worker.sh" result --job-id '
             + state["job_id"]
-            + " --format json; review it and run driver checks, construct Verification v2, then Codex—not the controller—may choose the eligible finalize action."
+            + " --format json; review it and run driver checks, construct Verification v2, then the driver may choose the eligible finalize action."
         )
         for sentinel in (str(job), str(envelope), "/private/legacy-result.json", "candidate-public-candidate"):
             assert sentinel not in "\n".join(lines)
@@ -3944,16 +3418,14 @@ def run(context: dict[str, object]) -> None:
             ["bash", str(ROOT / "skills/agy-worker/runtime/agy-worker.sh"), "--help"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         ).stderr.decode("utf-8", "replace")
-        assert "agy-worker.sh resume --job-id JOB --approve-state-sha SHA [--approve-migration-sha SHA] [--format json|text]" in help_text
-        assert "agy-worker.sh restart --job-id JOB --approve-state-sha SHA [--approve-migration-sha SHA] [--format json|text]" in help_text
+        assert "agy-worker.sh resume --job-id JOB --approve-state-sha SHA [--format json|text]" in help_text
+        assert "agy-worker.sh restart --job-id JOB --approve-state-sha SHA [--format json|text]" in help_text
         assert "agy-worker.sh resume --job-id JOB --approve-state-sha STATE_SHA" in help_text
         assert "agy-worker.sh restart --job-id JOB --approve-state-sha STATE_SHA" in help_text
-        assert "--compatibility-disposition proceed --approve-help-sha SHA256" in help_text
-        assert (
-            "agy-worker.sh finalize --job-id JOB --approve-state-sha SHA "
-            "[--approve-migration-sha SHA] \\\n"
-        ) in help_text
-        assert "[--approve-migration-sha SHA] \\\\\\n" not in help_text
+        assert "[--model MODEL [--effort EFFORT]]" in help_text
+        assert not any(flag in help_text for flag in ("--compatibility-disposition", "--approve-help-sha", "--literal-model"))
+        assert "agy-worker.sh finalize --job-id JOB --approve-state-sha SHA" in help_text
+        assert "--approve-migration-sha" not in help_text
 
         def preparation_block(documentation: Path) -> str:
             text = documentation.read_text(encoding="utf-8")
@@ -4043,26 +3515,20 @@ def run(context: dict[str, object]) -> None:
 
     check("published Verification v2 examples execute from one public snapshot and bind the current candidate", verification_v2_example_and_lifecycle_help_are_copyable)
 
-    def v10_sanitized_outer_terminal_disposition_contracts() -> None:
-        """Issue #82: Sanitized outer terminal disposition and V10 migration."""
-        job, state, state_sha, _envelope = current_candidate_fixture("v10-terminal-disposition")
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 14
+    def current_sanitized_outer_terminal_disposition_contracts() -> None:
+        """Sanitized outer terminal disposition on the current complete state."""
+        job, state, state_sha, _envelope = current_candidate_fixture("current-terminal-disposition")
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16
         assert state["provider_terminal_status"] == "unknown"
 
         # 1. State validation bounds on provider_terminal_status enum
         for valid_status in ("unknown", "success", "error", "cancelled"):
             candidate_state = dict(state)
-            candidate_state["schema_version"] = 10
-            for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-                candidate_state.pop(field)
             candidate_state["provider_terminal_status"] = valid_status
             MODULE.validate_state(candidate_state)
 
         for invalid_status in ("canceled", "SUCCESS", "ERROR", "CANCELLED", None, 123, "", "other"):
             candidate_state = dict(state)
-            candidate_state["schema_version"] = 10
-            for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-                candidate_state.pop(field)
             candidate_state["provider_terminal_status"] = invalid_status
             try:
                 MODULE.validate_state(candidate_state)
@@ -4124,27 +3590,22 @@ def run(context: dict[str, object]) -> None:
         assert binding is None
         assert failure_stage == "schema_rejection"
 
-        # 6. Action parity between V9 and V10 states, including verification-copy.
+        # 6. Current action parity across terminal dispositions, including verification-copy.
         # Actual controller persistence is covered by the SUCCESS/ERROR/CANCELED
         # fake-provider integration cases in the owning remediation suite.
-        candidate_state_v9 = dict(state)
-        candidate_state_v9["schema_version"] = 9
-        candidate_state_v9["candidate_recognized"] = True
-        candidate_state_v9["result_available"] = True
-        candidate_state_v9["status"] = "succeeded"
-        candidate_state_v9["driver_disposition"] = "unreviewed"
-        candidate_state_v9.pop("provider_terminal_status", None)
-        for field in {*MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            candidate_state_v9.pop(field)
-        v9_actions = [item["action"] for item in MODULE.public_status(candidate_state_v9, "0" * 64, job=job)["available_actions"]]
-        assert "verification-copy" in v9_actions, f"verification-copy missing in v9 actions: {v9_actions}"
+        baseline_state = dict(state)
+        baseline_state["candidate_recognized"] = True
+        baseline_state["result_available"] = True
+        baseline_state["status"] = "succeeded"
+        baseline_state["driver_disposition"] = "unreviewed"
+        baseline_actions = [item["action"] for item in MODULE.public_status(baseline_state, "0" * 64, job=job)["available_actions"]]
+        assert "verification-copy" in baseline_actions, f"verification-copy missing in current actions: {baseline_actions}"
 
         for st in ("unknown", "success", "error", "cancelled"):
-            candidate_state_v10 = dict(candidate_state_v9)
-            candidate_state_v10["schema_version"] = 10
-            candidate_state_v10["provider_terminal_status"] = st
-            v10_actions = [item["action"] for item in MODULE.public_status(candidate_state_v10, "0" * 64, job=job)["available_actions"]]
-            assert "verification-copy" in v10_actions, f"verification-copy missing in v10 actions: {v10_actions}"
-            assert v10_actions == v9_actions, f"Action mismatch for status {st}: {v10_actions} vs {v9_actions}"
+            terminal_state = dict(baseline_state)
+            terminal_state["provider_terminal_status"] = st
+            terminal_actions = [item["action"] for item in MODULE.public_status(terminal_state, "0" * 64, job=job)["available_actions"]]
+            assert "verification-copy" in terminal_actions, f"verification-copy missing in terminal actions: {terminal_actions}"
+            assert terminal_actions == baseline_actions, f"Action mismatch for status {st}: {terminal_actions} vs {baseline_actions}"
 
-    check("v10 state validates terminal-status schema, framing privacy, invalid unknown, and V9 action parity", v10_sanitized_outer_terminal_disposition_contracts)
+    check("current state validates terminal-status schema, framing privacy, invalid unknown, and action parity", current_sanitized_outer_terminal_disposition_contracts)

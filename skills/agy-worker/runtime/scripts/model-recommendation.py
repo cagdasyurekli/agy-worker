@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Render a driver-evidence-based, recommendation-only model-tier decision."""
 
+from __future__ import annotations
+
 import argparse
+from typing import Any, NoReturn
 import json
 import re
 import sys
 
 sys.dont_write_bytecode = True
 
-from model_selection import CallerError, EvidenceUnavailable, ReviewRequired, resolve_selection
-from recommendation_record import (
+from model_selection import CallerError, resolve_selection  # noqa: E402 -- sibling imports follow startup isolation/path setup
+from recommendation_record import (  # noqa: E402 -- sibling imports follow startup isolation/path setup
     NAMED_TIERS,
     POST_GATE_EVIDENCE,
     PRE_DISPATCH_EVIDENCE,
@@ -21,12 +24,12 @@ SAFE_TIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+/-]*\Z")
 
 
 class UsageErrorParser(argparse.ArgumentParser):
-    def error(self, message):
+    def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(64, f"model-recommendation: {message}\n")
 
 
-def one(parser, values, flag):
+def one(parser: argparse.ArgumentParser, values: list[str] | None, flag: str) -> str:
     if not values:
         parser.error(f"{flag} is required")
     if len(values) != 1:
@@ -34,7 +37,7 @@ def one(parser, values, flag):
     return values[0]
 
 
-def no_change(reason):
+def no_change(reason: str) -> dict[str, Any]:
     return {
         "decision": "no-escalation",
         "recommended_tier": None,
@@ -47,7 +50,7 @@ def no_change(reason):
     }
 
 
-def higher_tier(selected_tier, recommended_tier, reason):
+def higher_tier(selected_tier: str, recommended_tier: str, reason: str) -> dict[str, Any]:
     selected_index = NAMED_TIERS.index(selected_tier)
     recommended_index = NAMED_TIERS.index(recommended_tier)
     steps = recommended_index - selected_index
@@ -66,7 +69,7 @@ def higher_tier(selected_tier, recommended_tier, reason):
     }
 
 
-def pre_dispatch(selected_tier, evidence_code):
+def pre_dispatch(selected_tier: str, evidence_code: str) -> tuple[str, dict[str, Any]]:
     target_tier, evidence_description = PRE_DISPATCH_EVIDENCE[evidence_code]
     if selected_tier not in NAMED_TIERS:
         decision = no_change(
@@ -85,7 +88,7 @@ def pre_dispatch(selected_tier, evidence_code):
     return evidence_description, decision
 
 
-def post_gate(selected_tier, evidence_code):
+def post_gate(selected_tier: str, evidence_code: str) -> tuple[str, dict[str, Any]]:
     escalatable, evidence_description, rationale = POST_GATE_EVIDENCE[evidence_code]
     if not escalatable:
         return evidence_description, no_change(rationale)
@@ -105,7 +108,7 @@ def post_gate(selected_tier, evidence_code):
     )
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     parser = UsageErrorParser(
         prog="model-recommendation.sh",
         description="Print a recommendation-only model-tier decision as JSON.",
@@ -166,10 +169,6 @@ def main(argv=None):
             )
         except CallerError as exc:
             parser.error(str(exc))
-        except ReviewRequired as exc:
-            parser.error(f"compatibility review required: {exc}")
-        except EvidenceUnavailable as exc:
-            parser.error(f"compatibility evidence unavailable: {exc}")
     evidence_code = one(parser, args.evidence, "--evidence")
 
     if selection is None and not SAFE_TIER.fullmatch(selected_tier_value):
@@ -192,7 +191,7 @@ def main(argv=None):
         )
 
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "model-tier-recommendation",
         "stage": stage,
         "recommendation_only": True,
@@ -211,9 +210,6 @@ def main(argv=None):
         if "user_effort" in selection:
             result["user_effort"] = selection["user_effort"]
         result["resolved_agy_model"] = selection["resolved_agy_model"]
-        result["matrix_sha256"] = selection["matrix_sha256"]
-        result["matrix_agy_version"] = selection["matrix_agy_version"]
-        result["matrix_source_revision"] = selection["matrix_source_revision"]
     try:
         validate_recommendation_record(result)
     except RecommendationRecordError as exc:

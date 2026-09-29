@@ -88,43 +88,12 @@ sanitized failure and may leave a private residual. The runner never scans for o
 chases a moved directory and makes no same-user tamper-resistance claim. The kit
 discards bounded gate output and reports no fixture paths or captured bytes.
 
-The offline benchmark harness likewise invokes no agy, provider, or network client.
-It uses only hash-bound checked-in synthetic candidates and the canonical local gate.
-Its explicit external owner-`0700` result root contains mode-`0600` plans, Evidence
-Receipts, and results: source/tool/fixture/selection hashes, immutable synthetic Git
-bases and candidate-state hashes, bounded gate facts, and unsigned integrity labels.
-It stores no provider prompt, response, usage, pricing, credential, or raw worker log.
-The report is a pure validated completeness view and uploads nothing. Live
-benchmark execution remains out of scope for this repository.
-
-The SWE-bench Workflow Study v1 tool is fully offline and uses no network,
-provider, telemetry collection, or analytics service. It only reads explicit, user-supplied
-caller-owned mode-`0600`, one-link regular plan and result files through bounded no-follow
-descriptors and writes deterministic sanitized,
-hash-linked canonical artifacts to a user-selected external owner-0700 result root.
-Every stored string is a bounded privacy-safe identifier. Artifacts omit source code, prompts,
-diffs, logs, task bodies, absolute paths, timestamps, identities, and credentials.
-
-Optional persona templates are checked-in prompt text. Selecting one does not read a
-registry, personal configuration, or target-repository persona source, and it never
-grants authorization, changes routing, verifies a result, or changes acceptance.
-
 ## Local artifacts and retention
 
 Each job can create local private artifacts under `logs/<job>/`, including the task,
 full prompt, agy stream, stderr, staged oversized prompt, and extracted envelope.
-Temporary worktrees and envelopes may also exist outside the repository. Sanitized
-bug-report and improvement drafts are local files with mode `0600` until a user
-explicitly confirms the exact SHA-256 and separately confirms that same digest is
-public-safe before submitting it. A `--kind security` draft is private-route only and
-cannot be submitted publicly. Conservative keyword detection is an additional barrier,
-not proof that another report is safe for public disclosure.
-
-The optional feedback triage command and weekly workflow read only a fixed bounded
-page of public issue metadata: issue number, canonical repository URL, and creation
-and update timestamps. They discard titles, bodies, comments, labels, usernames, and
-all other raw GitHub content before aggregation. The only output is a bounded
-aggregate; neither sends issue content to an agent nor modifies an issue.
+Temporary worktrees and envelopes may also exist outside the repository. Review and
+sanitize any information before sharing it through the routes in [SUPPORT.md](SUPPORT.md).
 
 When explicitly requested, `verify-job.sh` creates one local receipt at a new path the
 user chose in an owner-private directory outside the audited repository. It records
@@ -186,6 +155,11 @@ hash approvals, but deliberately retains the cleaned private state tombstone. Pa
 or ambiguous states are retained for manual recovery rather than automatically
 deleted.
 
+Gate-owned Git reads also ignore caller Git variables and system/global config,
+disable fsmonitor/hooks and external diff/textconv, and reject effective repository
+clean/process/required content-filter definitions before comparison or snapshots.
+Filter rejection diagnostics omit configured commands and values.
+
 Lifecycle-owned Git execution ignores system/global and caller Git configuration,
 uses a private empty hooks directory, and disables prompts, pagers, fsmonitor,
 external diff, protocols, and recursive submodules. Before worktree creation it
@@ -201,7 +175,7 @@ their own policy. Do not commit or paste raw logs into public reports.
 
 The optional local update notifier stores a canonical status, result fingerprint,
 source-manifest hashes, and resumable install/uninstall state under the account's
-owner-private Application Support directory. It does not store raw compatibility
+owner-private Application Support directory. It does not store raw update
 output, repository content, credentials, prompts, provider data, or personal paths in
 notifications. The notifier itself has no independent network or mutating Git
 authority; its hash-bound child invokes the existing read-only `update.sh check
@@ -209,86 +183,6 @@ authority; its hash-bound child invokes the existing read-only `update.sh check
 global/system configuration disabled. It never applies an update or invokes agy,
 Codex work, or a provider. Uninstall preserves replacement or ambiguous recovery
 state rather than deleting it. A displayed macOS notification cannot be retracted.
-
-The optional adoption ledger is explicit local input, not telemetry. It stores only
-closed aggregate values, denominators/sample sizes, opaque observation IDs, UTC dates,
-exact public repository revisions, and allowlisted public GitHub evidence URLs in an
-owner `0600`, one-link file. It never discovers a ledger, reads HOME, calls a process
-or network, or stores prompts, logs, accounts, tokens, provider usage, or user IDs.
-
-The explicit-account models capture runner is a separate, never-automatic action.
-Its checked-in tests use only disposable synthetic account roots and make no agy,
-provider, or network call. Every production invocation requires separate user
-authorization for the exact canonical owner-`0700` account HOME/profile and one
-snapshot-backed `agy models` call. The external CLI may read account contents or use
-credentials under its own behavior. It may also write or mutate normal HOME state and
-create caches. The runner does not enumerate those contents and cannot detect,
-prevent, or revert HOME changes; account residuals may remain even when capture
-rejects. The account HOME, local owner and same-UID processes, reviewed source and
-interpreter, and OS administrators are trusted.
-
-After group closure, capture-owned TMP/XDG/cwd must be unchanged and empty. The fixed
-1.1.12 JSON capture bridge has one narrower reviewed exception: it may hash and
-compare-delete the exact owner-private bounded language-server schema cache leaf in
-its own TMP, fsync, and then prove scratch is empty. Every other cache shape rejects
-and remains a private residual. On a
-bounded exit-zero observation the runner retains otherwise uninterpreted raw
-stdout/stderr, exact profile and runner bytes, bounded summary, and capture record in
-a new owner-private directory; files are mode `0600` and raw bytes are never printed.
-The sanitized console JSON contains only the artifact root, capture SHA-256, and
-`captured` status. The final marker is `models.capture.sha256`, not an accepted
-binding. Output semantics such as authentication, license, permission, quota,
-rate-limit, interactive, or inventory content are decided only by later offline
-reconciliation. Nonzero, overflow, timeout, identity/scratch drift, or publication
-failure publishes no final marker. The runner never logs in, prompts, retries, falls
-back, dispatches a task, selects or routes a model, changes metadata, or uploads the
-artifacts. The user controls retention and must not commit the private profile or raw
-evidence.
-
-`scripts/models_capture_profile.py` is the separate, process-inert preparation
-step for that action. It accepts only explicit stdin paths, does not inspect
-HOME contents or ambient configuration, and validates no-follow external source,
-snapshot, and version evidence before atomically creating one owner-private canonical
-profile. It never invokes agy, a provider, a network client, a shell, or a Git
-command; preparing a profile does not authorize a capture.
-
-`scripts/models_capture_1_1_22_classifier.py` is the separate sidecar maintenance
-tool for diagnosing sanitized 1.1.22 models capture failure evidence. It requires an
-explicit owner-private (`0700`) directory path, never scans for evidence, and enforces
-strict fail-closed checks on permissions, topology, and artifact hashes. Its output is
-a mode-`0600` canonical JSON record containing only the classified category, origin,
-hashes, and enforced limitations. It excludes all raw stderr/stdout text, error prose,
-absolute filesystem paths, and account identifiers, and grants no activation, retry,
-or routing authority.
-
-`scripts/models_capture_1_1_22_reprofile.py` is a separate, process-inert reprofile
-preparation adapter that accepts an already-validated prior 1.1.22 capture profile
-and produces a new profile reflecting exactly one permitted change:
-`account_home_identity.nlink`. It opens the explicitly supplied account HOME only for
-no-follow descriptor metadata; it never enumerates or reads HOME contents. Its output
-is a mode-`0600` canonical profile in a distinct owner-private output root. It has no
-subprocess, network, Git, retry, capture, inventory acceptance, routing, or activation
-authority. Recovery validation is bounded to the explicitly supplied recovery root's
-fixed artifact and scratch allowlists; it does not expand into HOME discovery.
-Reprofiling does not authorize a capture or renew any prior one-call authorization.
-
-`codex-usage-report.sh` observes Codex orchestration usage locally via the live,
-bounded stdio JSONL protocol of the version-pinned Codex CLI 0.150.1 app-server. Before
-observation it checks the exact CLI version and the SHA-256 of the CLI-generated
-experimental combined schema; drift fails closed.
-It requires explicit `--task LABEL=THREAD_ID` arguments and optional owner-private
-(`0600`) `--session LABEL=ABS_FILE` inputs. The tool strictly redacts all sensitive
-data: prompts, message text, raw logs, thread IDs, account emails/identities, cwd, and
-file paths are never emitted. The tool never scans for sessions; it opens only the
-explicit path, validates its private metadata, and inspects allowlisted structural
-fields. Output reports categorize input, cached input,
-net-new input, cache-write, output, and reasoning separately; reasoning is a subset of
-output and is never double-counted. When the app-server supplies a per-thread estimated
-credit value, it is emitted only as integer micros labeled `provider_estimate`; absent
-values remain unavailable. Account-wide observation is limited to rate-limit fields and
-does not invent an aggregate credit value. Rate-limit observations remain separate, and the tool never
-infers USD/currency or remaining billing quota. All process groups are reaped on exit or
-timeout. Token comparisons are directional only.
 
 ## Support and changes
 

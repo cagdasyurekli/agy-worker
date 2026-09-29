@@ -1,11 +1,11 @@
 {
-  "name": "codex-agy-worker",
+  "name": "agy-worker",
   "interface": {
-    "displayName": "Codex agy Worker"
+    "displayName": "agy Worker"
   },
   "plugins": [
     {
-      "name": "codex-agy-worker",
+      "name": "agy-worker",
       "source": {
         "source": "local",
         "path": "."

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import contextlib
 import io
@@ -16,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Callable, Iterable, Tuple
+from typing import Callable, Iterable
 
 
 ROOT = Path(__file__).resolve().parents[1]

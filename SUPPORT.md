@@ -4,11 +4,11 @@ Use [GitHub Issues](https://github.com/cagdasyurekli/codex-agy-worker/issues) fo
 sanitized bug reports, compatibility reports, installation questions, and bounded
 improvement proposals. Search existing issues first and use the repository's issue forms.
 
-Before posting, remove prompts, source code, credentials, absolute paths, envelopes,
-and raw logs. The optional `bug-report.sh draft` and `preview` flow creates a local
-sanitized draft; draft creation and submission are separate choices. Public submission
-requires confirmation of the displayed SHA-256 and a second confirmation that the same
-digest is public-safe. Use `--kind security` only for the private vulnerability route.
+Include the affected component, minimal synthetic reproduction, expected and actual
+behavior, agy-worker tag or commit, agy version, OS and architecture, and a short
+sanitized diagnostic. For an improvement request, describe the problem and desired
+outcome. Before posting, remove prompts, source code, credentials, absolute paths,
+envelopes, and raw logs.
 
 For a suspected security vulnerability, do not publish exploit details or secrets in
 an issue. Use GitHub's private vulnerability reporting option on the repository's

@@ -27,7 +27,7 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
-import ci_stages as STAGE_MODULE
+import ci_stages as STAGE_MODULE  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 passed = 0
 failed = 0
@@ -49,15 +49,15 @@ def check(label: str, test: Callable[[], bool] | bool) -> None:
 
 
 # 1. Shard Partition Invariants
-check("inventory has 44 ordered unique stage IDs", len(MODULE.STAGES) == 44 and len({s.id for s in MODULE.STAGES}) == 44)
+check("inventory has 22 ordered unique stage IDs", len(MODULE.STAGES) == 22 and len({s.id for s in MODULE.STAGES}) == 22)
 check("exactly four frozen shard IDs exist", set(MODULE.SHARDS) == {"dispatcher", "dispatcher-remediation", "other-a", "other-b"})
 
 all_shard_stages: list[str] = []
-for shard_id, stages in MODULE.SHARDS.items():
+for shard_id, stages in MODULE.SHARDS.items():  # noqa: B007 -- retain tuple binding; this pass uses only the other field
     all_shard_stages.extend(stages)
 
-check("total stage count across four shards is 44", len(all_shard_stages) == 44)
-check("all stages across four shards are disjoint and unique", len(set(all_shard_stages)) == 44)
+check("total stage count across four shards is 22", len(all_shard_stages) == 22)
+check("all stages across four shards are disjoint and unique", len(set(all_shard_stages)) == 22)
 check("union of shard stages equals canonical inventory stages", set(all_shard_stages) == {s.id for s in MODULE.STAGES})
 
 canonical_order_index = {stage.id: idx for idx, stage in enumerate(MODULE.STAGES)}
@@ -122,8 +122,7 @@ def _workflow_preflight_contract() -> bool:
     required = (
         "  preflight:\n",
         "      - name: committed diff hygiene\n",
-        "    needs: [preflight]\n",
-        "    needs: [preflight, shard]\n",
+        "    needs: [preflight, quality, shard]\n",
         "          PREFLIGHT_RESULT: ${{ needs.preflight.result }}\n",
         "          SHARD_RESULT: ${{ needs.shard.result }}\n",
         '          if [[ "${PREFLIGHT_RESULT}" != success ]]; then\n',
@@ -132,13 +131,48 @@ def _workflow_preflight_contract() -> bool:
     return (
         all(workflow.count(value) == 1 for value in required)
         and workflow.count("        run: ./scripts/ci-diff-check.sh\n") == 1
+        and workflow.count("    needs: [preflight]\n") == 2
     )
 
 
 check(
-    "workflow gates all shards on one preflight and aggregate on both producer results",
+    "workflow gates all shards on one preflight and aggregate on all required producer results",
     _workflow_preflight_contract,
 )
+
+
+
+def _quality_workflow_contract() -> bool:
+    workflow = (ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8")
+    quality = workflow.split("  quality:\n", 1)[1].split("  shard:\n", 1)[0]
+    return all(value in quality for value in (
+        "    needs: [preflight]\n",
+        "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
+        "persist-credentials: false",
+        "inputs.head_sha || github.event.pull_request.head.sha",
+        'RUFF_NO_CACHE: "true"',
+        '"$QUALITY_VENV/bin/python" -m pip --isolated install --no-cache-dir -r requirements-dev.txt',
+        '"$QUALITY_VENV/bin/ruff" check .',
+        '"$QUALITY_VENV/bin/mypy"',
+    )) and "          QUALITY_RESULT: ${{ needs.quality.result }}\n" in workflow
+
+
+def _quality_aggregate_status(result: str) -> bool:
+    workflow = (ROOT / ".github/workflows/test.yml").read_text(encoding="utf-8")
+    start = workflow.index('          if [[ "${QUALITY_RESULT}" != success ]]; then\n')
+    stop = workflow.index("          fi\n", start) + len("          fi\n")
+    guard = workflow[start:stop]
+    environment = dict(os.environ, QUALITY_RESULT=result)
+    observed = subprocess.run(["bash", "-c", guard], env=environment, capture_output=True, check=False)
+    return observed.returncode == (0 if result == "success" else 1)
+
+
+check("quality job uses pinned tools at the immutable head without source caches", _quality_workflow_contract)
+for quality_result in ("success", "failure", "cancelled", "skipped", ""):
+    check(
+        f"aggregate quality guard handles {quality_result or 'missing'} result",
+        lambda result=quality_result: _quality_aggregate_status(result),
+    )
 
 
 def _stage_manifest_announcements() -> list[str]:
@@ -149,7 +183,7 @@ def _stage_manifest_announcements() -> list[str]:
 
 
 check(
-    "stage manifest announcements match canonical 44 stages exactly",
+    "stage manifest announcements match canonical 22 stages exactly",
     _stage_manifest_announcements() == [s.announcement for s in MODULE.STAGES],
 )
 

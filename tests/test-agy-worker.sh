@@ -73,7 +73,7 @@ import sys
 path, stage, tier, evidence, decision, recommended, direction, steps = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     result = json.load(handle)
-assert result["schema_version"] == 1
+assert result["schema_version"] == 2
 assert result["kind"] == "model-tier-recommendation"
 assert result["stage"] == stage
 assert result["selected_tier"] == tier
@@ -123,9 +123,7 @@ assert "selected_tier" not in value
 assert value["user_model"] == model
 assert value.get("user_effort", "") == effort
 assert value["resolved_agy_model"] == resolved
-assert len(value["matrix_sha256"]) == 64
-assert value["matrix_agy_version"] == "1.2.11"
-assert len(value["matrix_source_revision"]) == 40
+assert not any(key.startswith("matrix_") for key in value)
 assert value["recommendation_only"] is True
 assert value["applied"] is False
 assert value["decision"] == "no-escalation"
@@ -393,7 +391,7 @@ invalid_scope_run = subprocess.run(
     env=environment, check=False,
 )
 assert invalid_scope_run.returncode == 20 and not invalid_scope_run.stdout
-assert invalid_scope_run.stderr == b"agy-worker.sh: transmission preview unavailable\n"
+assert invalid_scope_run.stderr == b"agy-worker.sh: transmission preview invalid: provider scope authority is invalid\n"
 assert b"Traceback" not in invalid_scope_run.stderr
 scope_path.chmod(0o600)
 
@@ -426,10 +424,7 @@ outside.write_text("outside")
 (worktree / "outward-alias").symlink_to(outside)
 failed, _ = preview()
 assert failed.returncode == 20 and not failed.stdout
-assert failed.stderr == (
-    b"agy-worker.sh: whole-worktree content preview failed its bounded local scan; "
-    b"use --provider-scope for selected content\n"
-)
+assert failed.stderr == b"agy-worker.sh: transmission preview invalid: symlink boundary violation\n"
 (worktree / "outward-alias").unlink()
 
 nested = worktree / "nested-marker"
@@ -460,10 +455,8 @@ fake_failure = subprocess.run(
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert fake_failure.returncode == 20 and not fake_failure.stdout
-assert fake_failure.stderr == (
-    b"agy-worker.sh: whole-worktree content preview failed its bounded local scan; "
-    b"use --provider-scope for selected content\n"
-)
+assert fake_failure.stderr.startswith(b"agy-worker.sh: transmission preview invalid: ")
+assert b"Traceback" not in fake_failure.stderr
 
 alias = temp / "preview-root-alias"
 alias.symlink_to(worktree, target_is_directory=True)
@@ -512,10 +505,6 @@ helper_path = root / "skills/agy-worker/runtime/scripts/agy_dispatch_worktree.py
 spec = importlib.util.spec_from_file_location("preview_helper", helper_path)
 assert spec is not None and spec.loader is not None
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-legacy_v10_approval = module._compute_provider_launch_approval_sha256(
-    "session", first["manifest_sha256"],
-)
-assert legacy_v10_approval != first["launch_approval_sha256"]
 try:
     module._decode_manifest_path(b"non-utf8-\xff")
 except module.ReadableManifestError:
@@ -714,6 +703,7 @@ def load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -896,6 +886,7 @@ if [[ "${1:-}" == "--version" && $# -eq 1 ]]; then
         drift) printf '1.1.11\n' ;;
         drift117) printf '1.1.17\n' ;;
         drift999) printf '9.9.9\n' ;;
+        canary) printf 'canary-build\n' ;;
         empty) : ;;
         malformed) printf 'version 1.2.11\n' ;;
         oversize) i=0; while [[ $i -lt 140 ]]; do printf x; i=$((i+1)); done; printf '\n' ;;
@@ -952,8 +943,8 @@ fi
 if [[ "${1:-}" == "--help" && $# -eq 1 ]]; then
     printf 'help\n' >> "$FAKE_CALLS_FILE"
     case "${FAKE_HELP_MODE:-ready}" in
-        ready)
-            cat >&2 <<'HELP'
+        ready|missing-*)
+            sed "/^  ${FAKE_HELP_MODE#missing-}  /d" >&2 <<'HELP'
 Usage of agy:
   --add-dir                       Add a directory to the workspace
   --conversation                  Resume a previous conversation by ID
@@ -1144,9 +1135,6 @@ fi
 if [[ -n "${FAKE_CALLED_FILE:-}" ]]; then
     : > "$FAKE_CALLED_FILE"
 fi
-if [[ -n "${FAKE_MUTATE_MATRIX:-}" ]]; then
-    printf '{"mutated":true}\n' > "$FAKE_MUTATE_MATRIX"
-fi
 if [[ -n "${FAKE_MUTATE_PROJECT_MARKER:-}" ]]; then
     printf 'gitdir: tampered\n' > "$FAKE_MUTATE_PROJECT_MARKER"
 fi
@@ -1272,12 +1260,7 @@ fi
 [[ -z "${FAKE_WARNING_LINE:-}" ]] || printf '%s\n' "$FAKE_WARNING_LINE" >&2
 status="${FAKE_AGY_STATUS:-SUCCESS}"
 if [[ "${FAKE_DISPATCH_MODE:-result}" == "result" ]]; then
-    if [[ "${FAKE_BOOST_INIT:-0}" == "1" ]]; then
-        printf '{"event":"init","conversation_id":"fake-conversation-01","init":{"agent":"%s","permission_mode":"%s"}}\n' \
-            "${FAKE_BOOST_AGENT:-Boost}" "${FAKE_BOOST_PERMISSION_MODE:-request-review}"
-    else
-        printf '{"event":"init","conversation_id":"fake-conversation-01","init":{}}\n'
-    fi
+    printf '{"event":"init","conversation_id":"fake-conversation-01","init":{}}\n'
 fi
 if [[ "${FAKE_BAD_ENVELOPE:-0}" == "1" ]]; then
     envelope='{"status":"completed","summary":"done","files_changed":[],"commands_run":[],"tests_run":[],"risks":[],"open_questions":[],"confidence":9,"requires_human":false}'
@@ -1334,6 +1317,7 @@ fi
 printf '{"event":"result","result":{"status":"%s","duration_seconds":0,"num_turns":1,"usage":{},"structured_output":%s}}\n' "$status" "$envelope"
 FAKE
 chmod +x "$TMP/bin/agy"
+cp "$TMP/bin/agy" "$TMP/bin/agy.package-original"
 
 run_worker() {
     local fake_provider_env_args=()
@@ -1342,7 +1326,6 @@ run_worker() {
         FAKE_AGY_STATUS FAKE_ARGV_FILE FAKE_BAD_ENVELOPE FAKE_CALLED_FILE \
         FAKE_CALLS_FILE FAKE_CHILD_PID_FILE FAKE_DIRS_FILE FAKE_DISPATCH_COUNT_FILE \
         FAKE_DISPATCH_MODE FAKE_ENV_OBSERVED_FILE FAKE_HOME_OBSERVED_FILE FAKE_ERROR_LINE \
-        FAKE_BOOST_INIT FAKE_BOOST_AGENT FAKE_BOOST_PERMISSION_MODE \
         FAKE_DELETE_FROM_BOUND_ROOT FAKE_EDIT_CONTENT FAKE_EDIT_FROM_BOUND_ROOT \
         FAKE_EXECUTABLE_SYMLINK_TARGET \
         FAKE_EXIT_CODE FAKE_FAIL_FIRST FAKE_HEARTBEAT_AFTER_FIRST_READY \
@@ -1350,7 +1333,7 @@ run_worker() {
         FAKE_HEARTBEAT_BARRIER_RELEASE FAKE_HEARTBEAT_COUNT FAKE_HEARTBEAT_DELAY \
         FAKE_HELP_MODE FAKE_MODEL_FILE FAKE_MUTATE_EXECUTABLE \
         FAKE_MUTATE_EXECUTABLE_MODE FAKE_MUTATE_EXECUTABLE_PARENT \
-        FAKE_MUTATE_EXECUTABLE_SAME_LENGTH FAKE_MUTATE_MATRIX \
+        FAKE_MUTATE_EXECUTABLE_SAME_LENGTH \
         FAKE_MUTATE_PROJECT_MARKER FAKE_MUTATION_MARKER FAKE_PROBE_PARENT_PID_FILE \
         FAKE_PROBE_PGID_FILE FAKE_PROBE_READY_FILE FAKE_PROBE_RELEASE_FILE \
         FAKE_PROMPT_FILE FAKE_QUOTA_ERROR FAKE_REPLACE_EXECUTABLE_SYMLINK \
@@ -1399,7 +1382,6 @@ run_worker() {
     FAKE_PROBE_PARENT_PID_FILE="${FAKE_PROBE_PARENT_PID_FILE:-}" \
     FAKE_PROBE_READY_FILE="${FAKE_PROBE_READY_FILE:-}" \
     FAKE_PROBE_RELEASE_FILE="${FAKE_PROBE_RELEASE_FILE:-}" \
-    FAKE_MUTATE_MATRIX="${FAKE_MUTATE_MATRIX:-}" \
     FAKE_MUTATE_WORKTREE_PATH="${FAKE_MUTATE_WORKTREE_PATH:-}" \
     FAKE_MUTATE_PROJECT_MARKER="${FAKE_MUTATE_PROJECT_MARKER:-}" \
     FAKE_SPARSE_PROJECT_MARKER="${FAKE_SPARSE_PROJECT_MARKER:-}" \
@@ -1407,9 +1389,6 @@ run_worker() {
     FAKE_FAIL_FIRST="${FAKE_FAIL_FIRST:-0}" \
     FAKE_TRY_STAGE_WRITE="${FAKE_TRY_STAGE_WRITE:-0}" \
     FAKE_DISPATCH_MODE="${FAKE_DISPATCH_MODE:-result}" \
-    FAKE_BOOST_INIT="${FAKE_BOOST_INIT:-0}" \
-    FAKE_BOOST_AGENT="${FAKE_BOOST_AGENT:-Boost}" \
-    FAKE_BOOST_PERMISSION_MODE="${FAKE_BOOST_PERMISSION_MODE:-request-review}" \
     FAKE_DELETE_FROM_BOUND_ROOT="${FAKE_DELETE_FROM_BOUND_ROOT:-}" \
     FAKE_EDIT_FROM_BOUND_ROOT="${FAKE_EDIT_FROM_BOUND_ROOT:-}" \
     FAKE_EDIT_CONTENT="${FAKE_EDIT_CONTENT:-}" \
@@ -1548,9 +1527,6 @@ value.pop("whole_worktree_content_sha256")
 value.pop("native_grant_profile")
 value.pop("provider_isolation")
 value.pop("approved_whole_worktree_sha256")
-value.pop("boost")
-value.pop("boost_policy_sha256")
-value.pop("approved_boost_risk_sha256")
 value.pop("allow_scoped_repair")
 value.pop("repair_authority_sha256")
 value.pop("allow_self_verification")
@@ -1572,199 +1548,28 @@ legacy_unapproved_initial_rc=$?
 if [[ "$legacy_unapproved_initial_rc" == 64 \
         && ! -s "$TMP/legacy-unapproved-initial.out" \
         && ! -e "$LEGACY_UNAPPROVED_JOB/dispatch-state.json" ]] \
-        && grep -Fq 'initial whole-worktree dispatch lacks explicit approval' \
+        && grep -Fq 'dispatch command schema v6 is not supported' \
             "$TMP/legacy-unapproved-initial.err"; then
     ok "direct dispatcher rejects a fresh legacy broad command before provider launch"
 else
     bad "direct dispatcher legacy broad initial boundary"
 fi
 
-PYTHONDONTWRITEBYTECODE=1 python3 -B - \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
-        "$TMP/logs/tier/dispatch-command.json" \
-        "$TMP/legacy-queued-v6-job" "$TMP/repo" "$TMP/bin" "$TMP" <<'PY'
-import fcntl
-import importlib.util
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
-
-source_text, template_text, job_text, workdir_text, bin_text, temp_text = sys.argv[1:]
-source = Path(source_text).resolve()
-workdir = str(Path(workdir_text).resolve())
-job = Path(job_text).resolve()
-job.mkdir(mode=0o700)
-spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_queued_v6", source)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-
-command = json.loads(Path(template_text).read_text(encoding="utf-8"))
-command.update({
-    "schema_version": 6,
-    "job_id": "legacy-queued-v6",
-    "workdir": workdir,
-    "idle_seconds": 1,
-    "hard_seconds": 3,
-    "max_seconds": 5,
-    "notice_seconds": 2,
-})
-command.pop("whole_worktree_content_sha256")
-command.pop("native_grant_profile")
-command.pop("provider_isolation")
-command.pop("approved_whole_worktree_sha256")
-command.pop("boost")
-command.pop("boost_policy_sha256")
-command.pop("approved_boost_risk_sha256")
-command.pop("allow_scoped_repair")
-command.pop("repair_authority_sha256")
-command.pop("allow_self_verification")
-command.pop("self_verification_manifest_path")
-command.pop("self_verification_manifest_sha256")
-command.pop("self_verification_manifest_identity")
-# V6 whole-worktree records predate provider_isolation; their historical AGY
-# sandbox argv remains the authoritative execution fact after normalization.
-command["argv"].insert(1, "--sandbox")
-module.write_atomic(job, module.COMMAND_NAME, command)
-loaded, command_raw, command_identity = module.load_command(job)
-assert loaded["argv"].count("--sandbox") == 1
-state = module.initial_state(
-    loaded,
-    "initial",
-    1,
-    command_sha=module.digest(command_raw),
-    command_identity=command_identity,
-    stage_sha=None,
-    stage_identity=None,
-    schema_bindings=module._schema_bindings(loaded),
-)
-module.write_atomic(job, module.STATE_NAME, state)
-
-lock_fd = os.open(job / module.LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
-os.fchmod(lock_fd, 0o600)
-fcntl.flock(lock_fd, fcntl.LOCK_EX)
-temp = Path(temp_text)
-environment = dict(os.environ)
-environment.update({
-    "PATH": f"{Path(bin_text).resolve()}{os.pathsep}{environment.get('PATH', '')}",
-    "FAKE_VERSION_MODE": "ready",
-    "FAKE_HELP_MODE": "ready",
-    "FAKE_DISPATCH_MODE": "result",
-    "FAKE_MODEL_FILE": str(temp / "legacy-queued-v6.model"),
-    "FAKE_PROMPT_FILE": str(temp / "legacy-queued-v6.prompt"),
-    "FAKE_DIRS_FILE": str(temp / "legacy-queued-v6.dirs"),
-    "FAKE_ARGV_FILE": str(temp / "legacy-queued-v6.argv"),
-    "FAKE_STAGE_RESULT_FILE": str(temp / "legacy-queued-v6.stage-result"),
-    "FAKE_CALLS_FILE": str(temp / "legacy-queued-v6.calls"),
-    "FAKE_WORKER_CALLS_FILE": str(temp / "legacy-queued-v6.worker-calls"),
-})
-child = subprocess.Popen(
-    [sys.executable, "-I", "-S", "-B", str(source), "controller", "--job-dir", str(job),
-     "--ownership-fd", str(lock_fd)],
-    pass_fds=(lock_fd,),
-    env=environment,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-)
-os.close(lock_fd)
-assert child.wait(timeout=10) == 0
-terminal, _, _ = module.load_state(job)
-assert terminal["status"] == "succeeded"
-assert terminal["attempt_origin"] == "initial"
-assert terminal["candidate_recognized"] is True
-assert module.bound_provider_execution(job, terminal) == {
-    "legacy": True, "scope": "whole-worktree", "agy_sandbox": True,
-    "native_containment": False,
-}
-assert (temp / "legacy-queued-v6.worker-calls").read_text(encoding="utf-8").splitlines() == ["worker"]
-PY
-legacy_queued_v6_rc=$?
-if [[ "$legacy_queued_v6_rc" == 0 ]]; then
-    ok "already-queued legacy V6 broad state remains provider-runnable"
-else
-    bad "already-queued legacy V6 compatibility"
-fi
-
-BOOST_DEFAULT_MANIFEST_SHA="$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")"
-printf 'Boost acknowledgement test\n' | env -u AGY_WORKER_MODE \
-    PATH="$TMP/bin:$PATH" AGY_WORKER_LOG_DIR="$TMP/logs" AGY_WORKER_JOB_ID=boost-needs-risk \
-    "$WORKER" --workdir "$TMP/repo" --workflow task --max-cycles 1 --boost \
-    --approve-whole-worktree "$BOOST_DEFAULT_MANIFEST_SHA" \
-    > "$TMP/boost-needs-risk.out" 2> "$TMP/boost-needs-risk.err"
-boost_needs_risk_rc=$?
-if [[ "$boost_needs_risk_rc" == 6 && ! -e "$TMP/boost-needs-risk.called" ]] \
-        && grep -Fq 'Boost may invoke subagents and protected tools' "$TMP/boost-needs-risk.err"; then
-    ok "Boost applies the task mode default and requires a job-bound risk acknowledgement before provider launch"
-else
-    bad "Boost risk acknowledgement preflight"
-fi
-
-printf 'orphan Boost approval\n' | run_worker boost-orphan-approval \
-    --approve-boost-risk-sha "$(printf '0%.0s' {1..64})" \
-    > "$TMP/boost-orphan-approval.out" 2> "$TMP/boost-orphan-approval.err"
-boost_orphan_rc=$?
-if [[ "$boost_orphan_rc" == 64 && ! -e "$TMP/boost-orphan-approval.called" ]] \
-        && grep -Fq -- '--approve-boost-risk-sha requires --boost' "$TMP/boost-orphan-approval.err"; then
-    ok "Boost approval cannot widen an ordinary dispatch"
-else
-    bad "orphan Boost approval preflight"
-fi
-
-printf 'stale Boost approval\n' | run_worker boost-stale-approval \
-    --workflow task --max-cycles 1 --boost --approve-boost-risk-sha "$(printf '0%.0s' {1..64})" \
-    > "$TMP/boost-stale-approval.out" 2> "$TMP/boost-stale-approval.err"
-boost_stale_rc=$?
-if [[ "$boost_stale_rc" == 6 && ! -e "$TMP/boost-stale-approval.called" ]] \
-        && grep -Fq 'invalid or stale' "$TMP/boost-stale-approval.err"; then
-    ok "Boost risk approval is job-bound and stale-safe"
-else
-    bad "stale Boost risk approval"
-fi
-
-boost_constraint_failures=0
-for boost_case in workflow cycles persona slash mode; do
-    boost_args=(--workflow task --max-cycles 1 --boost)
-    case "$boost_case" in
-        workflow) boost_args=(--workflow explore --max-cycles 1 --boost) ;;
-        cycles) boost_args=(--workflow task --max-cycles 2 --boost) ;;
-        persona) boost_args+=(--persona bulk-test-writer) ;;
-        slash) boost_args+=(--allow-slash-commands) ;;
-        mode) boost_args+=(--mode plan) ;;
-    esac
-    printf 'invalid Boost profile\n' | run_worker "boost-invalid-$boost_case" "${boost_args[@]}" \
-        > "$TMP/boost-invalid-$boost_case.out" 2> "$TMP/boost-invalid-$boost_case.err"
-    boost_case_rc=$?
-    if [[ "$boost_case_rc" != 64 || -e "$TMP/boost-invalid-$boost_case.called" ]]; then
-        boost_constraint_failures=$((boost_constraint_failures + 1))
-    fi
-done
-if (( boost_constraint_failures == 0 )); then
-    ok "Boost rejects broader workflows, cycles, personas, slash commands, and plan mode"
-else
-    bad "Boost closed profile constraints"
-fi
-
-BOOST_POLICY_SHA="$(printf '%s' \
-    'Boost may invoke subagents and protected tools; this acknowledgement does not grant runtime permissions.' \
-    | shasum -a 256 | awk '{print $1}')"
-BOOST_APPROVAL_SHA="$(printf '%s\n%s\n' "$BOOST_POLICY_SHA" 'boost-approved' | shasum -a 256 | awk '{print $1}')"
-printf 'scoped Boost target\n' > "$TMP/repo/boost-target.txt"
-BOOST_SCOPE="$TMP/boost-approved.scope.json"
+printf 'scoped core target\n' > "$TMP/repo/scoped-target.txt"
+CORE_SCOPE="$TMP/core.scope.json"
 printf '%s\n' \
-    '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"boost-target.txt","kind":"file"}],"write":[{"path":"boost-target.txt","kind":"file"}]}' \
-    > "$BOOST_SCOPE"
-chmod 0600 "$BOOST_SCOPE"
-BOOST_WORKDIR="$(cd "$TMP/repo" && pwd -P)"
-BOOST_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --workdir "$BOOST_WORKDIR" \
-        --provider-scope "$BOOST_SCOPE" --format json \
+    '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"scoped-target.txt","kind":"file"}],"write":[{"path":"scoped-target.txt","kind":"file"}]}' \
+    > "$CORE_SCOPE"
+chmod 0600 "$CORE_SCOPE"
+CORE_WORKDIR="$(cd "$TMP/repo" && pwd -P)"
+CORE_TRANSMISSION_SHA="$(
+    "$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+        --provider-scope "$CORE_SCOPE" --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
 printf 'scoped repair authority test\n' | run_worker scoped-repair-authority \
     --workflow task --max-cycles 2 --allow-scoped-repair \
-    --provider-scope "$BOOST_SCOPE" --approve-transmission-sha "$BOOST_TRANSMISSION_SHA" \
+    --provider-scope "$CORE_SCOPE" --approve-transmission-sha "$CORE_TRANSMISSION_SHA" \
     > "$TMP/scoped-repair-authority.out" 2> "$TMP/scoped-repair-authority.err"
 scoped_repair_authority_rc=$?
 if [[ "$scoped_repair_authority_rc" == 0 ]] && python3 -I -S -B - \
@@ -1778,9 +1583,10 @@ source, job_text = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("scoped_repair_command", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 command, _raw, _identity = module.load_command(Path(job_text).resolve())
-assert command["schema_version"] == 11
+assert command["schema_version"] == 14
 assert command["provider_isolation"] == "session"
 assert command["native_grant_profile"] == "baseline"
 assert command["whole_worktree_content_sha256"] is None
@@ -1803,8 +1609,8 @@ for repair_case in no-scope workflow cycles; do
     repair_args=(--workflow task --max-cycles 2 --allow-scoped-repair)
     case "$repair_case" in
         no-scope) ;;
-        workflow) repair_args=(--workflow explore --max-cycles 2 --allow-scoped-repair --provider-scope "$BOOST_SCOPE" --approve-transmission-sha "$BOOST_TRANSMISSION_SHA") ;;
-        cycles) repair_args=(--workflow task --max-cycles 1 --allow-scoped-repair --provider-scope "$BOOST_SCOPE" --approve-transmission-sha "$BOOST_TRANSMISSION_SHA") ;;
+        workflow) repair_args=(--workflow explore --max-cycles 2 --allow-scoped-repair --provider-scope "$CORE_SCOPE" --approve-transmission-sha "$CORE_TRANSMISSION_SHA") ;;
+        cycles) repair_args=(--workflow task --max-cycles 1 --allow-scoped-repair --provider-scope "$CORE_SCOPE" --approve-transmission-sha "$CORE_TRANSMISSION_SHA") ;;
     esac
     printf 'invalid scoped repair profile\n' | run_worker "scoped-repair-invalid-$repair_case" "${repair_args[@]}" \
         > "$TMP/scoped-repair-invalid-$repair_case.out" 2> "$TMP/scoped-repair-invalid-$repair_case.err"
@@ -1825,6 +1631,114 @@ cat > "$SELF_VERIFY_MANIFEST" <<'JSON'
 JSON
 chmod 0600 "$SELF_VERIFY_MANIFEST"
 SELF_VERIFY_MANIFEST="$(cd "$(dirname "$SELF_VERIFY_MANIFEST")" && pwd -P)/$(basename "$SELF_VERIFY_MANIFEST")"
+
+# The preamble must reach the actual prompt sent to agy in every workflow and
+# transmission mode. Explore whole-worktree dispatch points at a staged prompt,
+# so the assertion follows that pointer and inspects the staged bytes.
+noninteractive_preamble_failures=0
+for preamble_workflow in explore task project; do
+    for preamble_mode in whole scoped; do
+        preamble_job="noninteractive-$preamble_workflow-$preamble_mode"
+        preamble_agy_mode=accept-edits
+        [[ "$preamble_workflow" != explore ]] || preamble_agy_mode=plan
+        preamble_mode_args=()
+        if [[ "$preamble_mode" == scoped ]]; then
+            preamble_mode_args=(
+                --provider-scope "$CORE_SCOPE"
+                --approve-transmission-sha "$CORE_TRANSMISSION_SHA"
+            )
+        fi
+        preamble_self_verify_args=()
+        preamble_self_verify=0
+        if [[ "$preamble_workflow" == task && "$preamble_mode" == scoped ]]; then
+            preamble_self_verify=1
+            preamble_self_verify_args=(--self-verification-manifest "$SELF_VERIFY_MANIFEST")
+        fi
+        printf 'non-interactive preamble regression\n' | run_worker "$preamble_job" \
+            --workflow "$preamble_workflow" --mode "$preamble_agy_mode" --max-cycles 1 \
+            ${preamble_mode_args+"${preamble_mode_args[@]}"} \
+            ${preamble_self_verify_args+"${preamble_self_verify_args[@]}"} \
+            > "$TMP/$preamble_job.out" 2> "$TMP/$preamble_job.err"
+        preamble_rc=$?
+        if [[ "$preamble_rc" == 0 ]] && python3 -I -S -B - \
+                "$TMP" "$preamble_job" "$preamble_workflow" "$preamble_mode" \
+                "$preamble_self_verify" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+job, workflow, mode, self_verify = sys.argv[2:]
+job_dir = root / "logs" / job
+provider_prompt_path = root / f"{job}.prompt"
+argv_path = root / f"{job}.argv"
+state = json.loads((job_dir / "dispatch-state.json").read_text(encoding="utf-8"))
+command = json.loads((job_dir / "dispatch-command.json").read_text(encoding="utf-8"))
+assert state["status"] == "succeeded"
+assert state["workflow"] == workflow
+assert command["workflow"] == workflow
+assert bool(command["provider_scope_path"]) == (mode == "scoped")
+
+provider_prompt = provider_prompt_path.read_bytes()
+argv = [part for part in argv_path.read_bytes().split(b"\0") if part]
+assert len(argv) >= 2 and argv[-2] == b"--print"
+assert argv[-1] == provider_prompt
+assert argv[argv.index(b"--mode") + 1] == (b"plan" if workflow == "explore" else b"accept-edits")
+effective_prompt = provider_prompt
+pointer = re.search(rb"Read '([^']+)' as the complete prompt", provider_prompt)
+recorded_prompt = (job_dir / "full-prompt.txt").read_bytes()
+if pointer is not None:
+    staged_path = Path(pointer.group(1).decode("utf-8"))
+    assert staged_path == (job_dir / "staged" / "full-prompt.txt").resolve(strict=True)
+    effective_prompt = staged_path.read_bytes()
+    assert effective_prompt == recorded_prompt
+else:
+    assert recorded_prompt in provider_prompt
+
+expected_block = (
+    "NON-INTERACTIVE RUN — this contract overrides any global or user instruction file\n"
+    "(for example GEMINI.md) where they conflict:\n"
+    "- Nobody can answer questions during this run. Do not ask; put assumptions,\n"
+    "  blockers, and questions in the result as the output contract requires.\n"
+    "- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,\n"
+    "  formatters, type checkers, dependencies, or refactors the task did not ask for.\n"
+    "- Ignore instructions to use a report template or suggest follow-up rules;\n"
+    "  return only the required output.\n"
+).encode("utf-8")
+assert effective_prompt.count(expected_block) == 1
+output_contract = effective_prompt.index("OUTPUT CONTRACT — non-negotiable:".encode("utf-8"))
+block_start = effective_prompt.index(expected_block)
+shell_rule = effective_prompt.index(b"Do NOT run shell or terminal tools or tests.")
+task_follows = effective_prompt.index(b"TASK FOLLOWS:")
+assert block_start < output_contract < shell_rule < task_follows
+if workflow in ("task", "project") and mode == "whole":
+    base = command["base_commit"]
+    assert f"immutable Git base commit {base}".encode() in provider_prompt
+    assert b"cumulative net changes relative to that base commit" in provider_prompt
+    assert b"state at provider launch" not in provider_prompt
+elif mode == "scoped":
+    assert b"net changes in this Gitless stage since this stage launched" in provider_prompt
+if self_verify == "1":
+    self_verify_request = b"Required check IDs, run automatically: required_check"
+    assert self_verify_request in effective_prompt
+    assert effective_prompt.index(self_verify_request) < block_start
+else:
+    assert b"Required check IDs, run automatically:" not in effective_prompt
+PY
+        then
+            ok "$preamble_workflow/$preamble_mode provider-bound preamble and existing contract order"
+        else
+            noninteractive_preamble_failures=$((noninteractive_preamble_failures + 1))
+            bad "$preamble_workflow/$preamble_mode provider-bound preamble and existing contract order"
+        fi
+    done
+done
+if (( noninteractive_preamble_failures == 0 )); then
+    ok "non-interactive preamble reaches all six workflow/transmission combinations"
+else
+    bad "non-interactive preamble reaches all six workflow/transmission combinations"
+fi
 
 printf 'self-verification manifest CLI binding\n' | run_worker self-verification-valid \
     --workflow task --max-cycles 2 \
@@ -1852,7 +1766,7 @@ info = copied_path.stat()
 
 assert copied == source
 assert stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
-assert command["schema_version"] == 11
+assert command["schema_version"] == 14
 assert command["provider_isolation"] == "session"
 assert command["allow_self_verification"] is True
 assert command["self_verification_manifest_path"] == str(copied_path)
@@ -1908,22 +1822,11 @@ printf 'unsupported explore verification\n' | AGY_WORKER_MODE=plan \
     --self-verification-manifest "$SELF_VERIFY_MANIFEST" \
     > "$TMP/self-verification-explore.out" 2> "$TMP/self-verification-explore.err"
 self_verification_explore_rc=$?
-SELF_VERIFY_BOOST_APPROVAL_SHA="$(printf '%s\n%s\n' \
-    "$BOOST_POLICY_SHA" 'self-verification-boost' | shasum -a 256 | awk '{print $1}')"
-printf 'unsupported Boost verification\n' | run_worker self-verification-boost \
-    --workflow task --max-cycles 1 --boost \
-    --approve-boost-risk-sha "$SELF_VERIFY_BOOST_APPROVAL_SHA" \
-    --self-verification-manifest "$SELF_VERIFY_MANIFEST" \
-    > "$TMP/self-verification-boost.out" 2> "$TMP/self-verification-boost.err"
-self_verification_boost_rc=$?
-if [[ "$self_verification_explore_rc" == 64 && "$self_verification_boost_rc" == 64 \
-        && ! -e "$TMP/self-verification-explore.called" \
-        && ! -e "$TMP/self-verification-boost.called" ]] \
-        && grep -Fq 'requires task or project workflow' "$TMP/self-verification-explore.err" \
-        && grep -Fq 'unavailable with Boost' "$TMP/self-verification-boost.err"; then
-    ok "self-verification CLI rejects explore and Boost before provider launch"
+if [[ "$self_verification_explore_rc" == 64 && ! -e "$TMP/self-verification-explore.called" ]] \
+        && grep -Fq 'requires task or project workflow' "$TMP/self-verification-explore.err"; then
+    ok "self-verification CLI rejects explore before provider launch"
 else
-    bad "self-verification CLI workflow and Boost boundaries"
+    bad "self-verification CLI workflow boundary"
 fi
 
 AGY_WORKER_LOG_DIR="$TMP/logs" "$WORKER" status --job-id self-verification-valid \
@@ -1962,99 +1865,6 @@ else
     bad "stored self-verification continue routing boundary"
 fi
 
-BOOST_PROVIDER_HOME="$TMP/boost-approved-provider-home"
-mkdir -p "$BOOST_PROVIDER_HOME"
-printf 'Boost profile test\n' | FAKE_BOOST_INIT=1 \
-    FAKE_MODEL_FILE="$BOOST_PROVIDER_HOME/model" \
-    FAKE_PROMPT_FILE="$BOOST_PROVIDER_HOME/prompt" \
-    FAKE_DIRS_FILE="$BOOST_PROVIDER_HOME/dirs" \
-    FAKE_ARGV_FILE="$BOOST_PROVIDER_HOME/argv" \
-    FAKE_STAGE_RESULT_FILE="$BOOST_PROVIDER_HOME/stage-result" \
-    FAKE_CALLS_FILE=/dev/null \
-    FAKE_WORKER_CALLS_FILE="$BOOST_PROVIDER_HOME/worker-calls" \
-    FAKE_CALLED_FILE="$BOOST_PROVIDER_HOME/called" \
-    FAKE_EDIT_FROM_BOUND_ROOT=boost-target.txt FAKE_EDIT_CONTENT='scoped Boost changed' \
-    run_worker boost-approved \
-    --workflow task --max-cycles 1 --boost --approve-boost-risk-sha "$BOOST_APPROVAL_SHA" \
-    --provider-scope "$BOOST_SCOPE" --approve-transmission-sha "$BOOST_TRANSMISSION_SHA" \
-    > "$TMP/boost-approved.out" 2> "$TMP/boost-approved.err"
-boost_approved_rc=$?
-if [[ "$boost_approved_rc" == 0 ]] && python3 -B - "$BOOST_PROVIDER_HOME/argv" \
-        "$TMP/logs/boost-approved/dispatch-command.json" "$TMP/repo" \
-        "$LOGS_REAL/boost-approved/stage-001" \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" <<'PY'
-import importlib.util
-import json
-from pathlib import Path
-import sys
-argv = open(sys.argv[1], "rb").read().split(b"\0")
-command = json.load(open(sys.argv[2], encoding="utf-8"))
-prompt = argv[-2].decode("utf-8") if argv[-1] == b"" else argv[-1].decode("utf-8")
-normalized_prompt = " ".join(prompt.split())
-assert command["schema_version"] == 11 and command["boost"] is True
-assert command["provider_isolation"] == "session"
-assert b"--sandbox" not in argv
-assert command["provider_scope_path"] is not None
-assert command["approved_whole_worktree_sha256"] is None
-assert argv.count(b"--agent") == 1 and argv[argv.index(b"--agent") + 1] == b"Boost"
-assert argv.count(b"--disable-slash-commands") == 1
-assert prompt.startswith("BOOST FILE-TOOL ROOT — non-negotiable:\n")
-root_marker = "The exact absolute workspace root for this attempt is the JSON string "
-root_start = prompt.index(root_marker) + len(root_marker)
-decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert decoded_root == sys.argv[4]
-assert prompt[root_start + root_end:].startswith(".\n")
-assert Path(decoded_root).is_absolute()
-assert prompt.count("BOOST WORKSPACE CONTRACT — non-negotiable:") == 1
-assert "initial working directory exposed by file tools" in normalized_prompt
-assert "intentionally Gitless and may contain only selected files" in normalized_prompt
-assert 'Do not search for another repository or "active workspace"' in normalized_prompt
-assert "Do not inspect HOME, `~/.gemini`, parent directories" in normalized_prompt
-assert "including `pwd`, `ls`, `find`, or `git`" in normalized_prompt
-assert "include this entire contract in every subagent task" in normalized_prompt
-assert "Use file tools to inspect and edit the approved workspace." in prompt
-assert "use absolute child paths beneath that root" in normalized_prompt
-assert "normal AGY session with same-user filesystem and network authority" in normalized_prompt
-assert "complete approved Gitless selected-content stage" in prompt
-assert prompt.index("BOOST FILE-TOOL ROOT") < prompt.index("BOOST WORKSPACE CONTRACT")
-assert prompt.index("BOOST WORKSPACE CONTRACT") < prompt.index("OUTPUT CONTRACT")
-assert prompt.index("OUTPUT CONTRACT") < prompt.index("TASK FOLLOWS:") < prompt.index("Boost profile test")
-assert sys.argv[3] not in prompt
-assert (Path(sys.argv[3]) / "boost-target.txt").read_text(encoding="utf-8") == "scoped Boost changed\n"
-
-spec = importlib.util.spec_from_file_location("agy_dispatch_prompt_test", sys.argv[5])
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-weird_root = Path('/private/tmp/space "quote" \\ slash\nline/stage-001')
-synthetic = ["agy", "--print", "ORIGINAL-PROMPT"]
-module._bind_workspace_prompt(
-    synthetic, weird_root, scoped=True, boost=True,
-    provider_isolation="native", legacy_sandbox=False,
-)
-assert synthetic[-2] == "--print" and synthetic[-1].endswith("ORIGINAL-PROMPT")
-synthetic_start = synthetic[-1].index(root_marker) + len(root_marker)
-synthetic_root, synthetic_end = json.JSONDecoder().raw_decode(synthetic[-1][synthetic_start:])
-assert synthetic_root == str(weird_root)
-assert "\nline" not in synthetic[-1][synthetic_start:synthetic_start + synthetic_end]
-oversized = ["agy", "--print", "x" * module.MAX_INLINE_PROMPT_BYTES]
-try:
-    module._bind_workspace_prompt(
-        oversized, weird_root, scoped=True, boost=True,
-        provider_isolation="native", legacy_sandbox=False,
-    )
-except module.DispatchError:
-    pass
-else:
-    raise AssertionError("oversized scoped Boost prompt was accepted")
-assert oversized[-1] == "x" * module.MAX_INLINE_PROMPT_BYTES
-PY
-then
-    ok "approved Boost dispatch pins session mode, one agent, slash protection, and the file-tool preamble"
-else
-    bad "approved Boost dispatch profile"
-fi
-
 printf 'normal scoped root target\n' > "$TMP/repo/normal-root-target.txt"
 NORMAL_ROOT_SCOPE="$TMP/normal-root.scope.json"
 NORMAL_ROOT_PROVIDER_HOME="$LOGS_REAL/normal-root-prompt/provider-home"
@@ -2066,12 +1876,12 @@ printf '%s\n' \
     > "$NORMAL_ROOT_SCOPE"
 chmod 0600 "$NORMAL_ROOT_SCOPE"
 NORMAL_ROOT_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --workdir "$BOOST_WORKDIR" \
+    "$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
         --provider-scope "$NORMAL_ROOT_SCOPE" --provider-isolation native --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
 NORMAL_ROOT_SESSION_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --workdir "$BOOST_WORKDIR" \
+    "$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
         --provider-scope "$NORMAL_ROOT_SCOPE" --provider-isolation session --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
@@ -2107,19 +1917,21 @@ if [[ "$normal_root_prompt_rc" == 0 ]] && python3 -B - \
         "$NORMAL_ROOT_PROVIDER_HOME/argv" \
         "$TMP/logs/normal-root-prompt/dispatch-command.json" "$TMP/repo" \
         "$LOGS_REAL/normal-root-prompt/stage-001" "$NORMAL_ROOT_PROVIDER_HOME/home" \
-        "$NORMAL_ROOT_CALLER_HOME" <<'PY'
+        "$NORMAL_ROOT_CALLER_HOME" "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" <<'PY'
 import json
 import os
 from pathlib import Path
+import runpy
 import sys
 
+dispatch = runpy.run_path(sys.argv[7], run_name="agy_dispatch_prompt_test")
 argv = [item for item in open(sys.argv[1], "rb").read().split(b"\0") if item]
 command = json.load(open(sys.argv[2], encoding="utf-8"))
 prompt = argv[argv.index(b"--print") + 1].decode("utf-8")
 root_marker = "The exact absolute workspace root for this attempt is the JSON string "
 root_start = prompt.index(root_marker) + len(root_marker)
 decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert command["schema_version"] == 11 and command["boost"] is False
+assert command["schema_version"] == dispatch["CURRENT_COMMAND_SCHEMA"]
 assert command["provider_isolation"] == "native"
 assert argv.count(b"--sandbox") == 1
 assert command["provider_scope_path"] is not None
@@ -2134,6 +1946,17 @@ assert "never guess or search for another root" in prompt
 assert "If you delegate" not in prompt
 assert sys.argv[3] not in prompt
 assert (Path(sys.argv[3]) / "normal-root-target.txt").read_text(encoding="utf-8") == "normal scoped changed\n"
+
+weird_root = Path('/private/tmp/space "quote" \\ slash\nline/stage-001')
+synthetic = ["agy", "--print", "ORIGINAL-PROMPT"]
+dispatch["_bind_workspace_prompt"](
+    synthetic, weird_root, scoped=True, provider_isolation="native",
+)
+assert synthetic[-2] == "--print" and synthetic[-1].endswith("ORIGINAL-PROMPT")
+synthetic_start = synthetic[-1].index(root_marker) + len(root_marker)
+synthetic_root, synthetic_end = json.JSONDecoder().raw_decode(synthetic[-1][synthetic_start:])
+assert synthetic_root == str(weird_root)
+assert "\nline" not in synthetic[-1][synthetic_start:synthetic_start + synthetic_end]
 PY
 then
     ok "normal scoped dispatch pins the final stage root in its file-tool prompt"
@@ -2173,7 +1996,7 @@ prompt = argv[argv.index(b"--print") + 1].decode("utf-8")
 root_marker = "The exact absolute workspace root for this attempt is the JSON string "
 root_start = prompt.index(root_marker) + len(root_marker)
 decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert command["schema_version"] == 11 and command["boost"] is False
+assert command["schema_version"] == 14
 assert command["provider_isolation"] == "session"
 assert b"--sandbox" not in argv
 assert command["provider_scope_path"] is None
@@ -2193,77 +2016,7 @@ else
 fi
 rm -f "$TMP/repo/normal-whole-root-target.txt"
 
-WHOLE_BOOST_APPROVAL_SHA="$(printf '%s\n%s\n' "$BOOST_POLICY_SHA" 'boost-whole-approved' | shasum -a 256 | awk '{print $1}')"
-printf 'whole Boost target\n' > "$TMP/repo/whole-boost-target.txt"
-printf 'whole Boost profile test\n' | FAKE_BOOST_INIT=1 \
-    FAKE_EDIT_FROM_BOUND_ROOT=whole-boost-target.txt FAKE_EDIT_CONTENT='whole Boost changed' \
-    run_worker boost-whole-approved --workflow task --max-cycles 1 --boost \
-    --approve-boost-risk-sha "$WHOLE_BOOST_APPROVAL_SHA" \
-    > "$TMP/boost-whole-approved.out" 2> "$TMP/boost-whole-approved.err"
-boost_whole_rc=$?
-boost_whole_changed=0
-if [[ "$(< "$TMP/repo/whole-boost-target.txt")" == 'whole Boost changed' ]]; then
-    boost_whole_changed=1
-fi
-rm -f "$TMP/repo/whole-boost-target.txt"
-
-BOOST_MISMATCH_SHA="$(printf '%s\n%s\n' "$BOOST_POLICY_SHA" 'boost-init-mismatch' | shasum -a 256 | awk '{print $1}')"
-printf 'Boost mismatch test\n' | FAKE_BOOST_INIT=1 FAKE_BOOST_AGENT=Other run_worker boost-init-mismatch \
-    --workflow task --max-cycles 1 --boost --approve-boost-risk-sha "$BOOST_MISMATCH_SHA" \
-    > "$TMP/boost-init-mismatch.out" 2> "$TMP/boost-init-mismatch.err"
-boost_mismatch_rc=$?
-if [[ "$boost_whole_rc" == 0 && "$boost_whole_changed" == 1 \
-        && "$boost_mismatch_rc" == 4 ]] && python3 -B - \
-        "$TMP/boost-whole-approved.prompt" \
-        "$TMP/logs/boost-init-mismatch/dispatch-state.json" \
-        "$TMP/boost-init-mismatch.prompt" "$BOOST_WORKDIR" <<'PY'
-import json
-from pathlib import Path
-import sys
-whole_prompt = open(sys.argv[1], encoding="utf-8").read()
-state = json.load(open(sys.argv[2], encoding="utf-8"))
-prompt = open(sys.argv[3], encoding="utf-8").read()
-workdir = sys.argv[4]
-root_marker = "The exact absolute workspace root for this attempt is the JSON string "
-root_start = whole_prompt.index(root_marker) + len(root_marker)
-decoded_root, root_end = json.JSONDecoder().raw_decode(whole_prompt[root_start:])
-assert decoded_root == workdir and Path(decoded_root).is_absolute()
-assert whole_prompt[root_start + root_end:].startswith(".\n")
-assert whole_prompt.startswith("BOOST FILE-TOOL ROOT — non-negotiable:\n")
-assert "complete explicitly approved whole worktree" in whole_prompt
-assert "complete approved Gitless selected-content stage" not in whole_prompt
-assert state["failure_stage"] == "boost_contract"
-assert state["resume_available"] is False and state["continue_available"] is False
-assert "It is the explicitly approved whole worktree." in prompt
-assert "intentionally Gitless and may contain only selected files" not in prompt
-assert prompt.startswith("BOOST FILE-TOOL ROOT — non-negotiable:\n")
-assert workdir in prompt
-PY
-then
-    ok "whole-worktree Boost binds its approved root and identity mismatch still fails closed"
-else
-    bad "whole-worktree Boost root or init identity binding"
-fi
-
-BOOST_PERMISSION_SHA="$(printf '%s\n%s\n' "$BOOST_POLICY_SHA" 'boost-permission-mismatch' | shasum -a 256 | awk '{print $1}')"
-printf 'Boost permission mismatch test\n' | FAKE_BOOST_INIT=1 FAKE_BOOST_PERMISSION_MODE=accept-edits \
-    run_worker boost-permission-mismatch --workflow task --max-cycles 1 --boost \
-    --approve-boost-risk-sha "$BOOST_PERMISSION_SHA" \
-    > "$TMP/boost-permission-mismatch.out" 2> "$TMP/boost-permission-mismatch.err"
-boost_permission_rc=$?
-if [[ "$boost_permission_rc" == 4 ]] && python3 -B - "$TMP/logs/boost-permission-mismatch/dispatch-state.json" <<'PY'
-import json
-import sys
-state = json.load(open(sys.argv[1], encoding="utf-8"))
-assert state["failure_stage"] == "boost_contract"
-assert state["resume_available"] is False and state["continue_available"] is False
-PY
-then
-    ok "Boost permission-mode mismatch stops without resume or continuation"
-else
-    bad "Boost permission-mode binding"
-fi
-rm -f "$TMP/repo/boost-target.txt"
+rm -f "$TMP/repo/scoped-target.txt"
 
 WHOLE_DRIFT_PATH="$TMP/repo/whole-worktree-drift"
 printf 'manifest must remain bound through launch\n' | \
@@ -2324,7 +2077,7 @@ if [[ "$rc" == "0" && "$(<"$TMP/raw-flash-high.model")" == "gemini-3.6-flash-hig
 import sys
 parts = [part for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
 calls = open(sys.argv[2], encoding="ascii").read().splitlines()
-raise SystemExit(0 if b"--effort" not in parts and calls == ["worker"] else 1)
+raise SystemExit(0 if b"--effort" not in parts and calls == ["version", "help"] * 2 + ["worker"] else 1)
 PY
 then
     ok "raw flash-high stays exact pass-through with no effort argument"
@@ -2342,7 +2095,7 @@ import sys
 argv_path, selection_path, calls_path, tier, source, expected = sys.argv[1:]
 parts = [part for part in open(argv_path, "rb").read().split(b"\0") if part]
 record = json.load(open(selection_path, encoding="utf-8"))
-assert open(calls_path, encoding="ascii").read().splitlines() == ["worker"]
+assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help"] * 2 + ["worker"]
 assert record["selection_mode"] == "tier"
 assert record["selected_tier"] == tier
 assert record["selected_tier_source"] == source
@@ -2399,7 +2152,7 @@ else
 fi
 
 printf 'literal model under malformed version output\n' | FAKE_VERSION_MODE=malformed \
-    run_worker literal-version-independent --literal-model future-model-1.2 \
+    run_worker literal-version-independent --model future-model-1.2 \
     > "$TMP/literal-version-independent.out" 2> "$TMP/literal-version-independent.err"
 rc=$?
 if [[ "$rc" == 0 && "$(<"$TMP/literal-version-independent.model")" == "future-model-1.2" ]] \
@@ -2412,19 +2165,17 @@ import sys
 argv = [item for item in open(sys.argv[1], "rb").read().split(b"\0") if item]
 record = json.load(open(sys.argv[2], encoding="utf-8"))
 calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-assert calls == ["version", "worker"]
+assert calls == ["version", "help"] * 2 + ["worker"]
 assert argv.count(b"--model") == 1
 assert argv[argv.index(b"--model") + 1] == b"future-model-1.2"
 assert b"--effort" not in argv and b"--thinking-level" not in argv
-assert record == {
-    "schema_version": 1,
-    "kind": "agy-worker-selection",
-    "selection_mode": "literal-model",
-    "user_model": "future-model-1.2",
-    "user_model_source": "cli",
-    "resolved_agy_model": "future-model-1.2",
-    "compatibility_status": "unreconciled-pass-through",
-}
+assert record["schema_version"] == 4
+assert record["selection_mode"] == "exact-model"
+assert record["user_model"] == record["resolved_agy_model"] == "future-model-1.2"
+assert record["user_model_source"] == "cli"
+assert record["installed_agy_version"] == "version 1.2.11"
+assert "probed_executable" in record
+assert not any(key.startswith("matrix_") for key in record)
 PY
 then
     ok "literal model routing stays version-independent while version observation remains non-gating"
@@ -2435,7 +2186,7 @@ fi
 assert_direct_result() {
     local name="$1" job="$2" expected="$3" user_model="$4" user_effort="$5"
     local model_source="${6:-cli}" effort_source="${7:-}"
-    local expected_schema="${8:-2}"
+    local expected_schema="${8:-4}"
     if [[ "$(<"$TMP/$job.model")" == "$expected" ]] \
             && [[ "$(wc -l < "$TMP/$job.worker-calls" | tr -d ' ')" == "1" ]] \
             && python3 - "$TMP/$job.argv" "$TMP/logs/$job/selection.json" \
@@ -2447,11 +2198,15 @@ import sys
 
 argv_path, selection_path, calls_path, expected, user_model, user_effort, model_source, effort_source, expected_schema = sys.argv[1:]
 parts = [part for part in open(argv_path, "rb").read().split(b"\0") if part]
-assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help", "version", "help", "version", "help", "worker"]
+assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help", "version", "help", "worker"]
 assert parts.count(b"--model") == 1
 index = parts.index(b"--model")
 assert parts[index + 1].decode() == expected
-assert b"--effort" not in parts
+if user_effort:
+    assert parts.count(b"--effort") == 1
+    assert parts[parts.index(b"--effort") + 1].decode() == user_effort
+else:
+    assert b"--effort" not in parts
 assert b"--thinking-level" not in parts
 record = json.load(open(selection_path, encoding="utf-8"))
 assert record["schema_version"] == int(expected_schema)
@@ -2461,26 +2216,8 @@ assert record.get("user_effort", "") == user_effort
 assert record["user_model_source"] == model_source
 assert record.get("user_effort_source", "") == effort_source
 assert record["resolved_agy_model"] == expected
-assert record["installed_agy_version"] == "1.2.11"
-assert record["matrix_agy_version"] == "1.2.11"
-assert record["version_relation"] == "match"
-assert record["critical_interface_probe_version"] == 1
-assert record["critical_interface_status"] == "compatible"
-if record["schema_version"] == 3:
-    assert record["compatibility_status"] == "critical-interface-compatible-version-drift"
-    assert record["version_relation"] == "drift"
-    assert record["compatibility_disposition"] == "proceed"
-    assert record["approved_help_sha256"] == record["help_sha256"]
-    assert len(record["compatibility_decision_sha256"]) == 64
-    assert "reviewed_help_sha256" not in record
-else:
-    assert record["schema_version"] == 2
-    assert record["compatibility_status"] == "reviewed-version-match"
-    assert "reviewed_help_sha256" not in record
-    assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(record))
-assert record["model_availability"] == "not_assessed"
-assert len(record["critical_capabilities_sha256"]) == 64
-assert len(record["help_sha256"]) == 64
+assert record["installed_agy_version"] in {"1.2.11", "agy 1.2.11"}
+assert not any(key.startswith("matrix_") for key in record)
 binding = record["probed_executable"]
 assert set(binding) == {"path_sha256", "target_lstat", "content_sha256", "symlink_chain", "components"}
 assert len(binding["path_sha256"]) == 64
@@ -2488,27 +2225,23 @@ assert len(binding["content_sha256"]) == 64
 assert binding["target_lstat"]["inode"] > 0
 assert binding["target_lstat"]["ctime_ns"] > 0
 assert all("path" not in key or key == "path_sha256" for item in [binding, *binding["symlink_chain"], *binding["components"]] for key in item)
-assert len(record["matrix_sha256"]) == 64
-assert len(record["matrix_source_revision"]) == 40
 assert stat.S_IMODE(os.stat(selection_path).st_mode) & 0o077 == 0
 PY
     then ok "$name"; else bad "$name"; fi
 }
 
-# An exact matrix-version match proceeds after the bounded structural probe; it
-# does not need a raw-help approval.  The standalone selector remains a public
-# surface, so its private executable path must never appear in its JSON stdout.
+# Advertised capabilities and literal caller choices authorize the interface.
 printf 'exact-version structural help may dispatch\n' | \
     AGY_TEST_WORKER="$WORKER" run_worker exact-version-unseen-help --model gemini-3.6-flash --effort high \
     > "$TMP/exact-version-unseen-help.out" 2> "$TMP/exact-version-unseen-help.err"
 rc=$?
 if [[ "$rc" == 0 ]]; then
-    assert_direct_result "exact-version structural probe proceeds without approval" \
-        exact-version-unseen-help gemini-3.6-flash-high gemini-3.6-flash high cli cli 2
+    assert_direct_result "complete structural probe proceeds without version approval" \
+        exact-version-unseen-help gemini-3.6-flash gemini-3.6-flash high cli cli 4
 else
     bad "exact-version structural probe boundary (exit $rc)"
 fi
-# An exact-version help line may explicitly negate --model.  It must be an
+# An option help line may explicitly negate --model.  It must be an
 # option-local structural match; the controller does not infer availability
 # from provider prose.
 printf 'help prose requires Codex, not controller, semantic interpretation\n' | \
@@ -2517,37 +2250,30 @@ printf 'help prose requires Codex, not controller, semantic interpretation\n' | 
     > "$TMP/help-option-negation.out" 2> "$TMP/help-option-negation.err"
 rc=$?
 if [[ "$rc" == 0 ]]; then
-    assert_direct_result "exact-version option prose does not override structural compatibility" \
-        help-option-negation gemini-3.6-flash-high gemini-3.6-flash high cli cli 2
+    assert_direct_result "option prose does not override the structural capability check" \
+        help-option-negation gemini-3.6-flash gemini-3.6-flash high cli cli 4
 else
     bad "exact-version option prose structural boundary (exit $rc)"
 fi
-LOCALE_HELP_SHA="$(LC_ALL=C FAKE_HELP_MODE=locale-sensitive PATH="$TMP/bin:$PATH" \
-    "$TMP/bin/agy" --help 2>&1 | /usr/bin/python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
 LC_ALL=POSIX FAKE_VERSION_MODE=drift117 FAKE_HELP_MODE=locale-sensitive PATH="$TMP/bin:$PATH" \
     "$SELECTOR" --model gemini-3.6-flash --effort high \
     --child-env FAKE_VERSION_MODE --child-env FAKE_HELP_MODE \
-    --compatibility-disposition proceed --approve-help-sha "$LOCALE_HELP_SHA" \
     > "$TMP/direct-selector-public.json" 2> "$TMP/direct-selector-public.err"
 rc=$?
-if [[ "$rc" == 0 ]] && python3 - "$TMP/direct-selector-public.json" "$TMP/bin/agy" \
-        "$LOCALE_HELP_SHA" <<'PY'
+if [[ "$rc" == 0 ]] && python3 - "$TMP/direct-selector-public.json" "$TMP/bin/agy" <<'PYTHON'
 import json, sys
 payload = open(sys.argv[1], "rb").read()
 record = json.loads(payload)
 assert sys.argv[2].encode() not in payload
-assert record["schema_version"] == 3
+assert record["schema_version"] == 4
 assert record["installed_agy_version"] == "1.1.17"
-assert record["version_relation"] == "drift"
-assert record["help_sha256"] == record["approved_help_sha256"] == sys.argv[3]
+assert record["user_model"] == record["resolved_agy_model"] == "gemini-3.6-flash"
+assert record["user_effort"] == "high"
 assert "path" not in record["probed_executable"]
 assert set(record["probed_executable"]) == {"path_sha256", "target_lstat", "content_sha256", "symlink_chain", "components"}
-PY
-then
-    ok "direct selector pins the documented C-locale help digest and exposes no executable path"
-else
-    bad "direct selector locale/hash parity or executable binding"
-fi
+PYTHON
+then ok "direct selector accepts diagnostic version and exposes no executable path"
+else bad "direct selector diagnostic/executable binding"; fi
 
 # BEGIN model-selection coverage
 # BEGIN exhaustive pure-policy model-selection coverage
@@ -2581,80 +2307,25 @@ root = Path(sys.argv[1])
 sys.path.insert(0, str(root / "skills" / "agy-worker" / "runtime" / "scripts"))
 import model_selection
 
-matrix, actual_sha, version, revision = model_selection.load_policy()
-
-direct_pairs = (
-    ("gemini-3.7-flash", "low", "gemini-3.7-flash-low"),
-    ("gemini-3.7-flash", "medium", "gemini-3.7-flash-medium"),
-    ("gemini-3.7-flash", "high", "gemini-3.7-flash-high"),
-    ("gemini-3.6-flash", "low", "gemini-3.6-flash-low"),
-    ("gemini-3.6-flash", "medium", "gemini-3.6-flash-medium"),
-    ("gemini-3.6-flash", "high", "gemini-3.6-flash-high"),
-    ("gemini-3.8-flash", "low", "gemini-3.8-flash-low"),
-    ("gemini-3.8-flash", "medium", "gemini-3.8-flash-medium"),
-    ("gemini-3.8-flash", "high", "gemini-3.8-flash-high"),
-    ("gemini-3.1-pro", "low", "gemini-3.1-pro-low"),
-    ("gemini-3.1-pro", "high", "gemini-3.1-pro-high"),
-)
-
-exact_models = (
-    "gemini-3.7-flash-low", "gemini-3.7-flash-medium", "gemini-3.7-flash-high",
-    "gemini-3.6-flash-low", "gemini-3.6-flash-medium", "gemini-3.6-flash-high",
-    "gemini-3.8-flash-low", "gemini-3.8-flash-medium", "gemini-3.8-flash-high",
-    "gemini-3.1-pro-low", "gemini-3.1-pro-high",
-    "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium",
-)
-
-# Exhaustive resolution of all direct pairs
-for base_model, effort, expected_slug in direct_pairs:
-    resolved, kind = model_selection.resolve_model(matrix, base_model, effort)
-    assert resolved == expected_slug
-    assert kind == "model-effort"
-
-# Exhaustive resolution of all exact/fixed models
-for exact_model in exact_models:
-    resolved, kind = model_selection.resolve_model(matrix, exact_model, None)
-    assert resolved == exact_model
-    assert kind == "exact-model"
-
-# Exhaustive rejection of unsupported choices
-# 1. Pro medium
-try:
-    model_selection.resolve_model(matrix, "gemini-3.1-pro", "medium")
-    raise AssertionError("Pro medium should be rejected")
-except model_selection.CallerError:
-    pass
-
-# 2. Base models without effort
-for base_model in ("gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.1-pro"):
+# Model and effort catalogs belong to AGY. Only transport/provenance is validated.
+for model in ("gemini-3.1-pro", "claude-sonnet-4-6", "vendor/Future-Model", "gemini-3.6-flash-high"):
+    for effort in (None, "medium", "thinking-high", "Future-Level"):
+        record = model_selection.resolve_selection(model, effort, "cli", "cli" if effort else None, probe_version=False)
+        assert record["resolved_agy_model"] == model
+        assert record.get("user_effort") == effort
+        model_selection.validate_selection_record(record)
+for model, effort in (("", None), (" padded", None), ("model", "bad effort"), ("model", "-flag")):
     try:
-        model_selection.resolve_model(matrix, base_model, None)
-        raise AssertionError(f"Base model {base_model} without effort should be rejected")
+        model_selection.resolve_selection(model, effort, "cli", "cli" if effort else None, probe_version=False)
     except model_selection.CallerError:
         pass
-
-# 3. Fixed models with effort
-for fixed_model in ("claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"):
-    for effort in ("low", "medium", "high"):
-        try:
-            model_selection.resolve_model(matrix, fixed_model, effort)
-            raise AssertionError(f"Fixed model {fixed_model} with effort should be rejected")
-        except model_selection.CallerError:
-            pass
-
-# 4. Exact compound slugs with effort
-for exact_model in exact_models:
-    if exact_model not in ("claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"):
-        try:
-            model_selection.resolve_model(matrix, exact_model, "high")
-            raise AssertionError(f"Exact slug {exact_model} with effort should be rejected")
-        except model_selection.CallerError:
-            pass
+    else:
+        raise AssertionError("unsafe transport accepted")
 PY
 then
-    ok "exhaustive pure unit validation of model and effort matrix combinations"
+    ok "literal caller values and transport boundaries without a model catalog"
 else
-    bad "exhaustive pure unit validation of model and effort matrix combinations"
+    bad "literal caller values and transport boundaries without a model catalog"
 fi
 # END exhaustive pure-policy model-selection coverage
 
@@ -2665,7 +2336,7 @@ printf 'representative direct pair cli-cli\n' | \
     > "$TMP/direct-pair-rep-cli-cli.out" 2> "$TMP/direct-pair-rep-cli-cli.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.7-flash/high accepts cli-cli" \
-        "direct-pair-rep-cli-cli" "gemini-3.7-flash-high" "gemini-3.7-flash" "high" \
+        "direct-pair-rep-cli-cli" "gemini-3.7-flash" "gemini-3.7-flash" "high" \
         "cli" "cli"
 else
     bad "representative pair gemini-3.7-flash/high accepts cli-cli"
@@ -2676,7 +2347,7 @@ printf 'representative direct pair cli-env\n' | \
     > "$TMP/direct-pair-rep-cli-env.out" 2> "$TMP/direct-pair-rep-cli-env.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.6-flash/medium accepts cli-env" \
-        "direct-pair-rep-cli-env" "gemini-3.6-flash-medium" "gemini-3.6-flash" "medium" \
+        "direct-pair-rep-cli-env" "gemini-3.6-flash" "gemini-3.6-flash" "medium" \
         "cli" "environment"
 else
     bad "representative pair gemini-3.6-flash/medium accepts cli-env"
@@ -2687,7 +2358,7 @@ printf 'representative direct pair env-cli\n' | \
     > "$TMP/direct-pair-rep-env-cli.out" 2> "$TMP/direct-pair-rep-env-cli.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.8-flash/low accepts env-cli" \
-        "direct-pair-rep-env-cli" "gemini-3.8-flash-low" "gemini-3.8-flash" "low" \
+        "direct-pair-rep-env-cli" "gemini-3.8-flash" "gemini-3.8-flash" "low" \
         "environment" "cli"
 else
     bad "representative pair gemini-3.8-flash/low accepts env-cli"
@@ -2699,7 +2370,7 @@ printf 'representative direct pair env-env\n' | \
     > "$TMP/direct-pair-rep-env-env.out" 2> "$TMP/direct-pair-rep-env-env.err"
 if [[ $? == 0 ]]; then
     assert_direct_result "representative pair gemini-3.1-pro/high accepts env-env" \
-        "direct-pair-rep-env-env" "gemini-3.1-pro-high" "gemini-3.1-pro" "high" \
+        "direct-pair-rep-env-env" "gemini-3.1-pro" "gemini-3.1-pro" "high" \
         "environment" "environment"
 else
     bad "representative pair gemini-3.1-pro/high accepts env-env"
@@ -2749,61 +2420,6 @@ else
 fi
 # END representative model-selection worker dispatches
 
-# Keep the reduced dispatch set mechanically bound to this exact source region:
-# the eight representative jobs cover the four provenance classes plus exact and
-# fixed model paths, while the preceding pure-policy block remains exhaustive.
-if PYTHONDONTWRITEBYTECODE=1 python3 -B - "$ROOT/tests/test-agy-worker.sh" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-
-def bounded(begin: str, end: str) -> str:
-    assert source.count(begin) == 1, begin
-    assert source.count(end) == 1, end
-    start = source.index(begin) + len(begin)
-    finish = source.index(end)
-    assert start < finish, (begin, end)
-    return source[start:finish]
-
-coverage_tag = "model" + "-selection coverage"
-selection = bounded("# BEGIN " + coverage_tag, "# END " + coverage_tag)
-policy_tag = "exhaustive pure-policy " + coverage_tag
-policy = bounded("# BEGIN " + policy_tag, "# END " + policy_tag)
-representative_tag = "representative model-selection worker dispatches"
-representative = bounded("# BEGIN " + representative_tag, "# END " + representative_tag)
-
-for required in (
-    "# Exhaustive resolution of all direct pairs",
-    "# Exhaustive resolution of all exact/fixed models",
-    "# Exhaustive rejection of unsupported choices",
-    "for base_model, effort, expected_slug in direct_pairs:",
-    "for exact_model in exact_models:",
-    "model_selection.resolve_model",
-):
-    assert required in policy, required
-
-expected_jobs = [
-    "direct-pair-rep-cli-cli",
-    "direct-pair-rep-cli-env",
-    "direct-pair-rep-env-cli",
-    "direct-pair-rep-env-env",
-    "direct-exact-rep-cli",
-    "direct-exact-rep-env",
-    "direct-fixed-rep-cli",
-    "direct-fixed-rep-env",
-]
-runner = "run" + "_worker"
-assert selection.count(runner) == len(expected_jobs)
-assert re.findall(rf"\b{runner}\s+([a-z0-9-]+)\b", representative) == expected_jobs
-assert not re.search(r"^\s*(?:for|while)\b", representative, flags=re.MULTILINE)
-PY
-then
-    ok "model-selection source guard binds exhaustive policy and eight representative dispatches"
-else
-    bad "model-selection source guard binds exhaustive policy and eight representative dispatches"
-fi
 # END model-selection coverage
 
 expect_selector_reject() {
@@ -2825,46 +2441,23 @@ expect_selector_reject "repeated model is ambiguous" repeated-model \
 expect_selector_reject "repeated effort is ambiguous" repeated-effort \
     --model gemini-3.6-flash --effort high --effort high
 expect_selector_reject "repeated tier is ambiguous" repeated-tier --tier bulk --tier bulk
-expect_selector_reject "repeated literal model is ambiguous" repeated-literal \
-    --literal-model future-model-1.2 --literal-model future-model-1.2
-expect_selector_reject "literal model conflicts with reviewed model" literal-model-conflict \
-    --literal-model future-model-1.2 --model gemini-3.6-flash --effort high
-expect_selector_reject "literal model conflicts with effort" literal-effort-conflict \
-    --literal-model future-model-1.2 --effort high
-expect_selector_reject "uppercase literal model is rejected" literal-uppercase \
-    --literal-model Future-Model-1.2
-expect_selector_reject "slash literal model is rejected" literal-slash \
-    --literal-model vendor/model-v1
-literal_too_long="$(python3 -c 'print("a-" + "b" * 127)')"
-expect_selector_reject "overlong literal model is rejected" literal-too-long \
-    --literal-model "$literal_too_long"
-expect_selector_reject "empty literal model is rejected" empty-literal --literal-model ''
+expect_selector_reject "retired literal alias rejects before task or provider" retired-literal \
+    --literal-model future-model-1.2
+model_too_long="$(python3 -c 'print("a-" + "b" * 127)')"
+expect_selector_reject "overlong model is rejected" model-too-long --model "$model_too_long"
 expect_selector_reject "empty CLI model is rejected" empty-cli-model --model ''
 expect_selector_reject "empty CLI effort is rejected" empty-cli-effort \
     --model gemini-3.6-flash --effort ''
 expect_selector_reject "effort without model is rejected" effort-without-model --effort high
-expect_selector_reject "base model without effort is rejected" base-without-effort \
-    --model gemini-3.6-flash
-expect_selector_reject "Pro medium is unsupported" pro-medium \
-    --model gemini-3.1-pro --effort medium
-expect_selector_reject "fixed Sonnet rejects effort" sonnet-effort \
-    --model claude-sonnet-4-6 --effort high
-expect_selector_reject "fixed Opus rejects effort" opus-effort \
-    --model claude-opus-4-6-thinking --effort high
-expect_selector_reject "fixed GPT rejects effort" gpt-effort \
-    --model gpt-oss-120b-medium --effort medium
-expect_selector_reject "compound slug rejects effort" compound-effort \
-    --model gemini-3.6-flash-high --effort high
-expect_selector_reject "unknown direct model is rejected" unknown-direct \
-    --model vendor/model-v1
-expect_selector_reject "case-changing a direct model is rejected" upper-direct \
-    --model Gemini-3.6-Flash --effort high
 expect_selector_reject "padded direct model is rejected" padded-direct \
     --model ' gemini-3.6-flash' --effort high
-expect_selector_reject "thinking-style effort is rejected" thinking-effort \
-    --model gemini-3.6-flash --effort thinking-high
 expect_selector_reject "invented thinking-level flag is rejected" thinking-flag \
     --model gemini-3.6-flash --thinking-level high
+
+expect_selector_reject "retired disposition flag is actionable rejection" retired-disposition \
+    --model future-model --compatibility-disposition proceed
+expect_selector_reject "retired help approval flag is actionable rejection" retired-help-approval \
+    --model future-model --approve-help-sha "$(printf 'a%.0s' {1..64})"
 
 assert_env_reject() {
     local name="$1" job="$2" got="$3"
@@ -2925,60 +2518,8 @@ make_selector_fixture() {
     # Test fixtures must start from source bytes, not an ambient interpreter cache.
     # This is deliberately fixture-local; it never deletes checkout/cache inputs.
     rm -rf "$destination/runtime/scripts/__pycache__"
-    case "$mode" in
-        clean) ;;
-        disabled|missing-output)
-            python3 - "$destination/runtime/compat/agy-model-effort-matrix.json" "$mode" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
+    [[ "$mode" == clean ]] || return 64
 
-path = pathlib.Path(sys.argv[1])
-mode = sys.argv[2]
-data = json.loads(path.read_text())
-if mode == "disabled":
-    data["resolution_status"] = "disabled-unverified-source"
-    data["inventory"]["reviewed_source_revision"] = None
-    data["inventory"]["evidence"] = ["installed-agy-models"]
-else:
-    data["adjustable_models"][0]["resolutions"]["high"] = ""
-path.write_text(json.dumps(data, indent=2) + "\n")
-digest = hashlib.sha256(path.read_bytes()).hexdigest()
-(path.parent / "agy-model-effort-matrix.sha256").write_text(digest + "\n")
-PY
-            ;;
-        source-drift) printf '%040d\n' 0 > "$destination/runtime/compat/agy-upstream-head.txt" ;;
-        coordinated-source-drift)
-            python3 - "$destination/runtime/compat" <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-revision = "0" * 40
-(root / "agy-upstream-head.txt").write_text(revision + "\n", encoding="ascii")
-for name in ("agy-model-effort-matrix", "agy-models-inventory-binding"):
-    path = root / f"{name}.json"
-    value = json.loads(path.read_text())
-    value["inventory" if name.endswith("matrix") else "reviewed_source_revision"] = (
-        {**value["inventory"], "reviewed_source_revision": revision}
-        if name.endswith("matrix")
-        else revision
-    )
-    path.write_text(json.dumps(value, indent=2) + "\n")
-    (root / f"{name}.sha256").write_text(
-        hashlib.sha256(path.read_bytes()).hexdigest() + "\n",
-        encoding="ascii",
-    )
-PY
-            ;;
-        version-drift) printf '9.9.9\n' > "$destination/runtime/compat/agy-verified-version.txt" ;;
-        sha-mismatch) printf '%064d\n' 0 > "$destination/runtime/compat/agy-model-effort-matrix.sha256" ;;
-        missing-matrix) rm -f "$destination/runtime/compat/agy-model-effort-matrix.json" ;;
-        malformed-schema) printf '\n{}\n' >> "$destination/runtime/compat/model-effort-matrix.schema.json" ;;
-    esac
 }
 
 fixture_cache_source="$TMP/selector-fixture-cache-source"
@@ -3028,296 +2569,142 @@ expect_compat_reject() {
     fi
 }
 
-for compat_mode in disabled source-drift coordinated-source-drift version-drift sha-mismatch missing-matrix \
-    malformed-schema missing-output; do
-    compat_fixture="$TMP/selector-$compat_mode"
-    make_selector_fixture "$compat_fixture" "$compat_mode"
-    case "$compat_mode" in
-        disabled|source-drift|version-drift) compat_exit=7 ;;
-        *) compat_exit=8 ;;
-    esac
-    expect_compat_reject "$compat_mode matrix evidence fails closed" \
-        "$compat_fixture" "compat-$compat_mode" "$compat_exit" ready 0
-done
-
 VERSION_FIXTURE="$TMP/selector-version-probes"
 make_selector_fixture "$VERSION_FIXTURE" clean
-printf 'version drift needs Codex review before task intake\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker version-drift-installed --model gemini-3.6-flash --effort high \
-    > "$TMP/version-drift-installed.out" 2> "$TMP/version-drift-installed.err"
-rc=$?
-if [[ "$rc" == 7 && "$(cat "$TMP/version-drift-installed.calls")" == $'version\nhelp' \
-        && ! -s "$TMP/version-drift-installed.worker-calls" \
-        && ! -e "$TMP/logs/version-drift-installed/task.txt" ]] \
-        && ! grep -Eq 'Usage of agy:|Select a model|currently unavailable|/tmp|/Users' "$TMP/version-drift-installed.err"
-then
-    ok "installed version drift is review-required before task intake or provider dispatch"
-else
-    bad "installed version drift review-required boundary"
-fi
-# The approval digest is a public product fact, not an out-of-band shell hash.
-# It must name only bounded compatibility evidence and never the executable,
-# help prose, prompt, repository, or credentials.
-HELP_SHA="$(python3 - "$TMP/version-drift-installed.err" <<'PY'
-import json
-import sys
-raw = open(sys.argv[1], encoding="utf-8").read().splitlines()
-prefix = "model-selection: review-required "
-assert len(raw) == 1 and raw[0].startswith(prefix), raw
-value = json.loads(raw[0][len(prefix):])
-assert value == {
-    "schema_version": 1,
-    "kind": "agy-worker-compatibility-review-evidence",
-    "installed_agy_version": "1.1.17",
-    "matrix_agy_version": "1.2.11",
-    "version_relation": "drift",
-    "compatibility_status": "direct-selection-review-required",
-    "critical_interface_status": "compatible",
-    "critical_capabilities_sha256": value["critical_capabilities_sha256"],
-    "raw_help_sha256": value["raw_help_sha256"],
-    "user_model": "gemini-3.6-flash",
-    "user_model_source": "cli",
-    "user_effort": "high",
-    "user_effort_source": "cli",
-    "resolved_agy_model": "gemini-3.6-flash-high",
-    "retry_selection_arguments": [
-        "--model", "gemini-3.6-flash", "--effort", "high",
-        "--compatibility-disposition", "proceed", "--approve-help-sha", value["raw_help_sha256"],
-    ],
-    "retry_selection_environment": {},
-    "approval": {"compatibility_disposition": None, "approve_help_sha256": None},
-}
-assert all(isinstance(value[key], str) and len(value[key]) == 64 for key in (
-    "critical_capabilities_sha256", "raw_help_sha256",
-))
-assert not any(secret in raw[0] for secret in ("/tmp", "/Users", "Usage of agy:", "version drift needs"))
-assert "selected_model" not in value and "selected_effort" not in value
-print(value["raw_help_sha256"])
-PY
-)"
-if [[ -n "$HELP_SHA" ]]; then
-    ok "version drift publishes bounded sanitized approval evidence from product output"
-else
-    bad "version drift approval evidence shape"
-fi
-
-# A drift review must preserve exactly where each caller selector came from.
-# The retry fragment is deliberately limited to selector argv/environment plus
-# the newly observed approval digest: task text, paths, and ambient secrets are
-# not review evidence.
-assert_drift_retry_selection() {
-    local name="$1" error_file="$2" expected_model="$3" expected_model_source="$4"
-    local expected_effort="$5" expected_effort_source="$6" expected_resolved="$7"
-    if python3 - "$error_file" "$expected_model" "$expected_model_source" \
-            "$expected_effort" "$expected_effort_source" "$expected_resolved" <<'PY'
-import json
-import sys
-
-path, model, model_source, effort, effort_source, resolved = sys.argv[1:]
-line = open(path, encoding="utf-8").read().strip()
-prefix = "model-selection: review-required "
-assert line.startswith(prefix)
-value = json.loads(line[len(prefix):])
-assert value["user_model"] == model
-assert value["user_model_source"] == model_source
-assert value["resolved_agy_model"] == resolved
-if effort:
-    assert value["user_effort"] == effort
-    assert value["user_effort_source"] == effort_source
-else:
-    assert "user_effort" not in value and "user_effort_source" not in value
-args = value["retry_selection_arguments"]
-env = value["retry_selection_environment"]
-assert isinstance(args, list) and all(isinstance(item, str) for item in args)
-assert isinstance(env, dict) and set(env) <= {"AGY_WORKER_MODEL", "AGY_WORKER_EFFORT"}
-expected_args = []
-expected_env = {}
-if model_source == "cli":
-    expected_args += ["--model", model]
-else:
-    expected_env["AGY_WORKER_MODEL"] = model
-if effort:
-    if effort_source == "cli":
-        expected_args += ["--effort", effort]
-    else:
-        expected_env["AGY_WORKER_EFFORT"] = effort
-expected_args += ["--compatibility-disposition", "proceed", "--approve-help-sha", value["raw_help_sha256"]]
-assert args == expected_args and env == expected_env
-assert not ({"selected_model", "selected_effort"} & set(value))
-assert not any(token in line for token in ("prompt-secret", "/private/", "ambient-secret"))
-PY
-    then
-        ok "$name"
-    else
-        bad "$name"
-    fi
-}
-
-printf 'prompt-secret env model and effort\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    AGY_WORKER_MODEL=gemini-3.6-flash AGY_WORKER_EFFORT=high \
-    AGY_WORKER_UNRELATED_SECRET=ambient-secret run_worker version-drift-env \
-    > "$TMP/version-drift-env.out" 2> "$TMP/version-drift-env.err"
-rc=$?
-if [[ "$rc" == 7 ]]; then
-    assert_drift_retry_selection "drift evidence preserves environment model and effort provenance" \
-        "$TMP/version-drift-env.err" gemini-3.6-flash environment high environment gemini-3.6-flash-high
-else
-    bad "environment drift evidence preflight (exit $rc)"
-fi
-
-printf 'prompt-secret mixed selector provenance\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    AGY_WORKER_EFFORT=high AGY_WORKER_UNRELATED_SECRET=ambient-secret \
-    run_worker version-drift-mixed --model gemini-3.6-flash \
-    > "$TMP/version-drift-mixed.out" 2> "$TMP/version-drift-mixed.err"
-rc=$?
-if [[ "$rc" == 7 ]]; then
-    assert_drift_retry_selection "drift evidence preserves mixed CLI/environment provenance" \
-        "$TMP/version-drift-mixed.err" gemini-3.6-flash cli high environment gemini-3.6-flash-high
-else
-    bad "mixed drift evidence preflight (exit $rc)"
-fi
-
-printf 'prompt-secret fixed selector\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    AGY_WORKER_UNRELATED_SECRET=ambient-secret run_worker version-drift-fixed \
-    --model gemini-3.6-flash-high \
-    > "$TMP/version-drift-fixed.out" 2> "$TMP/version-drift-fixed.err"
-rc=$?
-if [[ "$rc" == 7 ]]; then
-    assert_drift_retry_selection "drift evidence keeps exact compound as resolved rather than caller base" \
-        "$TMP/version-drift-fixed.err" gemini-3.6-flash-high cli '' '' gemini-3.6-flash-high
-else
-    bad "fixed drift evidence preflight (exit $rc)"
-fi
-
-printf 'approved version drift preserves the caller selection\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker version-drift-approved --model gemini-3.6-flash --effort high \
-    --compatibility-disposition proceed --approve-help-sha "$HELP_SHA" \
-    > "$TMP/version-drift-approved.out" 2> "$TMP/version-drift-approved.err"
-rc=$?
-if [[ "$rc" == 0 ]] && python3 - "$TMP/logs/version-drift-approved/selection.json" \
-        "$TMP/version-drift-approved.argv" "$TMP/version-drift-approved.calls" "$HELP_SHA" <<'PY'
-import json, sys
-record = json.load(open(sys.argv[1], encoding="utf-8"))
-argv = [item for item in open(sys.argv[2], "rb").read().split(b"\0") if item]
-calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-assert calls == ["version", "help", "version", "help", "version", "help", "worker"]
-assert record["schema_version"] == 3
-assert record["compatibility_disposition"] == "proceed"
-assert record["approved_help_sha256"] == record["help_sha256"] == sys.argv[4]
-assert len(record["compatibility_decision_sha256"]) == 64
-assert argv[argv.index(b"--model") + 1] == b"gemini-3.6-flash-high"
-assert b"--effort" not in argv and b"--thinking-level" not in argv
-PY
-then
-    ok "explicit Codex disposition binds exact help SHA and preserves model effort argv"
-else
-    bad "approved direct version drift binding"
-fi
-# A review-required selection consumes no task bytes and leaves no controller
-# reservation, so the exact job id can be retried with its public digest.
-retry_job="version-drift-retry"
-printf 'review then exact same job retry\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker "$retry_job" --model gemini-3.6-flash --effort high \
-    > "$TMP/$retry_job.out" 2> "$TMP/$retry_job.err"
-retry_rc=$?
-RETRY_HELP_SHA="$(python3 - "$TMP/$retry_job.err" <<'PY'
-import json
-import sys
-line = open(sys.argv[1], encoding="utf-8").read().strip()
-prefix = "model-selection: review-required "
-assert line.startswith(prefix)
-print(json.loads(line[len(prefix):])["raw_help_sha256"])
-PY
-)"
-retry_cleanup_ok=0
-[[ ! -e "$TMP/logs/$retry_job" ]] && retry_cleanup_ok=1
-rm -f "$TMP/$retry_job.calls"
-printf 'approved exact same job retry\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-    run_worker "$retry_job" --model gemini-3.6-flash --effort high \
-    --compatibility-disposition proceed --approve-help-sha "$RETRY_HELP_SHA" \
-    > "$TMP/$retry_job-approved.out" 2> "$TMP/$retry_job-approved.err"
-retry_approved_rc=$?
-if [[ "$retry_rc" == 7 && "$retry_cleanup_ok" == 1 && "$retry_approved_rc" == 0 \
-        && -f "$TMP/logs/$retry_job/selection.json" \
-        && "$(cat "$TMP/$retry_job.calls")" == $'version\nhelp\nversion\nhelp\nversion\nhelp\nworker' ]]; then
-    ok "review-required cleanup permits exact same job-id approval retry without provider before approval"
-else
-    bad "review-required job cleanup or same-id retry boundary"
-fi
-for approval_case in missing-help-sha stale-help-sha malformed-help-sha uppercase-disposition duplicate-disposition; do
-    approval_args=(--model gemini-3.6-flash --effort high)
-    approval_exit=64
-    case "$approval_case" in
-        missing-help-sha)
-            approval_args+=(--compatibility-disposition proceed)
-            approval_exit=7 ;;
-        stale-help-sha)
-            approval_args+=(--compatibility-disposition proceed --approve-help-sha "$(printf '0%.0s' {1..64})")
-            approval_exit=7 ;;
-        malformed-help-sha)
-            approval_args+=(--compatibility-disposition proceed --approve-help-sha "NOT-A-SHA") ;;
-        uppercase-disposition)
-            approval_args+=(--compatibility-disposition PROCEED --approve-help-sha "$HELP_SHA") ;;
-        duplicate-disposition)
-            approval_args+=(--compatibility-disposition proceed --compatibility-disposition proceed --approve-help-sha "$HELP_SHA") ;;
-    esac
-    approval_job="approval-$approval_case"
-    printf 'invalid compatibility approval must remain pre-task\n' | \
-        AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift117 \
-        run_worker "$approval_job" "${approval_args[@]}" \
-        > "$TMP/$approval_job.out" 2> "$TMP/$approval_job.err"
-    rc=$?
-    if [[ "$rc" == "$approval_exit" && ! -s "$TMP/$approval_job.worker-calls" \
-            && ! -e "$TMP/logs/$approval_job/task.txt" ]]; then
-        ok "$approval_case is rejected before task intake and provider dispatch"
-    else
-        bad "$approval_case rejection boundary (exit $rc)"
-    fi
+# Every base option must be advertised even on default and tier routes.
+for missing in add-dir disable-slash-commands json-schema mode model output-format print print-timeout; do
+    for route in default tier direct; do
+        selector_args=()
+        case "$route" in
+            tier) selector_args=(--tier cheap) ;;
+            direct) selector_args=(--model vendor/Future-Model --effort Future-Level) ;;
+        esac
+        job="missing-$route-$missing"
+        printf 'must remain unread\n' | FAKE_HELP_MODE="missing---$missing" \
+            run_worker "$job" ${selector_args+"${selector_args[@]}"} > "$TMP/$job.out" 2> "$TMP/$job.err"
+        rc=$?
+        if [[ "$rc" == 8 && ! -s "$TMP/$job.worker-calls" && ! -e "$TMP/logs/$job" ]] \
+                && grep -Fq -- "--$missing" "$TMP/$job.err"; then
+            ok "$route missing --$missing rejects before provider, job and lock mutation"
+        else bad "$route missing --$missing capability boundary (exit $rc)"; fi
+    done
 done
-printf 'far version drift keeps the exact requested model\n' | \
-    AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" FAKE_VERSION_MODE=drift999 \
-    run_worker version-drift-999 --model gemini-3.7-flash --effort high \
-    --compatibility-disposition proceed --approve-help-sha "$HELP_SHA" \
-    > "$TMP/version-drift-999.out" 2> "$TMP/version-drift-999.err"
-rc=$?
-if [[ "$rc" == 0 ]] && python3 - "$TMP/logs/version-drift-999/selection.json" \
-        "$TMP/version-drift-999.argv" "$TMP/version-drift-999.calls" <<'PY'
-import json
+# Conditional capabilities: initial session exploration needs neither native nor recovery flags.
+for missing in sandbox conversation effort; do
+    for route in default tier model; do
+        selector_args=()
+        case "$route" in
+            tier) selector_args=(--tier cheap) ;;
+            model) selector_args=(--model vendor/Future-Model) ;;
+        esac
+        job="optional-$route-$missing"
+        printf 'initial session exploration\n' | AGY_WORKER_MODE=plan FAKE_HELP_MODE="missing---$missing" \
+            run_worker "$job" --workflow explore ${selector_args+"${selector_args[@]}"} \
+            > "$TMP/$job.out" 2> "$TMP/$job.err"
+        rc=$?
+        if [[ "$rc" == 0 ]] && python3 -B - "$TMP/$job.calls" "$TMP/$job.argv" <<'PY'
+from pathlib import Path
 import sys
-record = json.load(open(sys.argv[1], encoding="utf-8"))
-argv = [item for item in open(sys.argv[2], "rb").read().split(b"\0") if item]
-calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-assert calls == ["version", "help", "version", "help", "version", "help", "worker"]
-assert calls.count("worker") == 1
-assert record["schema_version"] == 3
-assert record["installed_agy_version"] == "9.9.9"
-assert record["version_relation"] == "drift"
-assert record["compatibility_disposition"] == "proceed"
-assert record["resolved_agy_model"] == "gemini-3.7-flash-high"
-assert argv[argv.index(b"--model") + 1] == b"gemini-3.7-flash-high"
-assert b"--effort" not in argv and b"--thinking-level" not in argv
+assert Path(sys.argv[1]).read_text().splitlines() == ['version', 'help'] * 2 + ['worker']
+argv = Path(sys.argv[2]).read_bytes().split(b'\0')
+assert b'--sandbox' not in argv and b'--conversation' not in argv and b'--effort' not in argv
 PY
-then
-    ok "9.9.9 drift preserves the caller's exact model and effort resolution"
-else
-    bad "9.9.9 drift exact model preservation"
-fi
-for version_mode in fail empty malformed oversize hang; do
+        then ok "$route session explore ignores unused --$missing with fresh launch probes"
+        else bad "$route session explore unused --$missing (exit $rc)"; fi
+    done
+done
+for effort_source in cli environment; do
+    job="required-effort-$effort_source"
+    if [[ "$effort_source" == cli ]]; then
+        printf 'must remain unread\n' | FAKE_HELP_MODE=missing---effort \
+            run_worker "$job" --model vendor/Future --effort Caller-Level > "$TMP/$job.out" 2> "$TMP/$job.err"
+    else
+        printf 'must remain unread\n' | AGY_WORKER_EFFORT=Caller-Level FAKE_HELP_MODE=missing---effort \
+            run_worker "$job" --model vendor/Future > "$TMP/$job.out" 2> "$TMP/$job.err"
+    fi
+    rc=$?
+    if [[ "$rc" == 8 && ! -e "$TMP/logs/$job" && ! -s "$TMP/$job.worker-calls" ]] \
+            && grep -Fq -- '--effort' "$TMP/$job.err"; then
+        ok "$effort_source effort requires its capability before task consumption"
+    else bad "$effort_source effort capability boundary (exit $rc)"; fi
+done
+native_capability_root="$(cd "$TMP" && pwd -P)"
+native_capability_target="$CORE_WORKDIR/native-capability-target.txt"
+native_capability_scope="$native_capability_root/native-capability.scope.json"
+printf 'native capability fixture\n' > "$native_capability_target"
+printf '%s\n' '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"native-capability-target.txt","kind":"file"}],"write":[{"path":"native-capability-target.txt","kind":"file"}]}' > "$native_capability_scope"
+chmod 0600 "$native_capability_scope"
+native_capability_sha="$("$WORKER" transmission-preview --workdir "$CORE_WORKDIR" \
+    --provider-scope "$native_capability_scope" --provider-isolation native --format json \
+    | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
+printf 'must remain unread\n' | AGY_TEST_WORKDIR="$CORE_WORKDIR" FAKE_HELP_MODE=missing---sandbox \
+    run_worker required-native --workflow task --provider-isolation native \
+    --provider-scope "$native_capability_scope" --approve-transmission-sha "$native_capability_sha" \
+    > "$TMP/required-native.out" 2> "$TMP/required-native.err"
+rc=$?
+if [[ "$rc" == 8 && ! -e "$TMP/logs/required-native" && ! -s "$TMP/required-native.worker-calls" ]] \
+        && grep -Fq -- '--sandbox' "$TMP/required-native.err"; then
+    ok "native requires sandbox capability before task consumption or containment"
+else bad "native capability boundary (exit $rc)"; fi
+rm -f "$native_capability_target" "$native_capability_scope"
+
+for route in default tier direct; do
+    selector_args=()
+    case "$route" in
+        tier) selector_args=(--tier cheap) ;;
+        direct) selector_args=(--model vendor/Future-Model --effort Future-Level) ;;
+    esac
+    job="arbitrary-version-$route"
+    printf 'arbitrary diagnostic version\n' | FAKE_VERSION_MODE=canary \
+        run_worker "$job" ${selector_args+"${selector_args[@]}"} \
+        > "$TMP/$job.out" 2> "$TMP/$job.err"
+    if [[ $? == 0 ]] && python3 - "$TMP/$job.argv" "$TMP/logs/$job/selection.json" \
+            "$TMP/$job.calls" "$route" <<'PYTHON'
+import json,sys
+argv=open(sys.argv[1],'rb').read().split(b'\0')
+record=json.load(open(sys.argv[2]))
+assert record['installed_agy_version']=='canary-build'
+assert open(sys.argv[3]).read().splitlines() == ['version','help'] * 2 + ['worker']
+if sys.argv[4] == 'direct':
+    assert argv[argv.index(b'--model')+1] == b'vendor/Future-Model'
+    assert argv[argv.index(b'--effort')+1] == b'Future-Level'
+elif sys.argv[4] == 'tier':
+    assert argv[argv.index(b'--model')+1] == b'gemini-3.6-flash-low'
+    assert b'--effort' not in argv
+else:
+    assert b'--model' not in argv and b'--effort' not in argv
+PYTHON
+    then ok "non-semver diagnostic permits $route launch with literal caller choices"
+    else bad "non-semver diagnostic $route launch boundary"; fi
+done
+
+# Standalone observation is base-only; record verification retains recorded effort.
+selection_helper="$ROOT/skills/agy-worker/runtime/scripts/model_selection.py"
+for action in base record; do
+    action_args=(--probe-interface)
+    [[ "$action" != record ]] || action_args=(--verify-record-executable "$TMP/logs/arbitrary-version-direct/selection.json")
+    FAKE_HELP_MODE=missing---effort FAKE_CALLS_FILE="$TMP/standalone-$action.calls" \
+        PATH="$TMP/bin:$PATH" python3 -B "$selection_helper" "${action_args[@]}" \
+        --child-env FAKE_HELP_MODE --child-env FAKE_CALLS_FILE \
+        > "$TMP/standalone-$action.out" 2> "$TMP/standalone-$action.err"
+    rc=$?
+    if { [[ "$action" == base && "$rc" == 0 ]] \
+            || { [[ "$action" == record && "$rc" == 8 ]] && grep -Fq -- '--effort' "$TMP/standalone-$action.err"; }; }; then
+        ok "standalone $action probe uses its own effort context"
+    else bad "standalone $action effort context (exit $rc)"; fi
+    PATH="$TMP/bin:$PATH" python3 -B "$selection_helper" "${action_args[@]}" \
+        --provider-isolation native > "$TMP/standalone-$action-exclusive.out" 2> "$TMP/standalone-$action-exclusive.err"
+    expect_exit "standalone $action rejects selection-only isolation context" 64 "$?"
+done
+
+for version_mode in fail empty oversize hang; do
     expect_compat_reject "$version_mode version evidence is unavailable" \
         "$VERSION_FIXTURE" "version-$version_mode" 8 "$version_mode" 1
 done
 
-for help_mode in missing duplicate malformed semantic utf8 nul oversize fail hang; do
+for help_mode in missing duplicate malformed utf8 nul oversize fail hang; do
     help_job="help-$help_mode"
     help_version_mode=ready
-    [[ "$help_mode" != semantic ]] || help_version_mode=drift117
     printf 'help interface failure must not read this task\n' | \
         AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" \
         FAKE_VERSION_MODE="$help_version_mode" FAKE_HELP_MODE="$help_mode" \
@@ -3327,12 +2714,6 @@ for help_mode in missing duplicate malformed semantic utf8 nul oversize fail han
     help_calls=0
     [[ ! -f "$TMP/$help_job.calls" ]] || help_calls="$(wc -l < "$TMP/$help_job.calls" | tr -d ' ')"
     help_expected=8
-    if [[ "$help_mode" == semantic ]]; then
-        # Option-local prose is evidence for Codex's review, not a controller
-        # semantic decision.  Under version drift it reaches the same
-        # review-required boundary as other structurally compatible drift.
-        help_expected=7
-    fi
     if [[ "$rc" == "$help_expected" && "$help_calls" == 2 && ! -s "$TMP/$help_job.worker-calls" \
             && ! -e "$TMP/logs/$help_job/task.txt" ]]; then
         ok "$help_mode help preflight is pre-provider and task-unread"
@@ -3673,15 +3054,15 @@ else
     bad "direct selector launch-failure boundary (exit $rc)"
 fi
 
-printf 'legacy missing agy still consumes the task and reaches dispatch\n' | \
+printf 'tier missing agy must not read the task\n' | \
     run_without_fake_agy legacy-path-missing "$NO_AGY_PATH" --tier cheap \
     > "$TMP/legacy-path-missing.out" 2> "$TMP/legacy-path-missing.err"
 rc=$?
-if [[ "$rc" == 5 && -s "$TMP/no-agy-logs/legacy-path-missing/task.txt" \
-        && -s "$TMP/no-agy-logs/legacy-path-missing/selection.json" ]]; then
-    ok "legacy tier preserves historical missing-agy dispatch semantics"
+if [[ "$rc" == 8 && ! -e "$TMP/no-agy-logs/legacy-path-missing/task.txt" \
+        && ! -e "$TMP/no-agy-logs/legacy-path-missing/selection.json" ]]; then
+    ok "tier missing-agy fails before task intake"
 else
-    bad "legacy tier missing-agy semantics (exit $rc)"
+    bad "tier missing-agy preflight (exit $rc)"
 fi
 
 printf 'prefixed semantic version\n' | AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" \
@@ -3691,7 +3072,7 @@ printf 'prefixed semantic version\n' | AGY_TEST_WORKER="$VERSION_FIXTURE/runtime
 rc=$?
 if [[ "$rc" == 0 ]]; then
     assert_direct_result "documented prefixed agy version is accepted" version-prefixed \
-        gemini-3.6-flash-high gemini-3.6-flash high cli cli 2
+        gemini-3.6-flash gemini-3.6-flash high cli cli 4
 else
     bad "documented prefixed agy version is accepted (exit $rc)"
 fi
@@ -3709,91 +3090,22 @@ import sys
 direct = json.load(open(sys.argv[1], encoding="utf-8"))
 tier = json.load(open(sys.argv[2], encoding="utf-8"))
 root = Path(sys.argv[3])
-assert direct["schema_version"] == 2
-assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(direct))
-
-v2_only = {
-    "version_relation", "compatibility_status", "critical_interface_probe_version",
-    "critical_interface_status", "critical_capabilities_sha256", "help_sha256",
-    "model_availability", "probed_executable",
-}
-v3_only = {
-    "compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256",
-}
-legacy_direct = {key: value for key, value in direct.items() if key not in v2_only | v3_only}
-legacy_direct["schema_version"] = 1
-
-# Historical V2 records remain decodable, but a missing descriptor digest must
-# make the current launch rebind fail closed rather than becoming trusted data.
-legacy_v2_binding = copy.deepcopy(direct)
-for key in v3_only:
-    legacy_v2_binding.pop(key, None)
-legacy_v2_binding["schema_version"] = 2
-legacy_v2_binding["probed_executable"].pop("content_sha256")
-legacy_v2_binding["probed_executable"]["target_lstat"].pop("ctime_ns")
-for item in legacy_v2_binding["probed_executable"]["symlink_chain"]:
-    item["lstat"].pop("ctime_ns")
-for item in legacy_v2_binding["probed_executable"]["components"]:
-    item["lstat"].pop("ctime_ns")
-
-historical_v2_drift = copy.deepcopy(legacy_v2_binding)
-historical_v2_drift.update({
-    "installed_agy_version": "1.1.17",
-    "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-})
-
-v3_drift = copy.deepcopy(direct)
-v3_drift.update({
-    "schema_version": 3,
-    "installed_agy_version": "1.1.17",
-    "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-    "compatibility_disposition": "proceed",
-    "approved_help_sha256": direct["help_sha256"],
-})
-decision_fields = (
-    "compatibility_disposition", "approved_help_sha256", "help_sha256",
-    "critical_capabilities_sha256", "installed_agy_version", "matrix_agy_version",
-    "matrix_sha256", "matrix_source_revision", "selection_mode", "user_model",
-    "user_model_source", "resolved_agy_model", "probed_executable",
-)
-decision = {key: v3_drift[key] for key in decision_fields}
-if v3_drift["selection_mode"] == "model-effort":
-    decision["user_effort"] = v3_drift["user_effort"]
-    decision["user_effort_source"] = v3_drift["user_effort_source"]
-v3_drift["compatibility_decision_sha256"] = __import__("hashlib").sha256(
-    json.dumps(decision, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
-).hexdigest()
-
+assert direct["schema_version"] == 4
 cases = {
-    "three-key-direct": {
-        "schema_version": 1,
-        "kind": "agy-worker-selection",
-        "selection_mode": "exact-model",
-    },
-    "tier-with-direct-fields": {**tier, "user_model": "gemini-3.6-flash-high"},
+    "three-key-direct": {"schema_version": 4, "kind": "agy-worker-selection", "selection_mode": "exact-model"},
+    "tier-with-direct-fields": {**tier, "user_model": "untrusted"},
     "direct-missing-provenance": {key: value for key, value in direct.items() if key != "user_model_source"},
     "direct-invalid-source": {**direct, "user_model_source": "worker"},
-    "direct-invalid-sha": {**direct, "matrix_sha256": "z" * 64},
+    "direct-invalid-sha": {**direct, "probed_executable": {**direct["probed_executable"], "content_sha256": "z" * 64}},
     "direct-extra-field": {**direct, "applied": False},
-    "v1-direct": legacy_direct,
-    "v2-legacy-executable-binding": legacy_v2_binding,
-    "v2-historical-drift": historical_v2_drift,
-    "v2-historical-drift-with-v3-decision": {
-        **historical_v2_drift, "compatibility_disposition": "proceed",
-    },
-    "v2-missing-help-digest": {key: value for key, value in direct.items() if key != "help_sha256"},
-    "v2-contradictory-relation": {**direct, "version_relation": "drift"},
-    "v2-extra-field": {**direct, "model_availability_detail": "not assessed"},
-    "v2-tampered-binding": {**direct, "probed_executable": {
-        **direct["probed_executable"], "target_lstat": {**direct["probed_executable"]["target_lstat"], "inode": 0},
-    }},
-    "v3-approved-drift": v3_drift,
-    "v3-model-decision-transplant": {**v3_drift, "resolved_agy_model": "gemini-3.1-pro-high"},
-    "v3-effort-decision-transplant": {**v3_drift, "user_effort": "medium"},
-    "v3-source-decision-transplant": {**v3_drift, "user_model_source": "environment"},
+    "missing-binding": {key: value for key, value in direct.items() if key != "probed_executable"},
+    "tampered-binding": {**direct, "probed_executable": {**direct["probed_executable"], "target_lstat": {**direct["probed_executable"]["target_lstat"], "inode": 0}}},
+    "model-transplant": {**direct, "resolved_agy_model": "other-model"},
+    "effort-provenance-missing": {key: value for key, value in direct.items() if key != "user_effort_source"},
+    "retired-matrix-field": {**direct, "matrix_sha256": "a" * 64},
 }
+for schema in (1, 2, 3):
+    cases[f"retired-{schema}"] = {**direct, "schema_version": schema}
 for name, value in cases.items():
     (root / f"{name}.json").write_text(json.dumps(value) + "\n", encoding="utf-8")
 PY
@@ -3811,63 +3123,43 @@ expect_invalid_selection_record() {
     if [[ "$got" == 64 && ! -s "$path.invalid.out" ]]; then ok "$name"; else bad "$name (exit $got)"; fi
 }
 expect_valid_selection_record "runtime validator accepts a complete direct artifact" "$VALID_DIRECT_RECORD"
-expect_valid_selection_record "runtime validator preserves v1 direct artifact compatibility" "$ARTIFACT_CASES/v1-direct.json"
-expect_valid_selection_record "runtime validator reads a legacy v2 executable binding without trusting it for launch" "$ARTIFACT_CASES/v2-legacy-executable-binding.json"
-expect_valid_selection_record "runtime validator preserves historical v2 drift as read-only evidence" "$ARTIFACT_CASES/v2-historical-drift.json"
 expect_valid_selection_record "runtime validator accepts a complete tier artifact" "$VALID_TIER_RECORD"
-expect_invalid_selection_record "runtime validator rejects a three-key direct artifact" "$ARTIFACT_CASES/three-key-direct.json"
-expect_invalid_selection_record "runtime validator rejects tier records carrying direct fields" "$ARTIFACT_CASES/tier-with-direct-fields.json"
-expect_invalid_selection_record "runtime validator rejects missing direct provenance" "$ARTIFACT_CASES/direct-missing-provenance.json"
-expect_invalid_selection_record "runtime validator rejects an invalid source" "$ARTIFACT_CASES/direct-invalid-source.json"
-expect_invalid_selection_record "runtime validator rejects an invalid matrix SHA" "$ARTIFACT_CASES/direct-invalid-sha.json"
-expect_invalid_selection_record "runtime validator rejects extra artifact fields" "$ARTIFACT_CASES/direct-extra-field.json"
-expect_invalid_selection_record "runtime validator rejects incomplete v2 interface evidence" "$ARTIFACT_CASES/v2-missing-help-digest.json"
-expect_invalid_selection_record "runtime validator rejects contradictory v2 version relation" "$ARTIFACT_CASES/v2-contradictory-relation.json"
-expect_invalid_selection_record "runtime validator rejects a historical v2 drift with v3 approval fields" "$ARTIFACT_CASES/v2-historical-drift-with-v3-decision.json"
-expect_invalid_selection_record "runtime validator rejects extra v2 fields" "$ARTIFACT_CASES/v2-extra-field.json"
-expect_invalid_selection_record "runtime validator rejects tampered v2 executable binding" "$ARTIFACT_CASES/v2-tampered-binding.json"
-expect_valid_selection_record "runtime validator accepts an approved v3 drift decision" "$ARTIFACT_CASES/v3-approved-drift.json"
-expect_invalid_selection_record "runtime validator rejects a v3 model decision transplant" "$ARTIFACT_CASES/v3-model-decision-transplant.json"
-expect_invalid_selection_record "runtime validator rejects a v3 effort decision transplant" "$ARTIFACT_CASES/v3-effort-decision-transplant.json"
-expect_invalid_selection_record "runtime validator rejects a v3 source decision transplant" "$ARTIFACT_CASES/v3-source-decision-transplant.json"
-
-"$SELECTOR" --verify-record-executable "$ARTIFACT_CASES/v2-legacy-executable-binding.json" \
-    > "$ARTIFACT_CASES/v2-legacy-executable-binding.verify.out" \
-    2> "$ARTIFACT_CASES/v2-legacy-executable-binding.verify.err"
-legacy_v2_verify_rc=$?
-if [[ "$legacy_v2_verify_rc" == 64 && ! -s "$ARTIFACT_CASES/v2-legacy-executable-binding.verify.out" ]]; then
-    ok "legacy v2 executable binding decodes but cannot authorize a current launch"
-else
-    bad "legacy v2 executable binding launch authority (exit $legacy_v2_verify_rc)"
-fi
+for record in "$ARTIFACT_CASES"/*.json; do
+    expect_invalid_selection_record "runtime validator rejects $(basename "$record")" "$record"
+done
+for schema in 1 2 3; do
+    record="$ARTIFACT_CASES/retired-$schema.json"
+    before="$(shasum -a 256 "$record")"
+    "$SELECTOR" --verify-record-executable "$record" > "$record.verify.out" 2> "$record.verify.err"
+    if [[ $? == 64 && ! -s "$record.verify.out" && "$before" == "$(shasum -a 256 "$record")" ]] \
+            && grep -Fq 'release that created it' "$record.verify.err"; then
+        ok "retired selection $schema rejects launch authorization without rewriting history"
+    else bad "retired selection $schema launch boundary"; fi
+done
 
 RETRY_FIXTURE="$TMP/selector-retry-freeze"
 make_selector_fixture "$RETRY_FIXTURE" clean
-RETRY_MATRIX="$RETRY_FIXTURE/runtime/compat/agy-model-effort-matrix.json"
 printf 'automatic retry is forbidden\n' | \
     FAKE_DISPATCH_COUNT_FILE="$TMP/retry-freeze.dispatch-count" \
-    FAKE_MUTATE_MATRIX="$RETRY_MATRIX" FAKE_FAIL_FIRST=1 \
+    FAKE_FAIL_FIRST=1 \
     AGY_TEST_WORKER="$RETRY_FIXTURE/runtime/agy-worker.sh" \
     run_worker retry-freeze \
         --model gemini-3.6-flash --effort high \
         > "$TMP/retry-freeze.out" 2> "$TMP/retry-freeze.err"
 rc=$?
 if [[ "$rc" == 5 ]] && python3 - \
-        "$TMP/logs/retry-freeze/selection.json" "$RETRY_MATRIX" \
-        "$RETRY_FIXTURE/runtime/compat/agy-model-effort-matrix.sha256" \
+        "$TMP/logs/retry-freeze/selection.json" \
         "$TMP/retry-freeze.calls" "$TMP/retry-freeze.worker-calls" <<'PY'
 import hashlib
 import json
 import sys
 
-selection_path, matrix_path, sha_path, calls_path, workers_path = sys.argv[1:]
+selection_path, calls_path, workers_path = sys.argv[1:]
 selection = json.load(open(selection_path, encoding="utf-8"))
-expected = open(sha_path, encoding="ascii").read().strip()
-assert selection["resolved_agy_model"] == "gemini-3.6-flash-high"
-assert selection["matrix_sha256"] == expected
-assert hashlib.sha256(open(matrix_path, "rb").read()).hexdigest() != expected
+assert selection["resolved_agy_model"] == "gemini-3.6-flash"
+assert selection["user_effort"] == "high"
 calls = open(calls_path).read().splitlines()
-assert calls == ["version", "help", "version", "help", "version", "help", "worker"]
+assert calls == ["version", "help", "version", "help", "worker"]
 assert calls.count("worker") == 1
 assert open(workers_path).read().splitlines() == ["worker"]
 PY
@@ -4265,51 +3557,41 @@ else
     bad "pre-existing job symlink is rejected before invoking agy or touching its target"
 fi
 
-printf 'must not edit\n' | run_worker readonly --mode accept-edits --persona diff-reviewer > "$TMP/readonly.out" 2>/dev/null
-rc=$?
-expect_exit "read-only persona rejects accept-edits" 64 "$rc"
-printf 'alias must fail\n' | run_worker alias --mode accept-edits --persona ../agents/diff-reviewer > "$TMP/alias.out" 2>/dev/null
-rc=$?
-expect_exit "persona path alias is rejected" 64 "$rc"
-printf 'unknown must fail\n' | run_worker unknown --persona unknown > "$TMP/unknown.out" 2>/dev/null
-rc=$?
-expect_exit "unknown persona is rejected" 64 "$rc"
-
 printf 'broad audit is a usable default plan\n' | (
     unset AGY_WORKER_MODE
     PATH="$TMP/bin:$PATH" AGY_WORKER_LOG_DIR="$TMP/logs" \
-        AGY_WORKER_JOB_ID=plan-without-persona \
-        FAKE_MODEL_FILE="$TMP/plan-without-persona.model" \
-        FAKE_PROMPT_FILE="$TMP/plan-without-persona.prompt" \
-        FAKE_DIRS_FILE="$TMP/plan-without-persona.dirs" \
-        FAKE_ARGV_FILE="$TMP/plan-without-persona.argv" \
-        FAKE_STAGE_RESULT_FILE="$TMP/plan-without-persona.stage-result" \
-        FAKE_CALLED_FILE="$TMP/plan-without-persona.called" \
+        AGY_WORKER_JOB_ID=generic-plan \
+        FAKE_MODEL_FILE="$TMP/generic-plan.model" \
+        FAKE_PROMPT_FILE="$TMP/generic-plan.prompt" \
+        FAKE_DIRS_FILE="$TMP/generic-plan.dirs" \
+        FAKE_ARGV_FILE="$TMP/generic-plan.argv" \
+        FAKE_STAGE_RESULT_FILE="$TMP/generic-plan.stage-result" \
+        FAKE_CALLED_FILE="$TMP/generic-plan.called" \
         "$WORKER" --workdir "$TMP/repo" \
             --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" \
             --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE --provider-env FAKE_STAGE_RESULT_FILE --provider-env FAKE_CALLED_FILE
-) > "$TMP/plan-without-persona.out" 2> "$TMP/plan-without-persona.err"
+) > "$TMP/generic-plan.out" 2> "$TMP/generic-plan.err"
 rc=$?
-plan_without_persona_root_prompt="$TMP/plan-without-persona.prompt"
-plan_without_persona_prompt="$plan_without_persona_root_prompt"
-if [[ -f "$TMP/logs/plan-without-persona/staged/full-prompt.txt" ]]; then
-    plan_without_persona_prompt="$TMP/logs/plan-without-persona/staged/full-prompt.txt"
+generic_plan_root_prompt="$TMP/generic-plan.prompt"
+generic_plan_prompt="$generic_plan_root_prompt"
+if [[ -f "$TMP/logs/generic-plan/staged/full-prompt.txt" ]]; then
+    generic_plan_prompt="$TMP/logs/generic-plan/staged/full-prompt.txt"
 fi
-plan_without_persona_root="$(cd "$TMP/repo" && pwd -P)"
+generic_plan_root="$(cd "$TMP/repo" && pwd -P)"
 if [[ "$rc" == "0" ]] \
-        && [[ -s "$TMP/plan-without-persona.out" ]] \
-        && [[ -e "$TMP/plan-without-persona.called" ]] \
-        && [[ -d "$TMP/logs/plan-without-persona" ]] \
+        && [[ -s "$TMP/generic-plan.out" ]] \
+        && [[ -e "$TMP/generic-plan.called" ]] \
+        && [[ -d "$TMP/logs/generic-plan" ]] \
         && grep -Fq 'Use file tools to inspect the approved workspace only; do not edit files.' \
-            "$plan_without_persona_prompt" \
+            "$generic_plan_prompt" \
         && ! grep -Fq 'Use file tools to inspect and edit the approved workspace.' \
-            "$plan_without_persona_prompt" \
+            "$generic_plan_prompt" \
         && grep -Fq 'This job runs in a normal AGY session with same-user filesystem and network authority' \
-            "$plan_without_persona_prompt" \
-        && grep -Fq "$plan_without_persona_root" "$plan_without_persona_root_prompt"; then
-    ok "generic plan dispatches without a persona and receives the read-only file-tool preamble"
+            "$generic_plan_prompt" \
+        && grep -Fq "$generic_plan_root" "$generic_plan_root_prompt"; then
+    ok "generic plan dispatches and receives the read-only file-tool preamble"
 else
-    bad "generic plan should remain usable without a persona"
+    bad "generic plan should remain usable"
 fi
 
 mkdir -p "$TMP/outside"
@@ -4318,7 +3600,7 @@ rc=$?
 expect_exit "--add-dir outside audited workdir is rejected" 64 "$rc"
 
 operand_index=0
-for option in --workdir --persona --mode --tier --add-dir; do
+for option in --workdir --mode --tier --add-dir; do
     operand_index=$((operand_index+1))
     printf 'missing operand\n' | run_worker "missing-$operand_index" "$option" > "$TMP/missing-$operand_index.out" 2>/dev/null
     rc=$?
@@ -4326,15 +3608,15 @@ for option in --workdir --persona --mode --tier --add-dir; do
 done
 
 python3 -c 'print("OVERSIZED_TASK_MARKER" + "x" * 100500)' > "$TMP/large-task.txt"
-FAKE_TRY_STAGE_WRITE=1 run_worker oversized --mode accept-edits --persona bulk-test-writer \
+FAKE_TRY_STAGE_WRITE=1 run_worker oversized --mode accept-edits \
     --add-dir "$TMP/repo" < "$TMP/large-task.txt" > "$TMP/oversized.out" 2>/dev/null
 rc=$?
-expect_exit "oversized persona job produces an envelope" 0 "$rc"
+expect_exit "oversized job produces an envelope" 0 "$rc"
 if grep -q 'OVERSIZED_TASK_MARKER' "$TMP/logs/oversized/full-prompt.txt" \
-        && grep -q 'test author for a Codex-driven worker pipeline' "$TMP/logs/oversized/full-prompt.txt"; then
-    ok "oversized staged prompt preserves task and persona"
+        && grep -q 'OUTPUT CONTRACT — non-negotiable:' "$TMP/logs/oversized/full-prompt.txt"; then
+    ok "oversized staged prompt preserves task and output contract"
 else
-    bad "oversized staged prompt preserves task and persona"
+    bad "oversized staged prompt preserves task and output contract"
 fi
 if grep -Fxq "$LOGS_REAL/oversized/staged" "$TMP/oversized.dirs" \
         && ! grep -Fxq "$LOGS_REAL" "$TMP/oversized.dirs"; then
@@ -4513,7 +3795,7 @@ start_worker() {
         FAKE_HEARTBEAT_COUNT FAKE_HEARTBEAT_DELAY FAKE_HELP_MODE FAKE_MODEL_FILE \
         FAKE_MUTATE_EXECUTABLE FAKE_MUTATE_EXECUTABLE_MODE \
         FAKE_MUTATE_EXECUTABLE_PARENT FAKE_MUTATE_EXECUTABLE_SAME_LENGTH \
-        FAKE_MUTATE_MATRIX FAKE_MUTATE_PROJECT_MARKER FAKE_MUTATION_MARKER \
+        FAKE_MUTATE_PROJECT_MARKER FAKE_MUTATION_MARKER \
         FAKE_MUTATE_WORKTREE_PATH \
         FAKE_PROBE_PARENT_PID_FILE FAKE_PROBE_PGID_FILE FAKE_PROBE_READY_FILE \
         FAKE_PROBE_RELEASE_FILE FAKE_PROMPT_FILE FAKE_QUOTA_ERROR \
@@ -4598,7 +3880,7 @@ else
     bad "partial/promisor clone synchronous preflight"
 fi
 
-printf 'plan staged prompt marker\n' | run_worker plan-staged --mode plan --persona repo-inventory \
+printf 'plan staged prompt marker\n' | run_worker plan-staged --mode plan \
     > "$TMP/plan-staged.out" 2> "$TMP/plan-staged.err"
 rc=$?
 if [[ "$rc" == 0 ]] && python3 - "$TMP/plan-staged.argv" \
@@ -4610,10 +3892,10 @@ assert b"--mode" in argv and argv[argv.index(b"--mode") + 1] == b"plan"
 assert b"--disable-slash-commands" not in argv
 assert b"Read '" in argv[-1]
 assert "plan staged prompt marker" in staged
-assert "read-only repository surveyor for a Codex-driven worker pipeline" in staged
+assert "Use file tools to inspect the approved workspace only; do not edit files." in staged
 PY
 then
-    ok "maintained-persona plan stages the complete prompt and leaves slash expansion available only for its fixed driver prompt"
+    ok "plan stages the complete prompt and leaves slash expansion available only for its fixed driver prompt"
 else
     bad "plan staging/slash contract"
 fi
@@ -4691,6 +3973,58 @@ else
     bad "worker exit-zero empty-output classification"
 fi
 
+bound_state="$(CDPATH= cd -- "$TMP" && pwd -P)/workflow-bound-state.json"
+python3 - "$ROOT" "$TMP/logs/empty-success" "$bound_state" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1]).resolve()
+dispatch = Path(sys.argv[2]).resolve()
+path = Path(sys.argv[3])
+st = repo.stat()
+ident = {"dev": st.st_dev, "ino": st.st_ino, "mode": st.st_mode, "uid": st.st_uid, "gid": st.st_gid}
+value = {
+    "schema_version": 5, "kind": "agy-worker-workflow-state", "job_id": "empty-success",
+    "repo_path": str(repo), "repo_identity": ident,
+    "worktree_path": str(repo), "worktree_identity": ident,
+    "branch": "test", "branch_ref": "refs/heads/test", "base": "0" * 40,
+    "provider_isolation": "session", "provider_execution": None,
+    "preview_manifest_sha256": "0" * 64, "preview_content_sha256": "0" * 64,
+    "preview_launch_approval_sha256": "0" * 64, "native_grant_profile": "baseline",
+    "dispatch_job_dir": str(dispatch), "job_state_path": None, "receipt_path": None,
+}
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+"$WORKER" status --job-id empty-success --state "$bound_state" --format json \
+    > "$TMP/advanced-state.out" 2> "$TMP/advanced-state.err"
+bound_status=$?
+"$WORKER" status --job-id wrong-job --state "$bound_state" --format json \
+    > "$TMP/advanced-state-wrong.out" 2> "$TMP/advanced-state-wrong.err"
+wrong_status=$?
+if [[ "$bound_status" == 0 && "$wrong_status" != 0 ]] \
+    && [[ "$(status_field "$TMP/advanced-state.out" job_id)" == empty-success ]]; then
+    ok "advanced controls resolve only a job-bound workflow log root without environment"
+else
+    bad "advanced control workflow state log-root binding"
+fi
+"$WORKER" verification-copy --job-id empty-success --state "$bound_state" \
+    --destination "$TMP/candidate-copy" --format json \
+    > "$TMP/advanced-copy.out" 2> "$TMP/advanced-copy.err"
+copy_status=$?
+"$WORKER" restart --job-id empty-success --state "$bound_state" \
+    --approve-state-sha "$(printf '%064d' 0)" --format text \
+    > "$TMP/advanced-restart.out" 2> "$TMP/advanced-restart.err"
+restart_status=$?
+if [[ "$copy_status" != 0 && "$restart_status" != 0 ]] \
+    && ! grep -Eq 'log root is unavailable|invalid usage' "$TMP/advanced-copy.err" "$TMP/advanced-restart.err"; then
+    ok "verification-copy and restart accept bound --state before eligibility checks"
+else
+    bad "verification-copy and restart state-derived log root"
+fi
+
 printf 'benign print-mode diagnostics\n' | \
     FAKE_WARNING_LINE='permission that headless mode cannot prompt for; file write reported failure after content was already written' \
     FAKE_UTF8_SUMMARY=1 run_worker benign-print-diagnostics \
@@ -4734,223 +4068,79 @@ for classified_case in authentication_text provider_text unknown_text; do
     fi
 done
 
-printf 'observed quota terminal\n' | FAKE_VERSION_MODE=quota113 \
-    FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    run_worker quota-terminal --literal-model claude-opus-4-6-thinking \
-    > "$TMP/quota-terminal.out" 2> "$TMP/quota-terminal.err"
-quota_rc=$?
-sleep 1
-control_worker status quota-terminal > "$TMP/quota-terminal.status"
-quota_status_rc=$?
-if [[ "$quota_rc" == 24 && "$quota_status_rc" == 0 \
-        && ! -s "$TMP/quota-terminal.out" ]] && python3 - \
-        "$TMP/quota-terminal.err" "$TMP/quota-terminal.status" \
-        "$TMP/quota-terminal.calls" "$TMP/quota-terminal.model" <<'PY'
-import json
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" "$TMP" <<'PY'
+import importlib.util
+from pathlib import Path
 import sys
 
-first = json.load(open(sys.argv[1], encoding="utf-8"))
-later = json.load(open(sys.argv[2], encoding="utf-8"))
-calls = open(sys.argv[3], encoding="ascii").read().splitlines()
-model = open(sys.argv[4], encoding="utf-8").read()
-for value in (first, later):
-    assert value["status"] == "failed"
-    assert value["exit_code"] == 24
-    assert value["reason"] == "provider_quota_exhausted"
-    assert value["failure_stage"] == "missing_structured_output"
-    assert value["resume_available"] is True
-    assert "conversation_id" not in value
-    assert "provider_retry_after_seconds" not in value
-    assert "provider_retry_observed_epoch" not in value
-assert 17510 <= first["retry_after_seconds"] <= 17514
-assert 17508 <= later["retry_after_seconds"] < first["retry_after_seconds"]
-assert calls == ["version", "worker"]
-assert model == "claude-opus-4-6-thinking"
+spec = importlib.util.spec_from_file_location("dispatch_step16", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+stderr = Path(sys.argv[2]) / "native-host.err"
+for line in ("sandbox_apply: Operation not permitted", "sandbox-exec: sandbox_apply: Operation not permitted"):
+    stderr.write_text(line + "\n", encoding="utf-8")
+    assert module._classify_stderr(stderr, "1.2.12", 1, native=True) == "native_host_sandbox_unavailable"
+    assert module._classify_stderr(stderr, "1.2.12", 1, native=False) == "agy_failed_unclassified"
+assert "native_host_sandbox_unavailable" in module.REASONS
+assert module._cycle_budget_explanation({"status": "cancelled", "reason": "interrupted", "candidate_recognized": False, "attempt": 1, "max_cycles": 2})
 PY
-then
-    ok "exact agy 1.1.13 quota terminal gets exit 24, bounded countdown, and no automatic retry"
+if [[ $? -eq 0 ]]; then
+    ok "native nested-sandbox denial is actionable and interrupted candidate-free budget is explained"
 else
-    bad "exact agy 1.1.13 quota terminal classification"
+    bad "native host and interrupted budget status explanations"
 fi
 
-printf 'same text wrong version\n' | FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    run_worker quota-wrong-version > "$TMP/quota-wrong-version.out" \
-    2> "$TMP/quota-wrong-version.err"
-quota_wrong_version_rc=$?
-if [[ "$quota_wrong_version_rc" == 4 \
-        && "$(status_field "$TMP/quota-wrong-version.err" reason)" == invalid_envelope \
-        && "$(status_field "$TMP/quota-wrong-version.err" failure_stage)" == missing_structured_output ]]; then
-    ok "unreviewed quota terminal without a report is an invalid-envelope failure"
-else
-    bad "version-bound quota terminal classification"
-fi
-
-printf 'altered quota prose\n' | FAKE_VERSION_MODE=quota113 \
-    FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    FAKE_QUOTA_ERROR='quota reached; retry in 4h51m54s' \
-    run_worker quota-altered --literal-model claude-opus-4-6-thinking \
-    > "$TMP/quota-altered.out" 2> "$TMP/quota-altered.err"
-quota_altered_rc=$?
-if [[ "$quota_altered_rc" == 4 \
-        && "$(status_field "$TMP/quota-altered.err" reason)" == invalid_envelope \
-        && "$(status_field "$TMP/quota-altered.err" failure_stage)" == missing_structured_output ]]; then
-    ok "free-form quota prose without a report is an invalid-envelope failure"
-else
-    bad "free-form quota prose classification boundary"
-fi
-
-printf 'quota duration outside bound\n' | FAKE_VERSION_MODE=quota113 \
-    FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 \
-    FAKE_QUOTA_ERROR='rpc error: Individual quota reached. Contact your administrator to enable overages. Resets in 999h00m00s.' \
-    run_worker quota-unbounded --literal-model claude-opus-4-6-thinking \
-    > "$TMP/quota-unbounded.out" 2> "$TMP/quota-unbounded.err"
-quota_unbounded_rc=$?
-if [[ "$quota_unbounded_rc" == 24 ]] && python3 - "$TMP/quota-unbounded.err" <<'PY'
-import json
-import sys
-value = json.load(open(sys.argv[1], encoding="utf-8"))
-assert value["reason"] == "provider_quota_exhausted"
-assert value["retry_after_seconds"] is None
-PY
-then
-    ok "out-of-range quota reset stays classified without publishing a false duration"
-else
-    bad "quota retry duration bound"
-fi
-
-if PYTHONDONTWRITEBYTECODE=1 python3 - \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" "$TMP" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
+        "$TMP/logs/tier/dispatch-command.json" "$TMP/diagnostic-command" <<'PY'
 import copy
 import importlib.util
 import json
 from pathlib import Path
 import sys
 
-spec = importlib.util.spec_from_file_location("agy_dispatch_quota_contract", sys.argv[1])
+source, template, destination = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("agy_dispatch_diagnostic_command", source)
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-root = Path(sys.argv[2])
-canonical = (
-    "rpc error: Individual quota reached. Contact your administrator to enable "
-    "overages. Resets in 4h51m54s."
-)
-result = {
-    "conversation_id": "fake-conversation-01",
-    "status": "ERROR",
-    "response": "",
-    "error": canonical,
-    "duration_seconds": 1.0,
-    "num_turns": 3,
-    "json_schema": {},
-    "usage": {},
-}
-
-def stream(name, value=result, *, init=True, duplicate=False, malformed=False):
-    path = root / name
-    rows = []
-    if init:
-        rows.append(json.dumps({"event": "init", "conversation_id": "fake-conversation-01", "init": {}}))
-    rows.append(json.dumps({"event": "result", "result": value}, separators=(",", ":")))
-    if duplicate:
-        rows.append(rows[-1])
-    if malformed:
-        rows.insert(0, "{not-json")
-    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    return path
-
-for index, duration in enumerate(("4h51m54s", "4h51m53s", "4h50m17s")):
-    value = copy.deepcopy(result)
-    value["error"] = canonical.replace("4h51m54s", duration)
-    classified = module._quota_terminal_failure(stream(f"quota-observed-{index}", value), "1.1.13")
-    assert classified == ("provider_quota_exhausted", {
-        "4h51m54s": 17514, "4h51m53s": 17513, "4h50m17s": 17417,
-    }[duration])
-
-altered = (
-    canonical + " ", canonical.replace("Individual", "individual"),
-    "prefix " + canonical, canonical + " suffix",
-    canonical.replace("quota", "limit"),
-    canonical.replace("quota", "QUOTA"),
-    "rpc error: RESOURCE_EXHAUSTED 429 retry quota",
-)
-for index, error in enumerate(altered):
-    value = copy.deepcopy(result); value["error"] = error
-    assert module._quota_terminal_failure(stream(f"quota-altered-{index}", value), "1.1.13") is None
-
-for index, mutate in enumerate((
-    lambda value: value.pop("usage"),
-    lambda value: value.__setitem__("extra", 1),
-    lambda value: value.__setitem__("response", "not empty"),
-    lambda value: value.__setitem__("error", {"code": 429}),
-    lambda value: value.__setitem__("duration_seconds", "1"),
-    lambda value: value.__setitem__("duration_seconds", float("nan")),
-    lambda value: value.__setitem__("num_turns", True),
-    lambda value: value.__setitem__("json_schema", []),
-    lambda value: value.__setitem__("usage", []),
-)):
-    value = copy.deepcopy(result); mutate(value)
-    assert module._quota_terminal_failure(stream(f"quota-shape-{index}", value), "1.1.13") is None
-
-assert module._quota_terminal_failure(stream("quota-no-init", init=False), "1.1.13") is None
-assert module._quota_terminal_failure(stream("quota-duplicate", duplicate=True), "1.1.13") is None
-assert module._quota_terminal_failure(stream("quota-malformed", malformed=True), "1.1.13") is None
-mismatch = copy.deepcopy(result); mismatch["conversation_id"] = "different-conversation"
-assert module._quota_terminal_failure(stream("quota-conversation-mismatch", mismatch), "1.1.13") is None
-duplicate_key = root / "quota-duplicate-key"
-duplicate_key.write_text(
-    '{"event":"init","init":{},"conversation_id":"fake-conversation-01"}\n'
-    '{"event":"result","result":{"conversation_id":"fake-conversation-01",'
-    '"status":"ERROR","status":"ERROR","response":"","error":'
-    + json.dumps(canonical) + ',"duration_seconds":1.0,"num_turns":3,'
-    '"json_schema":{},"usage":{}}}\n',
-    encoding="utf-8",
-)
-assert module._quota_terminal_failure(duplicate_key, "1.1.13") is None
-
-# Older command schemas normalize conservatively: their version text was not a
-# runtime observation and therefore cannot authorize this classifier.
-job = root / "quota-command-v2"
+command = json.loads(Path(template).read_text(encoding="utf-8"))
+job = Path(destination)
 job.mkdir(mode=0o700)
-command = {
-    "schema_version": 2, "kind": "agy-worker-dispatch-command", "job_id": "quota-v2",
-    "workdir": str(root), "argv": ["agy", "--print", "task"], "agy_version": "1.1.13",
-    "idle_seconds": 1, "hard_seconds": 2, "max_seconds": 3, "notice_seconds": 1,
-    "stage_dir": None, "stage_file": None, "child_umask": "022",
-    "resume_prompt": "resume", "continue_prompt": "continue",
-    "workflow": "legacy", "max_cycles": 1,
-}
-(job / module.COMMAND_NAME).write_bytes(module.canonical(command))
-(job / module.COMMAND_NAME).chmod(0o600)
-loaded, _raw, _identity = module.load_command(job)
-assert loaded["agy_version_observed"] is False
-for bad_version in ([], {}, "01.1.13", "1.1", "1.1.123456"):
-    bad = copy.deepcopy(command); bad["agy_version"] = bad_version
-    (job / module.COMMAND_NAME).write_bytes(module.canonical(bad))
+for invalid in (None, [], {}, 123, "", "bad\nversion", "bad\x00version", "bad\x7fversion", "é" * 65):
+    changed = copy.deepcopy(command)
+    changed["agy_version"] = invalid
+    module.write_atomic(job, module.COMMAND_NAME, changed)
     try:
         module.load_command(job)
     except module.DispatchError as exc:
-        assert str(exc) == "dispatch agy version is invalid"
+        assert str(exc) == "dispatch agy diagnostic version is invalid", str(exc)
     else:
-        raise AssertionError("invalid command agy version accepted")
-state = json.loads((root / "logs" / "quota-terminal" / module.STATE_NAME).read_text(encoding="utf-8"))
-state.pop("provider_retry_after_seconds")
-state.pop("provider_retry_observed_epoch")
-for field in module.STATE_V5_FIELDS:
-    state.pop(field)
-for field in {*module.STATE_V6_FIELDS, *module.STATE_V8_FIELDS, *module.STATE_V9_FIELDS, *module.STATE_V10_FIELDS, *module.STATE_V11_FIELDS, *module.STATE_V12_FIELDS, *module.STATE_V13_FIELDS, *module.STATE_V14_FIELDS}:
-    state.pop(field)
-state["schema_version"] = 3
-state["phase"] = None
-state["assurance"] = None
-migrated = module.validate_state(state)
-assert migrated["provider_retry_after_seconds"] is None
-assert migrated["provider_retry_observed_epoch"] is None
+        raise AssertionError(f"invalid diagnostic version accepted: {invalid!r}")
+for diagnostic in ("future vendor build", "9.9.9-preview", "é" * 64):
+    changed = copy.deepcopy(command)
+    changed["agy_version"] = diagnostic
+    module.write_atomic(job, module.COMMAND_NAME, changed)
+    validated, _, _ = module.load_command(job)
+    assert validated["agy_version"] == diagnostic
 PY
-then
-    ok "agy 1.1.13 quota classifier is exact-shape, exact-version, and legacy-command conservative"
+if [[ $? == 0 ]]; then
+    ok "command diagnostic version is bounded text without a semantic-version gate"
 else
-    bad "quota terminal exact contract matrix"
+    bad "command diagnostic version type, control, byte-bound or free-text validation"
 fi
+
+for version_mode in ready quota113 drift999; do
+    printf 'quota prose does not establish a report\n' | FAKE_VERSION_MODE="$version_mode" \
+        FAKE_DISPATCH_MODE=quota-error FAKE_EXIT_CODE=23 run_worker "quota-$version_mode" \
+        > "$TMP/quota-$version_mode.out" 2> "$TMP/quota-$version_mode.err"
+    rc=$?
+    if [[ "$rc" == 4 && ! -s "$TMP/quota-$version_mode.out" \
+            && "$(status_field "$TMP/quota-$version_mode.err" reason)" == invalid_envelope \
+            && "$(wc -l < "$TMP/quota-$version_mode.worker-calls" | tr -d ' ')" == 1 ]]; then
+        ok "quota prose without report fails across $version_mode without retry"
+    else bad "quota prose must not invent report or retry authority ($version_mode)"; fi
+done
 
 HARD_SIDE_EFFECT="$TMP/hard-side-effect"
 printf 'hard limit must win\n' | FAKE_DISPATCH_MODE=heartbeat-forever \
@@ -5118,13 +4308,15 @@ else
     bad "fast controller ownership handoff race"
 fi
 
+# Budgets are wide on purpose: this case proves extend gating and arithmetic, and the
+# job ends at the barrier release. Deadline expiry is covered by the max-runtime case.
 extend_after_first_ready="$TMP/extend-active.after-first-ready"
 extend_after_first_release="$TMP/extend-active.after-first-release"
 printf 'extend active deadline\n' | FAKE_DISPATCH_MODE=heartbeat-success \
     FAKE_HEARTBEAT_COUNT=2 FAKE_HEARTBEAT_DELAY=1.00 \
     FAKE_HEARTBEAT_AFTER_FIRST_READY="$extend_after_first_ready" \
     FAKE_HEARTBEAT_AFTER_FIRST_RELEASE="$extend_after_first_release" \
-    start_worker extend-active --idle-timeout 2s --hard-timeout 3s --max-runtime 5s \
+    start_worker extend-active --idle-timeout 20s --hard-timeout 30s --max-runtime 60s \
     > "$TMP/extend-active.start" 2> "$TMP/extend-active.start.err"
 extend_ready=0
 for (( extend_index=0; extend_index<200; extend_index++ )); do
@@ -5141,7 +4333,7 @@ extend_sha="$(status_sha "$TMP/extend-active.status")"
 control_worker extend extend-active --approve-state-sha "$(printf '0%.0s' {1..64})" --by 1s \
     > "$TMP/extend-active.stale" 2>&1
 stale_extend_rc=$?
-control_worker extend extend-active --approve-state-sha "$extend_sha" --by 3s \
+control_worker extend extend-active --approve-state-sha "$extend_sha" --by 31s \
     > "$TMP/extend-active.over-max" 2>&1
 over_max_rc=$?
 control_worker extend extend-active --approve-state-sha "$extend_sha" --by 1s \
@@ -5162,8 +4354,8 @@ import json
 import sys
 extended = json.load(open(sys.argv[1], encoding="utf-8"))
 result = json.load(open(sys.argv[2], encoding="utf-8"))
-assert extended["hard_seconds"] == 4.0
-assert extended["max_seconds"] == 5.0
+assert extended["hard_seconds"] == 31.0
+assert extended["max_seconds"] == 60.0
 assert result["status"] == "completed"
 PY
 then
@@ -5325,6 +4517,7 @@ workdir = str(Path(workdir).resolve())
 spec = importlib.util.spec_from_file_location("agy_dispatch_queued_cancel", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 job = Path(job_text).resolve()
 job.mkdir(mode=0o700)
@@ -5363,6 +4556,7 @@ fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
         "$TMP/state-snapshot-job" <<'PY'
+import contextlib
 import importlib.util
 import os
 from pathlib import Path
@@ -5374,6 +4568,7 @@ source, job_text = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("agy_dispatch_state_snapshot", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 job = Path(job_text).resolve()
 job.mkdir(mode=0o700)
@@ -5381,7 +4576,7 @@ workdir = job.parent / "state-snapshot-workdir"
 workdir.mkdir(mode=0o700)
 subprocess.run(["git", "init", "-q", str(workdir)], check=True)
 command = {
-    "schema_version": 10, "provider_isolation": "session",
+    "schema_version": module.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
     "job_id": "state-snapshot", "workdir": str(workdir),
     "idle_seconds": 1.0, "hard_seconds": 2.0, "max_seconds": 3.0,
     "workflow": "legacy", "max_cycles": 1,
@@ -5391,7 +4586,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 14
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 16
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -5410,6 +4605,7 @@ source, job_text, done_text, blocked_text, acquired_text = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("agy_dispatch_state_writer", source)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 job = Path(job_text)
 lock_fd = os.open(
@@ -5435,12 +4631,24 @@ finally:
 Path(done_text).touch(mode=0o600)
 '''
 original_lstat = Path.lstat
+original_state_lock = module.state_lock
 child = None
 writer_was_blocked = False
+locked_read = False
+
+@contextlib.contextmanager
+def observe_state_lock(job_path):
+    global locked_read
+    with original_state_lock(job_path) as descriptor:
+        locked_read = True
+        try:
+            yield descriptor
+        finally:
+            locked_read = False
 
 def replace_during_identity_check(path: Path):
     global child, writer_was_blocked
-    if path == job / module.STATE_NAME and child is None:
+    if locked_read and path == job / module.STATE_NAME and child is None:
         child = subprocess.Popen(
             [sys.executable, "-I", "-S", "-B", "-c", writer_source,
              source, str(job), str(done), str(blocked), str(acquired)],
@@ -5459,10 +4667,12 @@ def replace_during_identity_check(path: Path):
     return original_lstat(path)
 
 Path.lstat = replace_during_identity_check
+module.state_lock = observe_state_lock
 try:
     snapshot, raw, sha = module.read_state_snapshot(job)
 finally:
     Path.lstat = original_lstat
+    module.state_lock = original_state_lock
 assert child is not None and child.wait(timeout=3) == 0
 terminal, terminal_raw, terminal_sha = module.read_state_snapshot(job)
 assert writer_was_blocked
@@ -5490,7 +4700,7 @@ import importlib.util
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_orphan", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(sys.argv[2])
 command, raw, identity = module.load_command(job)
 state = module.initial_state(
@@ -5605,11 +4815,14 @@ printf 'resume unavailable\n' | FAKE_EXIT_CODE=23 \
     run_worker resume-unavailable --idle-timeout 1s --hard-timeout 2s --max-runtime 8s \
     > "$TMP/resume-unavailable.out" 2> "$TMP/resume-unavailable.err"
 unavailable_sha="$(status_sha "$TMP/resume-unavailable.err")"
+resume_unavailable_calls_before="$(cat "$TMP/resume-unavailable.calls")"
+resume_unavailable_state_before="$(shasum -a 256 "$TMP/logs/resume-unavailable/dispatch-state.json")"
 FAKE_DISPATCH_MODE=heartbeat-success control_worker resume resume-unavailable \
     --approve-state-sha "$unavailable_sha" > "$TMP/resume-unavailable.resume" 2>&1
 resume_rc=$?
-resume_unavailable_calls="$(wc -l < "$TMP/resume-unavailable.calls" | tr -d ' ')"
-if [[ "$resume_rc" == 21 && "$resume_unavailable_calls" == 1 ]]; then
+resume_unavailable_calls="$(cat "$TMP/resume-unavailable.calls")"
+if [[ "$resume_rc" == 21 && "$resume_unavailable_calls" == "$resume_unavailable_calls_before" \
+        && "$resume_unavailable_state_before" == "$(shasum -a 256 "$TMP/logs/resume-unavailable/dispatch-state.json")" ]]; then
     resume_unavailable_ok=1
 else
     resume_unavailable_ok=0
@@ -5646,26 +4859,12 @@ print(json.dumps({"schema_version": 2, "summary": "one required driver check is 
 PY
 }
 
-if PYTHONDONTWRITEBYTECODE=1 python3 -B - \
-        "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" "$TMP" <<'PY'
-import importlib.util
+if python3 -B - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" <<'PYTHON'
 import json
-import os
 from pathlib import Path
 import re
-import shlex
-import stat
-import subprocess
 import sys
-
 source = Path(sys.argv[1]).resolve()
-root = Path(sys.argv[2]).resolve()
-spec = importlib.util.spec_from_file_location("agy_dispatch_v2_continue_parity", source)
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-
-repo = root / "historical-v2-direct-repo"; repo.mkdir()
-subprocess.run(["git", "init", "-q", str(repo)], check=True)
-job = (root / "historical-v2-direct-job"); job.mkdir(mode=0o700); job = job.resolve()
 provider_schema = source.parent.parent / "schemas" / "worker-result.provider.schema.json"
 # The provider consumes RE2, where `$` is a strict end-of-text anchor. Keep the
 # driver schema's Python-search spelling separate while enforcing the same IDs.
@@ -5676,150 +4875,103 @@ assert "(?" not in provider_id_pattern
 strict_id = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}").fullmatch
 assert all(strict_id(value) for value in ("A", "unit_core", "Lint-2", "Z" * 64))
 assert all(not strict_id(value) for value in ("", "1unit", "unit.", "unit\n", "A" * 65, "é"))
-matrix, matrix_sha, matrix_version, matrix_revision = module.MODEL_SELECTION.load_policy()
-resolved_model, selection_mode = module.MODEL_SELECTION.resolve_model(
-    matrix, "gemini-3.7-flash", "high",
-)
-selection = {
-    "schema_version": 2, "kind": "agy-worker-selection", "selection_mode": selection_mode,
-    "user_model": "gemini-3.7-flash", "user_model_source": "cli",
-    "user_effort": "high", "user_effort_source": "cli",
-    "resolved_agy_model": resolved_model,
-    "installed_agy_version": "9.9.9",
-    "matrix_sha256": matrix_sha, "matrix_agy_version": matrix_version,
-    "matrix_source_revision": matrix_revision, "version_relation": "drift",
-    "compatibility_status": "critical-interface-compatible-version-drift",
-    "critical_interface_probe_version": 1, "critical_interface_status": "compatible",
-    "critical_capabilities_sha256": "a" * 64, "help_sha256": "b" * 64,
-    "model_availability": "not_assessed",
-    "probed_executable": {
-        "path_sha256": "c" * 64,
-        "target_lstat": {
-            "device": 1, "inode": 1, "mode": stat.S_IFREG | 0o755,
-            "uid": os.geteuid(), "gid": os.getegid(), "size": 1,
-            "mtime_ns": 1,
-        },
-        "symlink_chain": [], "components": [],
-    },
-}
-module.MODEL_SELECTION.validate_selection_record(selection)
-selection_path = job / "selection.json"
-module.MODEL_SELECTION.publish_record(selection_path, selection)
-selection_raw, selection_info = module.read_regular(
-    selection_path, module.MAX_COMMAND_BYTES, "fixture selection",
-)
-command = {
-    "schema_version": 4, "kind": "agy-worker-dispatch-command",
-    "job_id": "historical-v2-direct", "workdir": str(repo),
-    "argv": [
-        "agy", "--json-schema", str(provider_schema), "--model", resolved_model,
-        "--print", "task",
-    ],
-    "agy_version": matrix_version, "agy_version_observed": True,
-    "selection_path": str(selection_path),
-    "selection_sha256": module.digest(selection_raw),
-    "selection_identity": list(module._identity(selection_info)),
-    "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20, "notice_seconds": 3,
-    "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
-    "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-}
-module.write_atomic(job, module.COMMAND_NAME, command)
-command_raw, command_info = module.read_regular(
-    job / module.COMMAND_NAME, module.MAX_COMMAND_BYTES, "fixture command",
-)
-state = module.initial_state(
-    command, "initial", 1, command_sha=module.digest(command_raw),
-    command_identity=module._identity(command_info), stage_sha=None,
-    stage_identity=None, schema_bindings=module._schema_bindings(command),
-)
-candidate = {
-    "status": "completed", "summary": "historical-v2-direct-candidate",
-    "files_changed": [], "commands_run": [], "tests_run": [], "risks": [],
-    "open_questions": [], "confidence": 0.9, "requires_human": False,
-}
-envelope = job / "envelope.json"
-candidate_raw = json.dumps(candidate, ensure_ascii=True, indent=2).encode("ascii") + b"\n"
-envelope.write_bytes(candidate_raw); envelope.chmod(0o600)
-_bound, envelope_info = module.read_regular(envelope, 1024 * 1024, "fixture envelope")
-snapshot = module._worktree_snapshot(str(repo)); assert snapshot is not None
-state.update({
-    "status": "succeeded", "exit_code": 0, "finished_epoch": 1.0,
-    "conversation_id": "historical-v2-conversation", "result_path": str(envelope),
-    "result_sha256": module.digest(candidate_raw),
-    "result_identity": list(module._identity(envelope_info)),
-    "candidate_recognized": True, "candidate_source": "provider_success",
-    "result_available": True, "candidate_worktree_sha256": snapshot["sha256"],
-    "candidate_worktree_entries": snapshot["entries"],
-    "driver_disposition": "unreviewed", "phase": "awaiting-verification",
-    "assurance": "pending", "continue_available": True, "resume_available": False,
-    "next_action": "driver_review",
-})
-_raw, sha = module.write_atomic(job, module.STATE_NAME, state)
-public = module.public_status(state, sha, job=job)
-assert [item["action"] for item in public["available_actions"]] == [
-    "result", "verification-copy", "finalize",
-]
-verification = {
-    "schema_version": 2, "summary": "driver found a bounded defect",
-    "passed_checks": [], "failed_checks": ["fixture"],
-    "advisory_checks": 0, "missing_checks": 0,
-    "candidate_sha256": state["result_sha256"], "coverage": "partial",
-    "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
-}
-before = (job / module.STATE_NAME).read_bytes()
-delivered = subprocess.run(
-    [sys.executable, str(source), "result", "--job-dir", str(job)],
-    check=True, stdout=subprocess.PIPE,
-)
-assert json.loads(delivered.stdout)["summary"] == candidate["summary"]
-assert (job / module.STATE_NAME).read_bytes() == before
+PYTHON
+then ok "provider check-id regex remains RE2-compatible and driver validation stays strict"
+else bad "provider check-id schema boundary"; fi
+if [[ "$resume_unavailable_ok" == 1 ]]; then
+    ok "unavailable resume preserves failure state and starts no probes or provider"
+else bad "unavailable resume action parity"; fi
 
-marker = root / "historical-v2-direct-provider-called"
-bin_dir = root / "historical-v2-direct-bin"; bin_dir.mkdir()
-fake = bin_dir / "agy"
-fake.write_text("#!/bin/sh\n: > " + shlex.quote(str(marker)) + "\nexit 99\n", encoding="utf-8")
-fake.chmod(0o755)
-environment = dict(os.environ); environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
-rejected = subprocess.run(
-    [sys.executable, str(source), "continue", "--job-dir", str(job),
-     "--approve-state-sha", sha],
-    input=json.dumps(verification).encode("utf-8"), env=environment,
-    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-)
-assert rejected.returncode == 64 and not rejected.stdout
-assert b"dispatch direct selection lacks approved compatibility disposition" in rejected.stderr
-assert (job / module.STATE_NAME).read_bytes() == before
-assert not (job / "continue-staged").exists() and not marker.exists()
-try:
-    module.create_state(
-        job, "conversation-continue", resume=True,
-        approve_sha=sha, verification=verification,
-    )
-except module.DispatchError as exc:
-    assert str(exc) == "dispatch direct selection lacks approved compatibility disposition"
+# Operation-specific recovery requirements retain the prior candidate and frozen effort.
+capability_root="$(cd "$TMP" && pwd -P)"
+git -C "$TMP/source-repo" worktree add -q -b capability-recovery "$capability_root/capability-worktree" HEAD
+capability_workdir="$(cd "$capability_root/capability-worktree" && pwd -P)"
+printf 'unchanged candidate\n' > "$capability_workdir/target.txt"
+capability_scope="$capability_root/capability-recovery.scope.json"
+printf '%s\n' '{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"target.txt","kind":"file"}],"write":[{"path":"target.txt","kind":"file"}]}' > "$capability_scope"
+chmod 0600 "$capability_scope"
+for capability_case in resume continue scoped-repair effort no-effort restart; do
+    job="capability-$capability_case"
+    capability_args=(--workflow project --max-cycles 2 --idle-timeout 1s --hard-timeout 2s --max-runtime 30s)
+    initial_mode=heartbeat-success
+    initial_help=missing---conversation
+    recovery_action=continue
+    missing=conversation
+    scoped_edit=''
+    case "$capability_case" in
+        resume|restart) initial_mode=conversation-fail; recovery_action="$capability_case" ;;
+        scoped-repair)
+            scoped_edit=target.txt
+            capability_sha="$("$WORKER" transmission-preview --workdir "$capability_workdir" \
+                --provider-scope "$capability_scope" --format json \
+                | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
+            capability_args+=(--provider-scope "$capability_scope" --approve-transmission-sha "$capability_sha" --allow-scoped-repair)
+            ;;
+        effort) initial_help=ready; missing=effort; capability_args+=(--model vendor/Future --effort Caller-Level) ;;
+        no-effort) initial_help=missing---effort; missing=effort; capability_args+=(--model vendor/Future) ;;
+    esac
+    printf 'capability recovery fixture\n' | AGY_TEST_WORKDIR="$capability_workdir" \
+        FAKE_DISPATCH_MODE="$initial_mode" FAKE_HEARTBEAT_COUNT=1 FAKE_HELP_MODE="$initial_help" \
+        FAKE_EDIT_FROM_BOUND_ROOT="$scoped_edit" FAKE_EDIT_CONTENT='scoped candidate changed' \
+        run_worker "$job" "${capability_args[@]}" > "$TMP/$job.out" 2> "$TMP/$job.err"
+    initial_rc=$?
+    control_worker status "$job" > "$TMP/$job.before"
+    capability_state_sha="$(status_sha "$TMP/$job.before")"
+    cp "$TMP/logs/$job/dispatch-state.json" "$TMP/$job.before-raw"
+    cp "$capability_workdir/target.txt" "$TMP/$job.target-before"
+    if [[ "$recovery_action" == continue ]]; then
+        project_feedback "$job" | FAKE_HELP_MODE="missing---$missing" AGY_WORKER_EFFORT=Ambient-Later \
+            FAKE_DISPATCH_MODE=heartbeat-success FAKE_HEARTBEAT_COUNT=1 \
+            control_worker continue "$job" --approve-state-sha "$capability_state_sha" \
+            > "$TMP/$job.recovery" 2> "$TMP/$job.recovery.err"
+    else
+        FAKE_HELP_MODE="missing---$missing" FAKE_DISPATCH_MODE=heartbeat-success FAKE_HEARTBEAT_COUNT=1 \
+            control_worker "$recovery_action" "$job" --approve-state-sha "$capability_state_sha" \
+            > "$TMP/$job.recovery" 2> "$TMP/$job.recovery.err"
+    fi
+    recovery_rc=$?
+    wait_terminal "$job" "$TMP/$job.recovery"
+    recovery_wait_rc=$?
+    if [[ "$recovery_rc" == 0 && "$recovery_wait_rc" == 0 ]] \
+            && python3 -B - "$capability_root" "$job" "$capability_case" "$initial_rc" "$missing" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+temp, job, case, initial_rc, missing = sys.argv[1:]
+temp = Path(temp)
+before = json.loads((temp / f'{job}.before-raw').read_bytes())
+after = json.loads((temp / 'logs' / job / 'dispatch-state.json').read_bytes())
+assert int(initial_rc) == (4 if case in {'resume', 'restart'} else 0), initial_rc
+passed = case in {'no-effort', 'restart'}
+assert after['status'] == ('succeeded' if passed else 'failed'), after
+calls = (temp / f'{job}.calls').read_text().splitlines()
+assert calls == ['version', 'help'] * 2 + ['worker', 'version', 'help'] + (['worker'] if passed else []), calls
+assert len((temp / f'{job}.worker-calls').read_text().splitlines()) == (2 if passed else 1)
+assert after['attempt'] == 2
+assert (temp / 'capability-worktree' / 'target.txt').read_bytes() == (temp / f'{job}.target-before').read_bytes()
+if passed:
+    argv = (temp / f'{job}.argv').read_bytes().split(b'\0')
+    assert b'--effort' not in argv
+    assert (b'--conversation' in argv) == (case != 'restart')
 else:
-    raise AssertionError("historical V2 drift selection authorized a continuation")
-assert (job / module.STATE_NAME).read_bytes() == before
-assert not (job / "continue-staged").exists() and not marker.exists()
-
-finalized = subprocess.run(
-    [sys.executable, str(source), "finalize", "--job-dir", str(job),
-     "--approve-state-sha", sha, "--assurance", "partially_verified"],
-    input=json.dumps(verification).encode("utf-8"), check=True, stdout=subprocess.PIPE,
-)
-assert json.loads(finalized.stdout)["driver_disposition"] == "partially_verified"
-assert not marker.exists()
+    assert after['reason'] == 'selection_preflight_failed', after
+    assert f'agy missing required capabilities: --{missing}\n' in (temp / 'logs' / job / 'attempt-002.stderr.txt').read_text()
+    if before['result_path'] is not None:
+        candidate = Path(before['result_path']).read_bytes()
+        assert hashlib.sha256(candidate).hexdigest() == before['result_sha256']
+        assert after['last_success_path'] == before['result_path']
+        assert after['last_success_sha256'] == before['result_sha256']
+    if case == 'scoped-repair':
+        assert (temp / 'capability-worktree' / 'target.txt').read_text() == 'scoped candidate changed\n'
+        assert after['reconciliation_manifest_sha256'] == before['reconciliation_manifest_sha256']
+        assert after['repair_lineage_sha256'] == before['repair_lineage_sha256']
+selection = json.loads((temp / 'logs' / job / 'selection.json').read_bytes())
+assert selection.get('user_effort') == ('Caller-Level' if case == 'effort' else None)
 PY
-then
-    historical_v2_parity_ok=1
-else
-    historical_v2_parity_ok=0
-fi
-if [[ "$resume_unavailable_ok" == 1 && "$historical_v2_parity_ok" == 1 ]]; then
-    ok "resume and historical V2 drift recovery reject provider launch while preserving result/finalize"
-else
-    bad "resume or historical V2 drift recovery action parity"
-fi
+    then ok "$capability_case checks only active flags with fresh probes and preserves prior evidence"
+    else bad "$capability_case conditional recovery (initial $initial_rc, recovery $recovery_rc/$recovery_wait_rc)"; fi
+done
 
 . "$ROOT/tests/agy_worker_project_lifecycle_cases.sh"
 
@@ -5962,13 +5114,15 @@ done
 project_feedback project-cycles | control_worker continue project-cycles --approve-state-sha "$project_sha" \
     > "$TMP/project-cycles.exhausted" 2> "$TMP/project-cycles.exhausted.err"
 project_exhausted_rc=$?
-project_calls="$(wc -l < "$TMP/project-cycles.calls" | tr -d ' ')"
+project_calls="$(wc -l < "$TMP/project-cycles.worker-calls" | tr -d ' ')"
 if [[ "$project_cycle_ok" == 1 && "$project_exhausted_rc" == 64 && "$project_calls" == 5 ]] \
-        && python3 - "$TMP/project-cycles.status" "$TMP/project-cycles.argv" <<'PY'
+        && python3 - "$TMP/project-cycles.status" "$TMP/project-cycles.argv" "$TMP/project-cycles.calls" <<'PY'
 import json, sys
+from pathlib import Path
 state = json.load(open(sys.argv[1], encoding="utf-8"))
 argv = [item.decode() for item in open(sys.argv[2], "rb").read().split(b"\0") if item]
 assert state["cycle"] == 5 and state["continue_available"] is False
+assert Path(sys.argv[3]).read_text().splitlines() == ["version", "help"] + ["version", "help", "worker"] * 5
 assert argv.count("--conversation") == 1
 assert "unit-tests" not in " ".join(argv)
 assert "driver checks found one repairable failure" not in " ".join(argv)
@@ -6228,7 +5382,7 @@ import importlib.util
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_project_orphan", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(sys.argv[2])
 state, raw, _sha = module.load_state(job)
 state.update({
@@ -6279,107 +5433,6 @@ else
     bad "orphaned project state must not progress or expose a trusted partial result"
 fi
 
-LEGACY_V1_JOB="$TMP/logs/resume-case"
-PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
-        "$LEGACY_V1_JOB" <<'PY'
-import importlib.util
-from pathlib import Path
-import sys
-spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_v1", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-job = Path(sys.argv[2])
-state, _raw, _sha = module.load_state(job)
-for field in module.STATE_PROJECT_FIELDS:
-    state.pop(field)
-for field in module.STATE_V5_FIELDS:
-    state.pop(field)
-for field in {*module.STATE_V6_FIELDS, *module.STATE_V8_FIELDS, *module.STATE_V9_FIELDS, *module.STATE_V10_FIELDS, *module.STATE_V11_FIELDS, *module.STATE_V12_FIELDS, *module.STATE_V13_FIELDS, *module.STATE_V14_FIELDS}:
-    state.pop(field)
-state.pop("provider_retry_after_seconds")
-state.pop("provider_retry_observed_epoch")
-state["schema_version"] = 1
-module.write_atomic(job, module.STATE_NAME, state)
-PY
-legacy_v1_bytecode_manifest() {
-    PYTHONDONTWRITEBYTECODE=1 python3 -B - "$ROOT/skills/agy-worker/runtime/scripts" <<'PY'
-import hashlib
-from pathlib import Path
-import sys
-
-root = Path(sys.argv[1])
-for path in sorted(root.rglob("*")):
-    if path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}:
-        if path.is_file():
-            print(path.relative_to(root), hashlib.sha256(path.read_bytes()).hexdigest())
-        elif path.is_dir():
-            print(path.relative_to(root), "directory")
-PY
-}
-legacy_v1_bytecode_manifest > "$TMP/legacy-v1.bytecode-before"
-legacy_v1_calls_before="$(wc -l < "$TMP/resume-case.worker-calls" | tr -d ' ')"
-control_worker status resume-case > "$TMP/legacy-v1.status"
-legacy_v1_status_rc=$?
-control_worker result resume-case > "$TMP/legacy-v1.result"
-legacy_v1_result_rc=$?
-legacy_v1_sha="$(status_sha "$TMP/legacy-v1.status")"
-cp "$LEGACY_V1_JOB/dispatch-state.json" "$TMP/legacy-v1.state-before"
-control_worker resume resume-case --approve-state-sha "$legacy_v1_sha" > /dev/null 2>&1
-legacy_v1_resume_rc=$?
-legacy_v1_resume_unchanged=1
-cmp -s "$TMP/legacy-v1.state-before" "$LEGACY_V1_JOB/dispatch-state.json" \
-    || legacy_v1_resume_unchanged=0
-control_worker restart resume-case --approve-state-sha "$legacy_v1_sha" --format json \
-    > "$TMP/legacy-v1.restart" 2> "$TMP/legacy-v1.restart.err"
-legacy_v1_restart_rc=$?
-legacy_v1_restart_unchanged=1
-cmp -s "$TMP/legacy-v1.state-before" "$LEGACY_V1_JOB/dispatch-state.json" \
-    || legacy_v1_restart_unchanged=0
-PYTHONDONTWRITEBYTECODE=1 python3 -B - "$LEGACY_V1_JOB/selection.json" <<'PY'
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-path.write_bytes(path.read_bytes() + b" ")
-PY
-control_worker result resume-case > /dev/null 2>&1
-legacy_v1_tampered_result_rc=$?
-legacy_v1_tamper_unchanged=1
-cmp -s "$TMP/legacy-v1.state-before" "$LEGACY_V1_JOB/dispatch-state.json" \
-    || legacy_v1_tamper_unchanged=0
-legacy_v1_bytecode_manifest > "$TMP/legacy-v1.bytecode-after"
-legacy_v1_bytecode_unchanged=1
-cmp -s "$TMP/legacy-v1.bytecode-before" "$TMP/legacy-v1.bytecode-after" \
-    || legacy_v1_bytecode_unchanged=0
-legacy_v1_calls_after="$(wc -l < "$TMP/resume-case.worker-calls" | tr -d ' ')"
-if [[ "$legacy_v1_status_rc" == 0 && "$legacy_v1_result_rc" == 0 \
-        && "$legacy_v1_resume_rc" == 21 && "$legacy_v1_resume_unchanged" == 1 \
-        && "$legacy_v1_restart_rc" == 64 && "$legacy_v1_restart_unchanged" == 1 \
-        && "$legacy_v1_tampered_result_rc" == 20 && "$legacy_v1_tamper_unchanged" == 1 \
-        && "$legacy_v1_bytecode_unchanged" == 1 \
-        && "$legacy_v1_calls_after" == "$legacy_v1_calls_before" ]] \
-        && PYTHONDONTWRITEBYTECODE=1 python3 -B - "$TMP/legacy-v1.status" \
-            "$LEGACY_V1_JOB/dispatch-state.json" \
-            "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" <<'PY'
-import importlib.util
-import json, sys
-from pathlib import Path
-old = json.load(open(sys.argv[1], encoding="utf-8"))
-stored = json.load(open(sys.argv[2], encoding="utf-8"))
-spec = importlib.util.spec_from_file_location("agy_dispatch_legacy_assert", sys.argv[3])
-module = importlib.util.module_from_spec(spec); assert spec.loader is not None; spec.loader.exec_module(module)
-assert old["next_action"] == "result"
-assert old["next_action_command"] == '"$PIPELINE/agy-worker.sh" result --job-id resume-case --format json'
-assert old["phase"] is None and old["assurance"] is None
-assert [item["action"] for item in old["available_actions"]] == ["result"]
-assert stored["schema_version"] == 1
-assert stored["attempt"] == old["attempt"] == 2
-assert stored["attempt_origin"] == old["attempt_origin"]
-PY
-then
-    ok "legacy v1 reads safely, rejects selection drift, and remains result-only without recovery authority"
-else
-    bad "legacy v1 control-state compatibility"
-fi
-
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
         "$TMP/logs/project-between-cycle-drift" "$TMP/project-worktree" <<'PY'
 import importlib.util
@@ -6387,7 +5440,7 @@ from pathlib import Path
 import sys
 source, job_text, workdir = sys.argv[1:]
 spec = importlib.util.spec_from_file_location("agy_dispatch_rollback", source)
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 job = Path(job_text)
 before = (job / module.STATE_NAME).read_bytes()
 state, _raw, sha = module.load_state(job)
@@ -6431,12 +5484,12 @@ import os
 from pathlib import Path
 import sys
 spec = importlib.util.spec_from_file_location("agy_dispatch_boundary_cap", sys.argv[1])
-module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
 root = Path(sys.argv[2]).resolve(); root.mkdir(mode=0o700)
 (root / ".git").write_text("gitdir: bounded\n", encoding="ascii")
 (root / "one").write_text("1", encoding="ascii")
 (root / "two").write_text("2", encoding="ascii")
-module.MAX_BOUNDARY_ENTRIES = 2
+module.WORKTREE.MAX_BOUNDARY_ENTRIES = 2
 module._project_boundary(str(root))
 (root / "three").write_text("3", encoding="ascii")
 try:
@@ -6594,9 +5647,9 @@ fi
 echo
 echo "model-recommendation.sh offline policy tests:"
 expect_direct_recommendation "pre-dispatch explicit pair stays unranked and unapplied" \
-    pre-dispatch gemini-3.6-flash high high-complexity-bounded gemini-3.6-flash-high
+    pre-dispatch gemini-3.6-flash high high-complexity-bounded gemini-3.6-flash
 expect_direct_recommendation "post-gate explicit pair cannot be changed or redispatched" \
-    post-gate gemini-3.1-pro low driver-verification-failed gemini-3.1-pro-low
+    post-gate gemini-3.1-pro low driver-verification-failed gemini-3.1-pro
 expect_direct_recommendation "fixed exact model stays unranked and unapplied" \
     pre-dispatch claude-sonnet-4-6 '' high-complexity-bounded claude-sonnet-4-6
 expect_recommendation "pre-dispatch routine work needs no escalation" \
@@ -6680,11 +5733,8 @@ expect_recommendation_reject "duplicate selected model is ambiguous" \
 expect_recommendation_reject "duplicate selected effort is ambiguous" \
     --stage pre-dispatch --selected-model gemini-3.6-flash --selected-effort high \
     --selected-effort high --evidence bounded-routine
-expect_recommendation_reject "unsupported direct recommendation pair is rejected" \
-    --stage pre-dispatch --selected-model gemini-3.1-pro --selected-effort medium \
-    --evidence bounded-routine
-expect_recommendation_reject "unknown direct recommendation model is rejected" \
-    --stage pre-dispatch --selected-model vendor/model-v1 --evidence bounded-routine
+expect_direct_recommendation "arbitrary caller model and effort remain unranked" \
+    pre-dispatch vendor/Future-Model Future-Level bounded-routine vendor/Future-Model
 expect_recommendation_reject "positional arguments are rejected" \
     --stage pre-dispatch --selected-tier bulk --evidence bounded-routine hardest
 
@@ -6705,6 +5755,89 @@ if [[ "$rc" == "0" && ! -e "$TMP/recommender-called-agy" && ! -e "$TMP/recommend
     ok "recommender invokes neither agy nor qa-gate"
 else
     bad "recommender invokes neither agy nor qa-gate"
+fi
+
+# Exercise the actual resolved core after copying only the public skill folder.
+if python3 -B - "$ROOT" "$TMP" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+root = Path(sys.argv[1]).resolve()
+tmp = Path(sys.argv[2]).resolve() / "folder-only-workflow"
+tmp.mkdir(mode=0o700)
+skill = tmp / "skill"
+shutil.copytree(root / "skills/agy-worker", skill)
+assert not (skill / ".pipeline-root").exists()
+assert not (skill / "runtime/scripts/benchmark.py").exists()
+assert not (skill / "runtime/scripts/model_intelligence.py").exists()
+resolved = subprocess.run(["bash", str(skill / "scripts/resolve-pipeline.sh")], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+runtime = Path(resolved.stdout.decode().strip())
+assert runtime == skill / "runtime" and not resolved.stderr
+bin_dir = tmp / "bin"
+bin_dir.mkdir(mode=0o700)
+shutil.copy2(Path(sys.argv[2]) / "bin/agy.package-original", bin_dir / "agy")
+env = {key: value for key, value in os.environ.items() if not key.startswith(("FAKE_", "AGY_WORKER_"))}
+env["PATH"] = str(bin_dir) + ":" + os.environ["PATH"]
+env["XDG_STATE_HOME"] = str(tmp / "state-home")
+Path(env["XDG_STATE_HOME"]).mkdir(mode=0o700)
+fake_outputs = ("FAKE_MODEL_FILE", "FAKE_PROMPT_FILE", "FAKE_DIRS_FILE", "FAKE_ARGV_FILE", "FAKE_STAGE_RESULT_FILE")
+for name in fake_outputs:
+    env[name] = str(tmp / name.lower())
+provider_arguments = [argument for name in fake_outputs for argument in ("--provider-env", name)]
+repo = tmp / "repo"
+repo.mkdir(mode=0o700)
+def call(*argv, expected=0):
+    result = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90)
+    assert result.returncode == expected, (argv, result.returncode, result.stderr)
+    return result
+call("/usr/bin/git", "-C", str(repo), "init", "-q")
+(repo / "proof.txt").write_text("unchanged fixture\n")
+call("/usr/bin/git", "-C", str(repo), "add", "proof.txt")
+call("/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
+workflow = str(runtime / "workflow.sh")
+preview = json.loads(call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--preview").stdout)
+call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--approve-whole-worktree", preview["launch_approval_sha256"], "--tier", "bulk", "--task", "Return the unchanged synthetic candidate", *provider_arguments)
+state_files = list(Path(env["XDG_STATE_HOME"]).glob("agy-worker/workflows/*/folder-only/workflow.json"))
+assert len(state_files) == 1
+state_file = state_files[0]
+workflow_state = json.loads(state_file.read_bytes())
+job = Path(workflow_state["dispatch_job_dir"])
+# The ordinary synchronous facade must expose the provider candidate for review.
+status = json.loads(call(workflow, "status", "--state", str(state_file)).stdout)
+dispatch = json.loads((job / "dispatch-state.json").read_bytes())
+assert dispatch["status"] == "succeeded" and dispatch["phase"] == "awaiting-verification"
+assert status["dispatch"]["state_sha256"]
+candidate_root = Path(workflow_state["worktree_path"])
+assert (candidate_root / "proof.txt").read_text() == "unchanged fixture\n"
+assert not call("/usr/bin/git", "-C", str(candidate_root), "status", "--porcelain=v1", "--untracked-files=all").stdout
+verification = {
+    "schema_version": 2, "summary": "Driver checked unchanged fixture",
+    "passed_checks": ["exact unchanged fixture", "driver diff review"], "failed_checks": [],
+    "advisory_checks": 0, "missing_checks": 0,
+    "candidate_sha256": dispatch["result_sha256"], "coverage": "complete",
+    "verified_findings": 0, "unresolved_gaps": 0, "diff_review_complete": True,
+}
+verification_path = tmp / "verification.json"
+verification_path.write_text(json.dumps(verification))
+verification_path.chmod(0o600)
+receipt = tmp / "receipt.json"
+call(workflow, "verify-finalize", "--state", str(state_file), "--receipt", str(receipt), "--envelope", dispatch["result_path"], "--verify-argv", '["/usr/bin/git","diff","--check"]', "--assurance", "verified", "--approve-dispatch-sha", status["dispatch"]["state_sha256"], "--verification-json", str(verification_path))
+assert json.loads(receipt.read_bytes())["verdict"] == "gate-passed"
+final = json.loads(call(workflow, "status", "--state", str(state_file)).stdout)
+assert final["dispatch"]["assurance"] == "verified"
+assert (Path(workflow_state["worktree_path"]) / "proof.txt").read_text() == "unchanged fixture\n"
+(runtime / "scripts/candidate_state.py").unlink()
+missing = call("bash", str(skill / "scripts/resolve-pipeline.sh"), expected=2)
+assert not missing.stdout and b"complete agy-worker skill bundle" in missing.stderr
+PY
+then
+    ok "folder-only core resolves and completes synthetic ordinary workflow verification"
+else
+    bad "folder-only core resolves and completes synthetic ordinary workflow verification"
 fi
 
 echo

@@ -97,7 +97,6 @@ make_demo_tree() {
         "$destination/skills/agy-worker/runtime/scripts/candidate_state.py"
     cp "$ROOT/skills/agy-worker/runtime/scripts/evidence_receipt.py" \
         "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" \
-        "$ROOT/skills/agy-worker/runtime/scripts/compatibility.py" \
         "$ROOT/skills/agy-worker/runtime/scripts/recommendation_record.py" \
         "$destination/skills/agy-worker/runtime/scripts/"
     cp "$ROOT/skills/agy-worker/runtime/schemas/worker-result.schema.json" \
@@ -165,6 +164,30 @@ if [[ "$before_tree" == "$after_tree" ]]; then
     ok "starter proof leaves the current checkout byte-identical"
 else
     bad "starter proof leaves the current checkout byte-identical"
+fi
+
+# Keep the synthetic proof harness outside the shipped skill while exercising
+# the resolver-selected core from a folder-only copy.
+folder_skill="$TMP/folder-skill"
+folder_harness="$TMP/folder-proof-harness"
+cp -R "$ROOT/skills/agy-worker" "$folder_skill"
+folder_runtime="$(bash "$folder_skill/scripts/resolve-pipeline.sh")"
+mkdir -p "$folder_harness/conformance/v1/envelopes"
+cp "$ROOT/proof-demo.sh" "$folder_harness/proof-demo.sh"
+cp "$ROOT/conformance/v1/envelopes/honest.json" \
+    "$folder_harness/conformance/v1/envelopes/honest.json"
+printf '#!/usr/bin/env bash\nexec "%s/qa-gate.sh" "$@"\n' "$folder_runtime" \
+    > "$folder_harness/qa-gate.sh"
+chmod +x "$folder_harness/qa-gate.sh"
+run_demo "$folder_harness" folder-only
+folder_rc=$?
+if [[ "$folder_rc" == 0 && "$(cat "$TMP/folder-only.out")" == "$EXPECTED_OUTPUT" \
+        && ! -s "$TMP/folder-only.err" && ! -e "$TMP/folder-only.forbidden" \
+        && ! -e "$folder_skill/.pipeline-root" \
+        && ! -e "$folder_skill/runtime/benchmark.sh" ]]; then
+    ok "folder-only core passes the external synthetic proof without repository tooling"
+else
+    bad "folder-only core passes the external synthetic proof without repository tooling"
 fi
 
 snapshot_repo="$TMP/snapshot-negative"

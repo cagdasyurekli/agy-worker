@@ -1,7 +1,7 @@
 {
-  "name": "codex-agy-worker",
+  "name": "agy-worker",
   "version": "0.22.0",
-  "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with Codex independently verifying results.",
+  "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results.",
   "author": {
     "name": "cagdasyurekli",
     "url": "https://github.com/cagdasyurekli"
@@ -18,9 +18,9 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Codex agy Worker",
+    "displayName": "agy Worker",
     "shortDescription": "Bounded agy delegation with independent checks.",
-    "longDescription": "Use Antigravity CLI for broad exploration, feature work, and project-scale implementation in isolated Git worktrees. Codex reviews the diff, runs driver-owned checks, and records verified or partial delivery without trusting worker claims.",
+    "longDescription": "Use Antigravity CLI for broad exploration, feature work, and project-scale implementation in isolated Git worktrees. The driver reviews the diff, runs driver-owned checks, and records verified or partial delivery without trusting worker claims.",
     "developerName": "cagdasyurekli",
     "category": "Developer Tools",
     "capabilities": [
@@ -31,7 +31,7 @@
     "privacyPolicyURL": "https://github.com/cagdasyurekli/codex-agy-worker/blob/main/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/cagdasyurekli/codex-agy-worker/blob/main/TERMS.md",
     "defaultPrompt": [
-      "Build this application with agy across the project, then have Codex run the relevant checks and repair failures in the same conversation.",
+      "Build this app across the project with agy; have the driver run relevant checks and repair failures in the same conversation.",
       "Use agy to implement this feature end to end, discovering the files and test commands as needed.",
       "Explore this repository with agy and report useful findings with clear coverage limits."
     ]

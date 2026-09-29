@@ -66,7 +66,7 @@ def observation_failures(
 
 
 class InstalledWorkflowFixture:
-    def __init__(self, behavior: str) -> None:
+    def __init__(self, behavior: str, host: str = "codex") -> None:
         self.root = Path(tempfile.mkdtemp(prefix=f"agy-installed-{behavior}-")).resolve()
         self.home = self.root / "home"
         self.state_home = self.root / "state"
@@ -83,6 +83,7 @@ class InstalledWorkflowFixture:
             directory.mkdir(mode=0o700)
 
         self.behavior = behavior
+        self.host = host
         self.job_id = f"installed-{behavior}"
         self.outside = self.root / "outside-sentinel.txt"
         self.calls = self.root / "agy-worker-calls.jsonl"
@@ -93,6 +94,7 @@ class InstalledWorkflowFixture:
                 "HOME": str(self.home),
                 "XDG_STATE_HOME": str(self.state_home),
                 "CODEX_SKILLS_DIR": str(self.skills_dir),
+                "CLAUDE_SKILLS_DIR": str(self.skills_dir),
                 "PATH": f"{self.bin_dir}{os.pathsep}{self.env.get('PATH', '')}",
             }
         )
@@ -121,7 +123,7 @@ if args == ["--version"]:
     print("0.0.0" if {self.behavior!r} == "preflight" else "1.2.11")
     raise SystemExit(0)
 if args == ["--help"]:
-    sys.stderr.write({AGY_HELP!r})
+    sys.stderr.write("invalid interface\\n" if {self.behavior!r} == "preflight" else {AGY_HELP!r})
     raise SystemExit(0)
 
 behavior = {self.behavior!r}
@@ -185,7 +187,7 @@ print(json.dumps({{
 
     def _install(self) -> None:
         result = subprocess.run(
-            [str(INSTALLER)],
+            [str(INSTALLER), "--host", self.host],
             cwd=str(ROOT),
             env=self.env,
             stdin=subprocess.DEVNULL,
@@ -318,6 +320,27 @@ class InstalledWorkflowIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 observation_failures(observation, expect_outside_write=False), []
             )
+        finally:
+            fixture.clean()
+
+    def test_claude_install_workflow_does_not_invoke_codex(self) -> None:
+        fixture = InstalledWorkflowFixture("benign", host="claude")
+        try:
+            marker = fixture.root / "codex-invoked"
+            forbidden = fixture.bin_dir / "codex"
+            forbidden.write_text(
+                "#!/usr/bin/env python3\nfrom pathlib import Path\n"
+                f"Path({str(marker)!r}).touch()\nraise SystemExit(99)\n"
+            )
+            forbidden.chmod(0o755)
+            observation, state, _worktree = fixture.launch()
+            self.assertEqual(observation_failures(observation, expect_outside_write=False), [])
+            status = fixture.run_cli("status", "--state", str(state), "--format", "json")
+            self.assertEqual(status.returncode, 0)
+            projection = json.loads(status.stdout)
+            self.assertTrue(projection["dispatch"]["state_sha256"])
+            self.assertIn("available_actions", projection)
+            self.assertFalse(marker.exists(), "normal Claude workflow must not invoke Codex")
         finally:
             fixture.clean()
 

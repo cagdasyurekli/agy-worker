@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import contextlib
 import fcntl
-import hashlib
+import hashlib  # noqa: F401 -- supplied to recovery cases through run(globals())
 import io
 import importlib.util
 import json
@@ -19,7 +20,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
+import threading  # noqa: F401 -- supplied to recovery/runtime cases through run(globals())
 import time
 from unittest import mock
 
@@ -32,9 +33,20 @@ PROVIDER_SCHEMA = ROOT / "skills/agy-worker/runtime/schemas/worker-result.provid
 spec = importlib.util.spec_from_file_location("agy_dispatch_remediation", SOURCE)
 MODULE = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = MODULE
 spec.loader.exec_module(MODULE)
 
-EXPECTED_CHECKS = 116
+def worktree_function_source(name: str) -> str:
+    """Return exactly one owner function for source-level security assertions."""
+    source = WORKTREE_SOURCE.read_text(encoding="utf-8")
+    node = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == name)
+    segment = ast.get_source_segment(source, node)
+    assert segment is not None
+    return segment
+
+
+EXPECTED_CHECKS = 121
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -44,7 +56,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 68, "runtime": 1, "recovery": 47}
+GROUP_CHECKS = {"core": 72, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -83,6 +95,82 @@ def assert_symbolic_action_commands(actions: list[dict], expected: set[str]) -> 
         assert command.startswith(f"{MODULE.PUBLIC_LAUNCHER} {action} "), command
 
 
+def initialize_linked_fixture(worktree: Path) -> None:
+    """Create real current launch authority without changing repository policy."""
+    origin = worktree.with_name(worktree.name + "-origin")
+    origin.mkdir(mode=0o700)
+    subprocess.run(["git", "init", "-q", str(origin)], check=True)
+    subprocess.run([
+        "git", "-C", str(origin), "-c", "user.name=Fixture",
+        "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "base",
+    ], check=True)
+    subprocess.run([
+        "git", "-C", str(origin), "worktree", "add", "-q", "-b",
+        "fixture/" + worktree.name, str(worktree),
+    ], check=True)
+
+
+def current_command_fixture(values: dict, *, bind_launch: bool = True) -> dict:
+    """Build a complete current test command with explicit launch authority.
+
+    Defaults model a session task with optional features disabled. A scoped
+    sandbox argv selects native mode; fixture authors supply scope/schema files.
+    Private in-memory projection tests may omit launch binding explicitly.
+    """
+    command = {
+        "schema_version": MODULE.CURRENT_COMMAND_SCHEMA,
+        "kind": "agy-worker-dispatch-command", "agy_version": "1.1.22",
+        "agy_version_observed": True, "notice_seconds": 3,
+        "stage_dir": None, "stage_file": None, "child_umask": "022",
+        "workflow": "task", "max_cycles": 2,
+        "resume_prompt": "resume", "continue_prompt": "continue",
+        "selection_path": None, "selection_sha256": None, "selection_identity": None,
+        "provider_env": [], "provider_scope_path": None, "provider_scope_sha256": None,
+        "provider_scope_identity": None, "approved_transmission_sha256": None,
+        "approved_whole_worktree_sha256": None, "whole_worktree_content_sha256": None,
+        "base_commit": None,
+        "provider_isolation": "session", "native_grant_profile": "baseline",
+        "allow_scoped_repair": False, "repair_authority_sha256": None,
+        "allow_self_verification": False, "self_verification_manifest_path": None,
+        "self_verification_manifest_sha256": None, "self_verification_manifest_identity": None,
+        **values,
+    }
+    assert command["schema_version"] == MODULE.CURRENT_COMMAND_SCHEMA
+    if "provider_isolation" not in values and "--sandbox" in command.get("argv", []):
+        assert command["provider_scope_path"] is not None
+        command["provider_isolation"] = "native"
+    if bind_launch:
+        workdir = command["workdir"]
+        if command["provider_scope_path"] is None and command["base_commit"] is None:
+            try:
+                command["base_commit"] = subprocess.check_output(
+                    ["/usr/bin/git", "-C", workdir, "rev-parse", "--verify", "HEAD^{commit}"],
+                    stderr=subprocess.DEVNULL, text=True,
+                ).strip()
+            except subprocess.CalledProcessError:
+                command["base_commit"] = "0" * 40
+        manifest = MODULE._scan_readable_worktree(workdir)
+        if command["provider_scope_path"] is not None and command["approved_transmission_sha256"] is None:
+            scope = MODULE._parse_provider_scope(Path(command["provider_scope_path"]).read_bytes())
+            selected = MODULE._build_selected_content_manifest(workdir, scope)
+            command["approved_transmission_sha256"] = MODULE._bound_transmission_sha256(
+                command, MODULE._canonical_digest(scope), MODULE._manifest_digest(manifest),
+                MODULE._selected_content_digest(selected),
+            )
+        elif command["provider_scope_path"] is None and command["approved_whole_worktree_sha256"] is None:
+            content = MODULE.WORKTREE.whole_worktree_content_manifest(workdir)
+            command["whole_worktree_content_sha256"] = content["manifest_sha256"]
+            command["approved_whole_worktree_sha256"] = MODULE.WORKTREE._compute_v11_launch_approval_sha256(
+                command["provider_isolation"], command["native_grant_profile"],
+                whole_worktree_content_sha256=content["manifest_sha256"],
+                readable_manifest_sha256=MODULE._manifest_digest(manifest),
+            )
+        if command["allow_scoped_repair"]:
+            command["repair_authority_sha256"] = MODULE._repair_authority_for_command(command)
+        assert set(command) == MODULE.CURRENT_COMMAND_FIELDS
+    return command
+
+
 def provider_schema(path: Path) -> None:
     path.write_bytes(PROVIDER_SCHEMA.read_bytes())
 
@@ -105,7 +193,43 @@ def report(**updates: object) -> dict:
     return value
 
 
+FAKE_CAPABILITY_HELP = """Usage of agy:
+  --add-dir  Directory
+  --conversation  Conversation
+  --disable-slash-commands  Disable expansion
+  --effort  Caller effort
+  --json-schema  Schema
+  --mode  Mode (accept-edits, plan)
+  --model  Caller model
+  --output-format  Format (text, json, stream-json)
+  --print  Prompt
+  --print-timeout  Deadline
+  --sandbox  Sandbox
+"""
+
+
+def equip_provider_fixture(bin_dir: Path) -> None:
+    """Add passive interface replies to result-only fakes, never interface fakes."""
+    fake = bin_dir / "agy"
+    if not fake.is_file() or fake.is_symlink():
+        return
+    source = fake.read_text()
+    if "--help" in source:
+        return
+    first, rest = source.split("\n", 1)
+    if "python" in first:
+        interface = ("import sys\n"
+                     "if sys.argv[1:] == ['--version']: print('fixture-build'); raise SystemExit(0)\n"
+                     f"if sys.argv[1:] == ['--help']: print({FAKE_CAPABILITY_HELP!r}, end=''); raise SystemExit(0)\n")
+    else:
+        interface = ("if [ \"$#\" = 1 ] && [ \"$1\" = --version ]; then printf 'fixture-build\\n'; exit 0; fi\n"
+                     "if [ \"$#\" = 1 ] && [ \"$1\" = --help ]; then printf '%s' "
+                     + shlex.quote(FAKE_CAPABILITY_HELP) + "; exit 0; fi\n")
+    fake.write_text(first + "\n" + interface + rest)
+
+
 def run_controller(job: Path, bin_dir: Path) -> int:
+    equip_provider_fixture(bin_dir)
     lock = job / MODULE.LOCK_NAME
     descriptor = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
     os.fchmod(descriptor, 0o600)
@@ -158,6 +282,7 @@ fixture_kind = sys.argv[4]
 spec = importlib.util.spec_from_file_location("agy_dispatch_linux_fixture", source)
 dispatch = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = dispatch
 spec.loader.exec_module(dispatch)
 
 
@@ -295,17 +420,17 @@ class TestOnlyNonDarwinContainment:
 adapter = TestOnlyNonDarwinContainment(job)
 original_containment = dispatch.CONTAINMENT
 dispatch.CONTAINMENT = adapter
-original_materialize = dispatch._materialize_stage
+original_materialize = dispatch.WORKTREE._materialize_stage
 if fixture_kind == "copy-drift":
     def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest):
         (Path(source_root) / "payload.bin").write_bytes(b"copy-window-source-drift\n")
         (job / "copy-drift-injected").write_text("injected\n", encoding="ascii")
         return original_materialize(source_root, stage_dir, scope, selected_manifest)
-    dispatch._materialize_stage = drift_immediately_before_copy
+    dispatch.WORKTREE._materialize_stage = drift_immediately_before_copy
 try:
     raise SystemExit(dispatch.controller(job, ownership_fd))
 finally:
-    dispatch._materialize_stage = original_materialize
+    dispatch.WORKTREE._materialize_stage = original_materialize
     dispatch.CONTAINMENT = original_containment
 '''
     lock = job / MODULE.LOCK_NAME
@@ -344,26 +469,194 @@ def run_scoped_controller(
     native_containment: bool = True,
 ) -> int:
     """Run the historical execution path or native containment as command-bound."""
+    equip_provider_fixture(bin_dir)
     if native_containment and scoped_controller_uses_portable_fixture():
         return _run_scoped_controller_linux_fixture(job, bin_dir, fixture_kind=fixture_kind)
     if fixture_kind != "copy-drift":
         return run_controller(job, bin_dir)
-    original_materialize = MODULE._materialize_stage
+    original_materialize = MODULE.WORKTREE._materialize_stage
 
     def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest):
         (Path(source_root) / "payload.bin").write_bytes(b"copy-window-source-drift\n")
         (job / "copy-drift-injected").write_text("injected\n", encoding="ascii")
         return original_materialize(source_root, stage_dir, scope, selected_manifest)
 
-    MODULE._materialize_stage = drift_immediately_before_copy
+    MODULE.WORKTREE._materialize_stage = drift_immediately_before_copy
     try:
         return run_controller(job, bin_dir)
     finally:
-        MODULE._materialize_stage = original_materialize
+        MODULE.WORKTREE._materialize_stage = original_materialize
+
+
+def controller_monitor_decisions_preserve_lazy_precedence() -> None:
+    state = {"cancel_requested": False, "max_seconds": 20, "hard_seconds": 15,
+             "idle_seconds": 5, "self_verification_elapsed_seconds": 0}
+    def decide(elapsed=0.0, now=0.0, stop=None, **updates):
+        return MODULE._controller_monitor_limit(
+            {**state, **updates}, stop, elapsed, now, 0.0, float_hard=True,
+        )
+    assert decide(14.0, 4.0) is None
+    assert decide(20.0, 5.0) == ("hard_deadline_exceeded", "max-runtime")
+    assert decide(15.0, 5.0) == ("hard_deadline_exceeded", "hard")
+    assert decide(14.0, 5.0) == ("idle_timeout", "idle")
+    assert decide(20.0, 5.0, cancel_requested=True) == ("cancelled", None)
+    assert decide(20.0, 5.0, signal.SIGTERM, cancel_requested=True) == ("interrupted", None)
+    assert decide(10.0, 5.0, self_verification_elapsed_seconds=10) == (
+        "hard_deadline_exceeded", "max-runtime",
+    )
+    # Winning controls and limits must not evaluate a later unavailable field.
+    assert MODULE._controller_monitor_limit(
+        {"cancel_requested": True}, None, 0, 0, 0, float_hard=True,
+    ) == ("cancelled", None)
+    assert MODULE._controller_monitor_limit(
+        {"cancel_requested": False}, signal.SIGINT, 0, 0, 0, float_hard=True,
+    ) == ("interrupted", None)
+    assert MODULE._controller_monitor_limit(
+        {"cancel_requested": False, "max_seconds": 0}, None, 0, 0, 0,
+        float_hard=True,
+    ) == ("hard_deadline_exceeded", "max-runtime")
+    for coerce in (False, True):
+        assert MODULE._controller_monitor_limit(
+            {"cancel_requested": False, "max_seconds": 10, "hard_seconds": 0},
+            None, 0, 0, 0, float_hard=coerce,
+        ) == ("hard_deadline_exceeded", "hard")
+
+
+def controller_wait_uses_each_clock_and_zero_floor() -> None:
+    state = {"max_seconds": 100, "hard_seconds": 100, "idle_seconds": 100,
+             "attempt_base_elapsed": 0}
+    now = 10.0
+    delta = 0.0625  # exactly representable across boundary subtraction
+    assert delta < MODULE.CONTROL_POLL
+    assert MODULE._controller_wait_seconds(state, 0, 0, 100, now) == MODULE.CONTROL_POLL
+    for field in ("max_seconds", "hard_seconds", "idle_seconds"):
+        bounded = {**state, field: now + delta}
+        assert MODULE._controller_wait_seconds(bounded, 0, 0, 100, now) == delta
+        for boundary in (now, now - 1):
+            assert MODULE._controller_wait_seconds(
+                {**state, field: boundary}, 0, 0, 100, now,
+            ) == 0
+    assert MODULE._controller_wait_seconds(state, 0, 0, now + delta, now) == delta
+    assert MODULE._controller_wait_seconds(state, 0, 0, now, now) == 0
+    assert MODULE._controller_wait_seconds(state, 0, 0, now - 1, now) == 0
+    assert MODULE._controller_wait_seconds(
+        {**state, "max_seconds": 15, "attempt_base_elapsed": 5}, 0, 0, 100, now,
+    ) == 0
+    assert MODULE._controller_wait_seconds(
+        {**state, "max_seconds": 15, "self_verification_elapsed_seconds": 5},
+        0, 0, 100, now,
+    ) == 0
+
+
+def controller_terminal_policy_preserves_candidate_facts() -> None:
+    current = {
+        "cancel_requested": False, "attempt_origin": "initial",
+        "candidate_recognized": False, "candidate_source": "none",
+        "result_available": False, "failure_stage": None,
+        "result_path": None, "result_sha256": None, "result_identity": None,
+        "candidate_worktree_sha256": None, "candidate_worktree_entries": None,
+    }
+    bound = ("a" * 64, (1, 2, 3, 4, 5))
+    candidate = MODULE._CandidateReconciliation(candidate_worktree={"sha256": "b" * 64})
+    for reason, expected in [(None, "succeeded"), ("cancelled", "cancelled"),
+                             ("provider_terminal_cancelled", "cancelled"),
+                             ("hard_deadline_exceeded", "failed")]:
+        status, code = MODULE._controller_terminal_status(reason, None)
+        assert status == expected
+        assert code == (0 if reason is None else MODULE.EXIT_BY_REASON[reason])
+    for number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        assert MODULE._controller_terminal_status("interrupted", number) == (
+            "cancelled", 128 + number,
+        )
+    for outer, source in [("SUCCESS", "provider_success"), ("ERROR", "provider_error"),
+                          ("CANCELLED", "provider_cancelled")]:
+        outcome = MODULE._ControllerOutcome(
+            reason="hard_deadline_exceeded", final_status="failed",
+            exit_code=MODULE.EXIT_BY_REASON["hard_deadline_exceeded"],
+            result_binding=bound, outer_status=outer,
+        )
+        projected, disposition = MODULE._classify_controller_candidate(outcome, candidate, current)
+        assert projected is not outcome and projected == outcome
+        assert projected.reason == "hard_deadline_exceeded"
+        assert projected.result_binding == bound
+        assert disposition.candidate_source == source
+        assert disposition.candidate_recognized and not disposition.candidate_unavailable
+        unavailable, facts = MODULE._classify_controller_candidate(
+            outcome, MODULE._CandidateReconciliation(), current,
+        )
+        assert unavailable.reason == "status_unavailable"
+        assert unavailable.failure_stage == "binding_failure"
+        assert unavailable.result_binding == bound
+        assert facts.terminal_snapshot_unavailable and facts.candidate_unavailable
+        assert outcome.reason == "hard_deadline_exceeded"  # input is unchanged
+    cancelled, facts = MODULE._classify_controller_candidate(
+        outcome, candidate, {**current, "cancel_requested": True},
+    )
+    assert cancelled.reason == "cancelled" and cancelled.result_binding is None
+    assert not facts.candidate_recognized
+    previous = {**current, "attempt_origin": "conversation-continue",
+                "candidate_recognized": True, "candidate_source": "provider_error",
+                "result_available": True, "result_path": "/private/result",
+                "result_sha256": "a" * 64, "result_identity": [1, 2, 3, 4, 5],
+                "candidate_worktree_sha256": "b" * 64, "candidate_worktree_entries": 1}
+    stopped = MODULE._ControllerOutcome(reason="cancelled", final_status="cancelled", exit_code=22)
+    for missing in (None, "result_sha256", "candidate_worktree_sha256"):
+        projection, facts = MODULE._classify_controller_candidate(
+            stopped, MODULE._CandidateReconciliation(),
+            previous if missing is None else {**previous, missing: None},
+        )
+        assert facts.preserve_candidate_forensics and facts.candidate_recognized
+        assert projection.reason == ("cancelled" if missing is None else "status_unavailable")
+        assert facts.candidate_unavailable == (missing is not None)
+
+
+def controller_signal_and_context_ownership_are_isolated() -> None:
+    execution = MODULE._ProviderExecution()
+    MODULE._latch_controller_signal(execution, signal.SIGTERM)
+    MODULE._latch_controller_signal(execution, signal.SIGINT)
+    assert execution.stop_signal == signal.SIGTERM
+    watched = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    assert MODULE._controller_completion_signal(watched, {signal.SIGHUP}, execution.stop_signal) == signal.SIGHUP
+    assert MODULE._controller_completion_signal(watched, {signal.SIGTERM}, signal.SIGINT) == signal.SIGINT
+    assert MODULE._controller_completion_signal(watched, set(), execution.stop_signal) == signal.SIGTERM
+    assert MODULE._controller_completion_signal(watched, set(), None) is None
+    first = MODULE._ControllerStreams(Path("one"), Path("two"), Path("three"))
+    second = MODULE._ControllerStreams(Path("one"), Path("two"), Path("three"))
+    first.buffers["stdout"].extend(b"private")
+    first.sizes["stdout"] = 7
+    assert second.buffers["stdout"] == bytearray() and second.sizes["stdout"] == 0
+    assert first.stdout_fd == second.stdout_fd == -1 and first.selector is None
+    names = ("agy_controller_context_copy_one", "agy_controller_context_copy_two")
+    previous = {name: sys.modules.get(name) for name in names}
+    copies = []
+    try:
+        for name in (*names, names[0]):
+            copied_spec = importlib.util.spec_from_file_location(name, SOURCE)
+            copied = importlib.util.module_from_spec(copied_spec)
+            assert copied_spec.loader is not None
+            sys.modules[copied_spec.name] = copied
+            copied_spec.loader.exec_module(copied)
+            copies.append(copied)
+            assert copied._ControllerBinding().state == {}
+            assert sys.modules[name] is copied
+        assert len({copy_module._ControllerBinding for copy_module in copies}) == 3
+        assert all(copy_module._ControllerBinding is not MODULE._ControllerBinding for copy_module in copies)
+        copies[0]._ControllerBinding().state["private"] = True
+        assert copies[1]._ControllerBinding().state == {}
+    finally:
+        for name, prior in previous.items():
+            if prior is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prior
 
 
 with tempfile.TemporaryDirectory() as temporary:
-    root = Path(temporary)
+    check("controller pure monitor decisions preserve lazy limit precedence", controller_monitor_decisions_preserve_lazy_precedence)
+    check("controller pure wait uses each clock and the zero floor", controller_wait_uses_each_clock_and_zero_floor)
+    check("controller pure terminal policy preserves candidate facts", controller_terminal_policy_preserves_candidate_facts)
+    check("controller signals and context ownership stay isolated", controller_signal_and_context_ownership_are_isolated)
+    root = Path(temporary).resolve()
     provider = root / "provider.json"
     provider_schema(provider)
 
@@ -494,14 +787,15 @@ with tempfile.TemporaryDirectory() as temporary:
     check("wrong type NaN invalid UTF-8 and oversized reports fail closed", invalid_report_encodings_types_and_size_fail_closed)
 
     def text_projection_is_three_line_private_and_driver_owned() -> None:
-        command = {
-            "workdir": str(root), "job_id": "text-job", "idle_seconds": 1,
+        repo = root / "text-projection-repo"; repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        command = current_command_fixture({
+            "workdir": str(repo), "job_id": "text-job", "idle_seconds": 1,
             "hard_seconds": 2, "max_seconds": 3, "workflow": "task", "max_cycles": 2,
-        }
+        }, bind_launch=False)
         state = MODULE.initial_state(
             command, "initial", 1, command_sha="a" * 64,
             command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
-            state_schema=8,
         )
         state.update({
             "status": "failed", "reason": "provider_terminal_error", "exit_code": 25,
@@ -569,16 +863,16 @@ with tempfile.TemporaryDirectory() as temporary:
     def control_formats_and_resume_approval_are_private_and_pre_dispatch() -> None:
         log_root = root / "control-logs"; log_root.mkdir(mode=0o700)
         repo = root / "control-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = log_root / "format-job"; job.mkdir(mode=0o700)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "format-job",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "format-job",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(PROVIDER_SCHEMA), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 2, "max_seconds": 3, "notice_seconds": 1,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         _state, _initial_sha = MODULE.create_state(job, "initial", resume=False)
         worker = ROOT / "skills/agy-worker/runtime/agy-worker.sh"
@@ -640,6 +934,7 @@ with tempfile.TemporaryDirectory() as temporary:
         copied_spec = importlib.util.spec_from_file_location("agy_dispatch_folder_copy", copied_source)
         copied_module = importlib.util.module_from_spec(copied_spec)
         assert copied_spec.loader is not None
+        sys.modules[copied_spec.name] = copied_module
         copied_spec.loader.exec_module(copied_module)
         copied_job = log_root / "folder-format"; copied_job.mkdir(mode=0o700)
         copied_command = dict(command, job_id="folder-format")
@@ -702,8 +997,8 @@ with tempfile.TemporaryDirectory() as temporary:
         })
         manifest.write_bytes(manifest_raw); manifest.chmod(0o600)
         manifest_info = manifest.stat()
-        command = {
-            "schema_version": 9, "kind": "agy-worker-dispatch-command",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
             "job_id": "self-verification-binding", "workdir": str(candidate),
             "argv": ["agy", "--print", "task"],
             "agy_version": "1.1.22", "agy_version_observed": True,
@@ -717,8 +1012,6 @@ with tempfile.TemporaryDirectory() as temporary:
             "provider_scope_identity": list(MODULE._identity(manifest_info)),
             "approved_transmission_sha256": "1" * 64,
             "approved_whole_worktree_sha256": None,
-            "boost": False, "boost_policy_sha256": None,
-            "approved_boost_risk_sha256": None,
             "allow_self_verification": True,
             "self_verification_manifest_path": str(manifest),
             "self_verification_manifest_sha256": MODULE.digest(manifest_raw),
@@ -726,7 +1019,7 @@ with tempfile.TemporaryDirectory() as temporary:
             "allow_scoped_repair": True,
             "workflow": "task", "max_cycles": 2,
             "repair_authority_sha256": None,
-        }
+        }, bind_launch=False)
         parsed = MODULE._bound_self_verification_manifest(command, job)
         assert parsed is not None and parsed.checks[0].identifier == "required"
         binding = MODULE.self_verification_binding_sha256(command)
@@ -756,193 +1049,25 @@ with tempfile.TemporaryDirectory() as temporary:
         self_verification_manifest_is_private_and_bound_into_repair_authority,
     )
 
-    def state_v4_migrates_additively() -> None:
-        command = {
-            "workdir": str(root), "workflow": "legacy", "max_cycles": 1, "job_id": "legacy",
-            "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
-        }
-        state = MODULE.initial_state(command, "initial", 1, command_sha="0" * 64, command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None, state_schema=8)
-        state.update({"phase": None, "assurance": None})
-        state["schema_version"] = 4
-        for key in {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            state.pop(key, None)
-        migrated = MODULE.validate_state(state)
-        assert migrated["candidate_source"] == "none"
-        assert migrated["driver_disposition"] == "not_applicable"
-        assert migrated["worktree_changes_present"] is None
 
-    check("v4 state reads as additive current state", state_v4_migrates_additively)
 
-    def v1_v3_v4_remain_read_compatible() -> None:
-        command = {
-            "workdir": str(root), "workflow": "legacy", "max_cycles": 1, "job_id": "legacy-read",
-            "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
-        }
-        original = MODULE.initial_state(
-            command, "initial", 1, command_sha="0" * 64,
-            command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
-            state_schema=8,
-        )
-        original.update({"phase": None, "assurance": None})
-        v3 = copy.deepcopy(original); v3["schema_version"] = 3
-        for key in {"provider_retry_after_seconds", "provider_retry_observed_epoch", *MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            v3.pop(key, None)
-        validated_v3 = MODULE.validate_state(v3)
-        assert validated_v3["schema_version"] == 3
-        assert validated_v3["phase"] is None and validated_v3["assurance"] is None
-        v1 = copy.deepcopy(v3); v1["schema_version"] = 1
-        for key in MODULE.STATE_PROJECT_FIELDS:
-            v1.pop(key)
-        validated_v1 = MODULE.validate_state(v1)
-        assert validated_v1["schema_version"] == 1
-        assert validated_v1["phase"] is None and validated_v1["assurance"] is None
 
-    check("v1 v3 and v4 state snapshots remain read compatible", v1_v3_v4_remain_read_compatible)
 
-    def v3_v4_last_success_is_unknown_bound_result_only() -> None:
-        """A historical result remains readable, but never becomes a candidate."""
-        def fixture(label: str) -> tuple[Path, Path, Path]:
-            source_repo = root / f"legacy-prior-{label}-source"; source_repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(source_repo)], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "config", "user.email", "fixture@example.invalid"], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "config", "user.name", "Fixture"], check=True)
-            (source_repo / "base.txt").write_text("base\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(source_repo), "add", "base.txt"], check=True)
-            subprocess.run(["git", "-C", str(source_repo), "commit", "-qm", "base"], check=True)
-            worktree = root / f"legacy-prior-{label}-worktree"
-            subprocess.run(["git", "-C", str(source_repo), "worktree", "add", "-q", "-b", f"legacy-prior-{label}", str(worktree)], check=True)
-            worktree = worktree.resolve()
-            job = root / f"legacy-prior-{label}-job"; job.mkdir(mode=0o700); job = job.resolve()
-            bound_provider = root / f"legacy-prior-{label}-provider.json"; provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"legacy-prior-{label}",
-                "workdir": str(worktree), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
-                "agy_version": "1.1.16", "agy_version_observed": True,
-                "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
-                "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
-                "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
-            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
-            state, _sha = MODULE.create_state(job, "initial", resume=False)
-            artifact = job / "historical-result.json"
-            payload = json.dumps(report(summary=f"legacy-{label}"), indent=2).encode("utf-8") + b"\n"
-            artifact.write_bytes(payload); artifact.chmod(0o600)
-            _raw, info = MODULE.read_regular(artifact, 1024 * 1024, "legacy result")
-            state.update({
-                "schema_version": 4, "status": "succeeded", "finished_epoch": 1.0, "exit_code": 0,
-                "result_path": None, "result_sha256": None, "result_identity": None,
-                "last_success_path": str(artifact), "last_success_sha256": MODULE.digest(payload),
-                "last_success_identity": list(MODULE._identity(info)),
-                "phase": "awaiting-verification", "assurance": "pending", "resume_available": False,
-            })
-            for key in {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-                state.pop(key)
-            MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-            return job, worktree, artifact
 
-        job, _worktree, _artifact = fixture("valid")
-        state, _raw, sha = MODULE.load_state(job)
-        assert not state["candidate_recognized"] and state["candidate_source"] == "none"
-        public = MODULE.public_status(state, sha, job=job)
-        assert public["legacy_result_provenance"] == "unknown_bound_legacy"
-        assert public["driver_disposition"] == "not_applicable" and public["next_action"] == "result"
-        assert public["candidate_sha256"] is None and public["result_available"] is False
-        # V3/V4 historical evidence remains readable, but its missing V9 root
-        # identity cannot authorize a fresh provider attempt.
-        assert {item["action"] for item in public["available_actions"]} == {"result"}
-
-        captured = io.BytesIO()
-        original_stdout = MODULE.sys.stdout
-
-        class _Stdout:
-            buffer = captured
-
-        MODULE.sys.stdout = _Stdout()
-        try:
-            MODULE.print_text_status(state, sha, job=job)
-        finally:
-            MODULE.sys.stdout = original_stdout
-        assert captured.getvalue().decode("utf-8").splitlines() == [
-            "Provider attempt: succeeded; reason: none; failure stage: none; bound result available: no; driver disposition: not_applicable.",
-            "Driver evidence: 0 passed, 0 failed, 0 advisory, 0 missing; cycle: 1/2.",
-            'Next safe action: retrieve historical result evidence only with "$PIPELINE/agy-worker.sh" result --job-id legacy-prior-valid --format json; do not use it for Verification v2, continue, or finalize.',
-        ]
-        historical_verification = {
-            "schema_version": 2, "summary": "driver must not promote history", "passed_checks": [],
-            "failed_checks": ["historical-only"], "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": state["last_success_sha256"], "coverage": "partial",
-            "verified_findings": 0, "unresolved_gaps": 1, "diff_review_complete": True,
-        }
-        assert MODULE._validate_verification(historical_verification) == historical_verification
-        try:
-            MODULE._require_current_candidate_verification(historical_verification, state)
-        except MODULE.DispatchError:
-            pass
-        else:
-            raise AssertionError("a historical last-success digest became Verification v2 input")
-
-        # An active V3/V4 attempt can still carry the historical pointer, but
-        # status/wait/cancel/extend must never reopen it.  A slow or failing
-        # legacy binder is terminal-result work and cannot delay active control.
-        active = dict(state)
-        active.update({
-            "status": "running", "controller_pid": 123, "finished_epoch": None,
-            "exit_code": None, "started_epoch": time.time(), "phase": "repairing",
-            "elapsed_seconds": 1.0, "attempt_base_elapsed": 1.0,
-        })
-        binder_calls = 0
-        original_legacy_binder = MODULE._legacy_result_action_is_bound
-        def slow_failing_legacy_binder(_job, _state):
-            nonlocal binder_calls
-            binder_calls += 1
-            time.sleep(0.3)
-            raise AssertionError("active status invoked the legacy result binder")
-        MODULE._legacy_result_action_is_bound = slow_failing_legacy_binder
-        started = time.monotonic()
-        try:
-            active_public = MODULE.public_status(active, sha, job=job)
-        finally:
-            MODULE._legacy_result_action_is_bound = original_legacy_binder
-        assert time.monotonic() - started < 0.15
-        assert binder_calls == 0
-        assert [item["action"] for item in active_public["available_actions"]] == ["wait", "cancel"]
-        assert_symbolic_action_commands(active_public["available_actions"], {"wait", "cancel"})
-
-        delivered = subprocess.run([sys.executable, str(SOURCE), "result", "--job-dir", str(job)], check=True, stdout=subprocess.PIPE)
-        assert json.loads(delivered.stdout)["summary"] == "legacy-valid"
-        for label, mutation in (("missing", "missing"), ("tampered", "tampered"), ("boundary", "boundary")):
-            bad_job, bad_worktree, artifact = fixture(label)
-            if mutation == "missing":
-                artifact.unlink()
-            elif mutation == "tampered":
-                artifact.write_bytes(b"{}\n"); artifact.chmod(0o600)
-            else:
-                marker = bad_worktree / ".git"
-                marker.write_text("gitdir: /nonexistent\n", encoding="utf-8")
-            bad_state, _bad_raw, bad_sha = MODULE.load_state(bad_job)
-            bad_public = MODULE.public_status(bad_state, bad_sha, job=bad_job)
-            assert "result" not in {
-                item["action"] for item in bad_public["available_actions"]
-            }
-            rejected = subprocess.run(
-                [sys.executable, str(SOURCE), "result", "--job-dir", str(bad_job)],
-                check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            assert rejected.returncode == MODULE.EXIT_BY_REASON["status_unavailable"] and not rejected.stdout
-
-    check("v3/v4 last_success stays unknown, reads only with bindings, and fails closed on drift", v3_v4_last_success_is_unknown_bound_result_only)
 
     def new_current_legacy_attempts_have_nonrepair_lifecycle() -> None:
-        command = {
-            "workdir": str(root), "workflow": "legacy", "max_cycles": 1,
+        repo = root / "legacy-lifecycle-repo"; repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        command = current_command_fixture({
+            "workdir": str(repo), "workflow": "legacy", "max_cycles": 1,
             "job_id": "legacy-lifecycle", "hard_seconds": 2,
             "max_seconds": 4, "idle_seconds": 1,
-        }
+        }, bind_launch=False)
         for origin in ("initial", "conversation-resume", "fresh-restart"):
             state = MODULE.initial_state(
                 command, origin, 2, command_sha="0" * 64,
                 command_identity=(1, 2, 3, 4, 5), stage_sha=None,
-                stage_identity=None, state_schema=8,
+                stage_identity=None,
             )
             validated = MODULE.validate_state(copy.deepcopy(state))
             assert validated["phase"] == "dispatching"
@@ -951,7 +1076,7 @@ with tempfile.TemporaryDirectory() as temporary:
         restarted = MODULE.initial_state(
             command, "fresh-restart", 2, command_sha="0" * 64,
             command_identity=(1, 2, 3, 4, 5), stage_sha=None,
-            stage_identity=None, state_schema=8,
+            stage_identity=None,
         )
         invalid = copy.deepcopy(restarted)
         invalid["phase"] = "repairing"
@@ -1015,7 +1140,7 @@ with tempfile.TemporaryDirectory() as temporary:
             label: str, workflow: str, *, internal_link: bool, outward_link: bool,
         ) -> tuple[Path, Path, Path, Path]:
             source = root / f"symlink-source-{label}"; source.mkdir()
-            subprocess.run(["git", "init", "-q", str(source)], check=True)
+            initialize_linked_fixture(source)
             subprocess.run(["git", "-C", str(source), "config", "user.email", "fixture@example.invalid"], check=True)
             subprocess.run(["git", "-C", str(source), "config", "user.name", "Fixture"], check=True)
             (source / "base.txt").write_text("base\n", encoding="utf-8")
@@ -1033,9 +1158,6 @@ with tempfile.TemporaryDirectory() as temporary:
             if internal_link:
                 target = repo / "inside.txt"; target.write_text("inside\n", encoding="utf-8")
                 (repo / "inside-link").symlink_to(target.name)
-            if outward_link:
-                outside = root / f"symlink-outside-{label}"; outside.write_text("outside\n", encoding="utf-8")
-                (repo / "escape").symlink_to(outside)
             job = root / f"symlink-job-{label}"; job.mkdir(mode=0o700)
             bin_dir = root / f"symlink-bin-{label}"; bin_dir.mkdir(mode=0o700)
             marker = root / f"symlink-provider-{label}"
@@ -1053,17 +1175,20 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o700)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"symlink-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"symlink-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": workflow,
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             if not outward_link or workflow != "project":
                 MODULE.create_state(job, "initial", resume=False)
+            if outward_link:
+                outside = root / f"symlink-outside-{label}"; outside.write_text("outside\n", encoding="utf-8")
+                (repo / "escape").symlink_to(outside)
             return job, bin_dir, repo, marker
 
         for workflow in ("explore", "task", "project"):
@@ -1257,12 +1382,12 @@ with tempfile.TemporaryDirectory() as temporary:
                 for process in processes
             )
 
-        original_limit = MODULE.MAX_STREAM_BYTES
-        MODULE.MAX_STREAM_BYTES = 1
+        original_limit = MODULE.WORKTREE.MAX_STREAM_BYTES
+        MODULE.WORKTREE.MAX_STREAM_BYTES = 1
         try:
             closed_after_failure(lambda: MODULE._worktree_snapshot(str(repo)))
         finally:
-            MODULE.MAX_STREAM_BYTES = original_limit
+            MODULE.WORKTREE.MAX_STREAM_BYTES = original_limit
         original_selector = MODULE.selectors.DefaultSelector
         class TimedOutSelector:
             def __init__(self): self.items = {}
@@ -1276,14 +1401,22 @@ with tempfile.TemporaryDirectory() as temporary:
             closed_after_failure(lambda: MODULE._worktree_snapshot(str(repo)))
         finally:
             MODULE.selectors.DefaultSelector = original_selector
-        source = WORKTREE_SOURCE.read_bytes()
-        start = source.index(b"def _worktree_snapshot")
-        end = source.index(b"\n\n_IMPLEMENTATION_FUNCTIONS", start)
-        body = source[start:end]
-        runner_start = source.index(b"def _bounded_git_read")
-        runner_end = source.index(b"\ndef _git_boundary_identity", runner_start)
-        runner = source[runner_start:runner_end]
-        assert b"_bounded_git_read(" in body
+        source = WORKTREE_SOURCE.read_text(encoding="utf-8")
+        snapshot_nodes = [
+            node for node in ast.parse(source).body
+            if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+            and (node.name == "_worktree_snapshot_raw"
+                 or node.name.startswith(("_snapshot_", "_Snapshot")))
+        ]
+        segments = [ast.get_source_segment(source, node) for node in snapshot_nodes]
+        assert segments and all(isinstance(segment, str) for segment in segments)
+        body = "\n".join(segments).encode("utf-8")
+        coordinator = worktree_function_source("_worktree_snapshot_raw").encode("utf-8")
+        runner = worktree_function_source("_bounded_git_read").encode("utf-8")
+        assert b"context = _SnapshotGitContext(" in coordinator
+        assert b"completed = _bounded_git_read(" in body
+        assert b"return self.read(" in body
+        assert b"_BoundGitReadArguments(arguments, git_dir_boundary)" in body
         assert b'"GIT_OPTIONAL_LOCKS": "0"' in runner
         assert b'"GIT_CONFIG_NOSYSTEM": "1"' in runner
         assert b'if key.startswith("GIT_")' in runner
@@ -1297,11 +1430,15 @@ with tempfile.TemporaryDirectory() as temporary:
         assert b'"status", "--porcelain' not in body
         assert b'"diff"' not in body and b'"hash-object"' not in body
         assert b'"--filters"' not in body and b'"--textconv"' not in body
-        assert b'git_read(["ls-files", "--stage", "-z"])' in body
-        assert b'git_read(["ls-files", "-z", "--others", "--exclude-standard"])' in body
-        assert b'git_read(["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])' in body
-        assert b'git_read(["cat-file", "--batch"]' in body
-        assert b'second != first' in body and b'index_binding(index_path) != before_index' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["ls-files", "--stage", "-z"])' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["ls-files", "-z", "--others", "--exclude-standard"])' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"])' in body
+        assert b'context.bound_read(git.git_dir_boundary, ["cat-file", "--batch"]' in body
+        assert b'first = _snapshot_listings(context, git,' in body
+        assert b'second = _snapshot_listings(context, git,' in coordinator
+        assert b'third = _snapshot_listings(context, git,' in coordinator
+        assert b'second != facts.first' in coordinator and b'third != facts.first' in coordinator
+        assert coordinator.count(b'_snapshot_index_binding(git.index_path) != git.before_index') == 4
         assert b"os.killpg(process.pid, signal.SIGKILL)" in runner and b"process.wait(" in runner
         assert b"payload_write" in runner and b"stream.close()" in runner
 
@@ -1511,9 +1648,9 @@ with tempfile.TemporaryDirectory() as temporary:
         )
         fake.chmod(0o700)
         prior_path = os.environ.get("PATH", "")
-        prior_limit = MODULE.MAX_STREAM_BYTES
+        prior_limit = MODULE.WORKTREE.MAX_STREAM_BYTES
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{prior_path}"
-        MODULE.MAX_STREAM_BYTES = 1024
+        MODULE.WORKTREE.MAX_STREAM_BYTES = 1024
         child = None
         try:
             safe_git = MODULE._safe_git_executable(); assert safe_git is not None
@@ -1536,7 +1673,7 @@ with tempfile.TemporaryDirectory() as temporary:
             else:
                 raise AssertionError("bounded Git stdout flooder remained alive")
         finally:
-            MODULE.MAX_STREAM_BYTES = prior_limit
+            MODULE.WORKTREE.MAX_STREAM_BYTES = prior_limit
             os.environ["PATH"] = prior_path
             if child is not None:
                 with contextlib.suppress(ProcessLookupError):
@@ -2004,12 +2141,12 @@ with tempfile.TemporaryDirectory() as temporary:
         repo = root / "bound-repo"; repo.mkdir()
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         bound_provider = root / "bound-provider.json"; provider_schema(bound_provider)
-        command = {
-            "schema_version": 10, "provider_isolation": "session",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
             "workdir": str(repo), "workflow": "task", "max_cycles": 1, "job_id": "bound",
             "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
             "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
-        }
+        }, bind_launch=False)
         bindings = MODULE._schema_bindings(command)
         state = MODULE.initial_state(
             command, "initial", 1, command_sha="0" * 64,
@@ -2060,7 +2197,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def controller_binds_snapshot_before_provider_and_quiescent_candidate_after_termination() -> None:
         repo = root / "snapshot-order-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "snapshot-order-job"; job.mkdir(mode=0o700); job = job.resolve()
         bin_dir = root / "snapshot-order-bin"; bin_dir.mkdir()
         calls = root / "snapshot-order-provider-calls"
@@ -2080,21 +2217,21 @@ with tempfile.TemporaryDirectory() as temporary:
             encoding="utf-8",
         )
         fake.chmod(0o755)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "snapshot-order",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "snapshot-order",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
 
         observed = {"provider": 0, "terminated": False, "snapshot_after_terminate": []}
         original_popen = MODULE.subprocess.Popen
         original_terminate = MODULE._terminate
-        original_snapshot = MODULE._worktree_snapshot
+        original_snapshot = MODULE.WORKTREE._worktree_snapshot
 
         def inspect_popen(arguments, *args, **kwargs):
             if isinstance(arguments, list) and arguments and arguments[0] == "agy":
@@ -2115,13 +2252,13 @@ with tempfile.TemporaryDirectory() as temporary:
 
         MODULE.subprocess.Popen = inspect_popen
         MODULE._terminate = terminate_then_mutate
-        MODULE._worktree_snapshot = observe_snapshot
+        MODULE.WORKTREE._worktree_snapshot = observe_snapshot
         try:
             assert run_controller(job, bin_dir) == 0
         finally:
             MODULE.subprocess.Popen = original_popen
             MODULE._terminate = original_terminate
-            MODULE._worktree_snapshot = original_snapshot
+            MODULE.WORKTREE._worktree_snapshot = original_snapshot
         state, _raw, state_sha = MODULE.load_state(job)
         current = MODULE._worktree_snapshot(str(repo))
         assert observed["provider"] == 1 and observed["terminated"]
@@ -2160,7 +2297,7 @@ with tempfile.TemporaryDirectory() as temporary:
             ("cancelled", "CANCELLED", "provider_cancelled"),
         ):
             repo = root / f"terminal-missing-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"terminal-missing-{label}-job"; job.mkdir(mode=0o700); job = job.resolve()
             bin_dir = root / f"terminal-missing-{label}-bin"; bin_dir.mkdir()
             bound_provider = root / f"terminal-missing-{label}-provider.json"; provider_schema(bound_provider)
@@ -2176,27 +2313,27 @@ with tempfile.TemporaryDirectory() as temporary:
                 "#!/bin/sh\nprintf '%s\\n' " + " ".join(shlex.quote(json.dumps(item)) for item in events) + "\n",
                 encoding="utf-8",
             ); fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"terminal-missing-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"terminal-missing-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
-            original_snapshot = MODULE._worktree_snapshot
+            original_snapshot = MODULE.WORKTREE._worktree_snapshot
             snapshots = 0
             def drop_terminal_snapshot(workdir: str):
                 nonlocal snapshots
                 snapshots += 1
-                return original_snapshot(workdir) if snapshots == 1 else None
-            MODULE._worktree_snapshot = drop_terminal_snapshot
+                return original_snapshot(workdir) if snapshots == 1 else None  # noqa: B023 -- callback is invoked and restored within this loop iteration
+            MODULE.WORKTREE._worktree_snapshot = drop_terminal_snapshot
             try:
                 assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["status_unavailable"]
             finally:
-                MODULE._worktree_snapshot = original_snapshot
+                MODULE.WORKTREE._worktree_snapshot = original_snapshot
             state, _raw, sha = MODULE.load_state(job)
             assert snapshots == 2
             assert (state["status"], state["reason"], state["exit_code"], state["failure_stage"]) == (
@@ -2229,7 +2366,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def controller_preserves_outer_error_candidate() -> None:
         repo = root / "controller-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "controller-job"; job.mkdir(mode=0o700)
         bin_dir = root / "controller-bin"; bin_dir.mkdir()
         events = [
@@ -2247,14 +2384,14 @@ with tempfile.TemporaryDirectory() as temporary:
             encoding="utf-8",
         )
         fake.chmod(0o755)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "controller",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "controller",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 4, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         lock = job / MODULE.LOCK_NAME
@@ -2263,6 +2400,7 @@ with tempfile.TemporaryDirectory() as temporary:
         prior_path = os.environ.get("PATH", "")
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{prior_path}"
         try:
+            equip_provider_fixture(bin_dir)
             assert MODULE.controller(job, descriptor) == 25
             descriptor = -1
         finally:
@@ -2278,30 +2416,179 @@ with tempfile.TemporaryDirectory() as temporary:
 
     check("controller maps ERROR plus valid report to failed unreviewed exit 25", controller_preserves_outer_error_candidate)
 
+    def version_independent_terminal_policy_table() -> None:
+        absent = object()
+        timeout = b"[agy] print timeout after 20s with turn in progress; returning partial output"
+        # A parsed denial never outranks local binding/cancellation/output facts.
+        boundary_stream = root / "policy-boundary-stream"
+        boundary_stream.write_text(json.dumps({"event": "init", "init": {}}) + "\n" +
+            json.dumps({"event": "result", "result": {"status": "SUCCESS", "denied_actions": []}}) + "\n")
+        streams = MODULE._ControllerStreams(boundary_stream, root / "policy-stderr", root / "policy-envelope",
+            sizes={"stdout": boundary_stream.stat().st_size, "stderr": 0})
+        binding = MODULE._ControllerBinding(command={"workflow": "task", "max_seconds": 20,
+            "agy_version": "1.2.11", "agy_version_observed": True}, schema_paths=(provider, SCHEMA))
+        valid_binding = ("a" * 64, (1, 2, 3, 4, 5))
+        for prior, failure, expected in (
+            (None, "binding_failure", "status_unavailable"),
+            ("hard_deadline_exceeded", "binding_failure", "status_unavailable"),
+            (None, None, "permission_required"),
+            ("cancelled", None, "cancelled"), ("interrupted", None, "interrupted"),
+            ("output_oversized", None, "output_oversized"),
+            ("status_unavailable", None, "status_unavailable"),
+        ):
+            observed = MODULE._ControllerOutcome(reason=prior)
+            with mock.patch.object(MODULE.os, "fsync"), \
+                    mock.patch.object(MODULE, "_bound_schemas", return_value=binding.schema_paths), \
+                    mock.patch.object(MODULE, "_validate_terminal_envelope",
+                        return_value=(None if failure else valid_binding, "SUCCESS", failure)):
+                MODULE._observe_controller_terminal(binding, MODULE._ProviderExecution(), streams, MODULE._ScopedLaunch(), observed)
+            assert observed.reason == expected, (prior, failure, observed)
+            assert (observed.result_binding is not None) == (expected == "permission_required")
+        # label, denial payload, report kind, rc, stderr, framing, expected reason
+        cases = [
+            ("success", absent, "valid", 0, b"", "valid", None),
+            ("nonzero-success", absent, "valid", 7, b"", "valid", "agy_failed_unclassified"),
+            ("denied-list", [{"private": "never expose"}], "valid", 0, b"", "valid", "permission_required"),
+            ("denied-empty", [], "valid", 0, b"", "valid", "permission_required"),
+            ("denied-null", None, "valid", 0, b"", "valid", "permission_required"),
+            ("denied-scalar", 42, "valid", 7, b"", "valid", "permission_required"),
+            ("denied-object", {"unknown": True}, "valid", 0, b"", "valid", "permission_required"),
+            ("denied-missing", [], "missing", 0, b"", "valid", "permission_required"),
+            ("denied-invalid", [], "invalid", 0, b"", "valid", "permission_required"),
+            ("timeout", absent, "valid", 0, timeout, "valid", "provider_timeout"),
+            ("timeout-nonzero", absent, "valid", 7, timeout, "valid", "provider_timeout"),
+            ("timeout-empty", absent, "missing", 0, timeout, "empty", "provider_timeout"),
+            ("timeout-invalid", absent, "invalid", 0, timeout, "valid", "invalid_envelope"),
+            ("timeout-denied", [], "valid", 0, timeout, "valid", "permission_required"),
+            ("timeout-nearmiss", absent, "valid", 0, timeout + b".", "valid", None),
+            ("timeout-wrong-bound", absent, "valid", 0, timeout.replace(b"20s", b"21s"), "valid", None),
+            ("empty", absent, "missing", 0, b"", "empty", "empty_output"),
+            ("duplicate-key", [], "valid", 0, b"", "duplicate-key", "invalid_envelope"),
+            ("duplicate-terminal", [], "valid", 0, b"", "duplicate-terminal", "invalid_envelope"),
+            ("trailing", [], "valid", 0, b"", "trailing", "invalid_envelope"),
+            ("invalid-utf8", [], "valid", 0, b"", "invalid-utf8", "invalid_envelope"),
+            ("invalid-json", [], "valid", 0, b"", "invalid-json", "invalid_envelope"),
+            ("conversation-mismatch", [], "valid", 0, b"", "conversation-mismatch", "status_unavailable"),
+        ]
+        for label, denial, report_kind, provider_rc, stderr, framing, expected in cases:
+            repo = root / f"policy-{label}-repo"; repo.mkdir(); initialize_linked_fixture(repo)
+            job = root / f"policy-{label}-job"; job.mkdir(mode=0o700)
+            bin_dir = root / f"policy-{label}-bin"; bin_dir.mkdir()
+            terminal = {"conversation_id": "conversation-1", "status": "SUCCESS"}
+            if report_kind != "missing":
+                terminal["structured_output"] = report() if report_kind == "valid" else {"status": "invalid"}
+            if denial is not absent:
+                terminal["denied_actions"] = denial
+            if framing == "conversation-mismatch":
+                terminal["conversation_id"] = "conversation-other"
+            init = json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}).encode() + b"\n"
+            final = json.dumps({"event": "result", "result": terminal}).encode() + b"\n"
+            if framing == "duplicate-key":
+                final = final.replace(b'"status": "SUCCESS"', b'"status": "SUCCESS", "status": "SUCCESS"')
+            payload = init + final
+            if framing == "duplicate-terminal": payload += final
+            if framing == "trailing": payload += b'{"event":"step_update","step_update":{}}\n'
+            if framing == "invalid-utf8": payload = init + b'\xff\n' + final
+            if framing == "invalid-json": payload = init + b'{bad}\n' + final
+            if framing == "empty": payload = b""
+            fake = bin_dir / "agy"
+            fake.write_text("#!/usr/bin/env python3\nimport os\n" + f"os.write(1, {payload!r})\nos.write(2, {stderr!r})\nraise SystemExit({provider_rc})\n")
+            fake.chmod(0o700)
+            schema = root / f"policy-{label}-schema.json"; provider_schema(schema)
+            command = current_command_fixture({
+                "job_id": f"policy-{label}", "workdir": str(repo),
+                "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+                "agy_version": "1.1.26", "idle_seconds": 2, "hard_seconds": 3,
+                "max_seconds": 20,
+            })
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+            MODULE.create_state(job, "initial", resume=False)
+            expected_code = 0 if expected is None else MODULE.EXIT_BY_REASON[expected]
+            actual = run_controller(job, bin_dir)
+            state, _raw, sha = MODULE.load_state(job)
+            assert (actual, state["reason"]) == (expected_code, expected), (label, actual, state["reason"])
+            candidate = report_kind == "valid" and framing == "valid"
+            assert state["candidate_recognized"] == state["result_available"] == candidate, label
+            if candidate:
+                _command, raw = MODULE._bound_current_candidate(job, state)
+                assert json.loads(raw)["summary"] == report()["summary"]
+                assert state["driver_disposition"] == "unreviewed"
+            if expected == "permission_required":
+                assert not state["resume_available"] and not state["continue_available"]
+                actions = {x["action"] for x in MODULE.public_status(state, sha, job=job)["available_actions"]}
+                assert not {"resume", "continue"} & actions
+                assert "never expose" not in json.dumps(state)
+
+        for denial in (False, True):
+            label = "denied" if denial else "ordinary"
+            repo = root / f"collision-{label}-repo"; repo.mkdir(); initialize_linked_fixture(repo)
+            job = root / f"collision-{label}-job"; job.mkdir(mode=0o700)
+            bin_dir = root / f"collision-{label}-bin"; bin_dir.mkdir()
+            terminal = {"conversation_id": "conversation-1", "status": "SUCCESS", "structured_output": report()}
+            if denial: terminal["denied_actions"] = []
+            payload = b"".join(json.dumps(event).encode() + b"\n" for event in (
+                {"event": "init", "init": {}, "conversation_id": "conversation-1"},
+                {"event": "result", "result": terminal},
+            ))
+            fake = bin_dir / "agy"
+            fake.write_text("#!/usr/bin/env python3\nimport os, time\n" + f"os.write(1, {payload!r})\ntime.sleep(60)\n")
+            fake.chmod(0o700)
+            schema = root / f"collision-{label}-schema.json"; provider_schema(schema)
+            command = current_command_fixture({"job_id": f"collision-{label}", "workdir": str(repo),
+                "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+                "agy_version": "1.2.11", "idle_seconds": 1, "hard_seconds": 1, "max_seconds": 20})
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command); MODULE.create_state(job, "initial", resume=False)
+            assert run_controller(job, bin_dir) == (6 if denial else 16)
+            state, _raw, sha = MODULE.load_state(job)
+            assert state["reason"] == ("permission_required" if denial else "hard_deadline_exceeded")
+            assert state["limit_kind"] == "hard" and state["elapsed_seconds"] >= 1
+            assert state["candidate_recognized"] and state["result_available"]
+            if denial:
+                verification = {"schema_version": 2, "summary": "driver review", "passed_checks": [],
+                    "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
+                    "candidate_sha256": state["result_sha256"], "coverage": "partial",
+                    "verified_findings": 0, "unresolved_gaps": 1, "diff_review_complete": True}
+                for origin in ("conversation-resume", "conversation-continue"):
+                    with mock.patch.object(MODULE, "_verification_from_stdin", return_value=verification):
+                        try:
+                            if origin == "conversation-continue":
+                                MODULE.command_continue(job, sha)
+                            else:
+                                MODULE.spawn(job, origin, resume=True, foreground=False, approve_sha=sha)
+                        except MODULE.DispatchError:
+                            pass
+                        else:
+                            raise AssertionError("denied conversation was reused")
+                reloaded, _raw, _sha = MODULE.load_state(job)
+                assert reloaded["reason"] == "permission_required"
+                assert not reloaded["resume_available"] and not reloaded["continue_available"]
+
+    check("version independent terminal policy and denial deadline collision preserve candidate and block reuse", version_independent_terminal_policy_table)
+
     def reviewed_denial_signal_preserves_candidate_without_reuse() -> None:
         cases = [
             ("denial", "1.1.27", True, True, "failed", "permission_required", 6),
             ("ordinary", "1.1.27", False, True, "succeeded", None, 0),
             ("denial-1-2-2", "1.2.2", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-2", "1.2.2", False, True, "succeeded", None, 0),
-            ("denial-1-2-6", "1.2.6", True, True, "succeeded", None, 0),
+            ("denial-1-2-6", "1.2.6", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-6", "1.2.6", False, True, "succeeded", None, 0),
             ("denial-1-2-11", "1.2.11", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-11", "1.2.11", False, True, "succeeded", None, 0),
-            ("live-invalid-1-2-11", "1.2.11", True, False, "failed", "invalid_envelope", 4),
-            ("unreviewed-intermediate", "1.2.1", True, True, "succeeded", None, 0),
-            ("prior-version", "1.1.26", True, True, "succeeded", None, 0),
+            ("live-invalid-1-2-11", "1.2.11", True, False, "failed", "permission_required", 6),
+            ("unreviewed-intermediate", "arbitrary-build", True, True, "failed", "permission_required", 6),
+            ("prior-version", "1.1.26", True, True, "failed", "permission_required", 6),
             # The live 1.2.2 denial emitted this top-level key but no structured
             # report.  Presence cannot manufacture a candidate or supersede the
             # envelope validator's missing-structured-output classification.
-            ("live-invalid-1-2-2", "1.2.2", True, False, "failed", "invalid_envelope", 4),
+            ("live-invalid-1-2-2", "1.2.2", True, False, "failed", "permission_required", 6),
         ]
         for (
             label, version, include_denial, valid_candidate,
             expected_status, expected_reason, expected_exit,
         ) in cases:
             repo = root / f"denied-actions-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"denied-actions-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"denied-actions-{label}-bin"; bin_dir.mkdir()
             terminal = {
@@ -2328,14 +2615,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 ) + "\n",
                 encoding="utf-8",
             ); fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"denied-actions-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"denied-actions-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             actual_exit = run_controller(job, bin_dir)
@@ -2353,7 +2640,7 @@ with tempfile.TemporaryDirectory() as temporary:
             assert state["failure_stage"] == (
                 None if valid_candidate else "missing_structured_output"
             )
-            if valid_candidate and include_denial and version in {"1.1.27", "1.2.2", "1.2.11"}:
+            if include_denial:
                 assert not state["resume_available"] and not state["continue_available"]
                 public = MODULE.public_status(state, sha, job=job)
                 actions = {item["action"] for item in public["available_actions"]}
@@ -2375,7 +2662,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Denied actions with 2 items fails closed:
             ("two-denied-actions", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
@@ -2384,123 +2671,123 @@ with tempfile.TemporaryDirectory() as temporary:
                     {"action": "command", "display_name": "RunCommand"},
                     {"action": "edit", "display_name": "EditFile"},
                 ],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Huge integer duration does not raise OverflowError:
             ("huge-int-duration", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 10**400, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Provider exit code 3 on refusal fails closed to invalid_envelope:
             ("refusal-exit-3", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 3, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 3, "success"),
             # Negative: extra unexpected key in result fails closed
             ("extra-key", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
                 "unrecognized_field": True,
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: non-empty response
             ("nonempty-response", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "denied",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: status is not SUCCESS
             ("error-status", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "ERROR", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "error"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "error"),
             # Negative: empty denied_actions list
             ("empty-denied-actions", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: non-list denied_actions
             ("non-list-denied", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": "not-a-list",
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: malformed denied_actions entry (missing display_name)
             ("malformed-denied-entry", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: multiline string in denied_actions action
             ("multiline-denied-action", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command\nmalicious", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: negative duration
             ("negative-duration", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": -1.0, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: non-integer turns
             ("non-int-turns", "1.2.6", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.0, "num_turns": "1", "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Negative: unobserved version does not trigger 1.2.6 refusal handling
             ("unobserved-version", "1.2.6", False, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Preserve 1.2.2 fail-closed missing_structured_output behavior on refusal shape
             ("preserve-1-2-2", "1.2.2", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # Exact live 1.2.7 refusal canary:
             ("exact-refusal-1-2-7", "1.2.7", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             ("exact-refusal-1-2-11-command", "1.2.11", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             ("exact-refusal-1-2-11-mcp", "1.2.11", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "mcp", "display_name": "CallMcpTool"}],
-            }, "failed", "permission_required", 6, False, None, 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # 1.2.7 unobserved version fails closed:
             ("unobserved-version-1-2-7", "1.2.7", False, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             # 1.2.7 provider exit code 3 on refusal fails closed to invalid_envelope:
             ("refusal-exit-3-1-2-7", "1.2.7", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 3, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 3, "success"),
             # Future 1.2.8 version fails closed:
             ("future-1-2-8", "1.2.8", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
                 "usage": {}, "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }, "failed", "invalid_envelope", 4, False, "missing_structured_output", 0, "success"),
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
         ]
         for (
             label, version, version_observed, terminal,
@@ -2509,7 +2796,7 @@ with tempfile.TemporaryDirectory() as temporary:
             expected_terminal_status,
         ) in cases:
             repo = root / f"refusal-canary-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"refusal-canary-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"refusal-canary-{label}-bin"; bin_dir.mkdir()
             events = [
@@ -2526,14 +2813,14 @@ with tempfile.TemporaryDirectory() as temporary:
             ); fake.chmod(0o755)
             bound_provider = root / f"refusal-canary-{label}-provider.json"
             provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"refusal-canary-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"refusal-canary-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": version_observed,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             actual_exit = run_controller(job, bin_dir)
@@ -2554,35 +2841,6 @@ with tempfile.TemporaryDirectory() as temporary:
                 assert status_payload["next_action"] == "restart"
                 actions = [item["action"] for item in status_payload["available_actions"]]
                 assert actions == ["restart"]
-
-        fake_stream = root / "refusal-126-stream.ndjson"
-        fake_stream.write_text(
-            json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}) + "\n"
-            + json.dumps({"event": "result", "result": {
-                "conversation_id": "conversation-1", "denied_actions": [],
-            }}) + "\n",
-            encoding="utf-8",
-        )
-        assert MODULE._has_reviewed_denied_actions(fake_stream, "1.2.7") is False
-        assert MODULE._has_reviewed_denied_actions(fake_stream, "1.2.6") is False
-        assert MODULE._has_reviewed_denied_actions(fake_stream, "1.2.2") is True
-
-        refusal_127_stream = root / "refusal-127-stream.ndjson"
-        refusal_127_stream.write_text(
-            json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}) + "\n"
-            + json.dumps({"event": "result", "result": {
-                "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
-                "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
-                "usage": {"prompt_tokens": 50},
-                "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
-            }}) + "\n",
-            encoding="utf-8",
-        )
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.7") is True
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.6") is True
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.11") is True
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.8") is False
-        assert MODULE._has_reviewed_terminal_refusal(refusal_127_stream, "1.2.2") is False
 
     check(
         "exact 1.2.6 refusal canary yields permission_required without candidate and fails unknown shapes closed",
@@ -2707,9 +2965,9 @@ with tempfile.TemporaryDirectory() as temporary:
         assert MODULE._classify_stderr(fake_stderr, "1.2.6", returncode=2) == "agy_failed_unclassified"
         assert MODULE._classify_stderr(fake_stderr, "1.2.7", returncode=2) == "agy_failed_unclassified"
         # Wrong version remains unclassified
-        assert MODULE._classify_stderr(fake_stderr, "1.2.2", returncode=3) == "agy_failed_unclassified"
-        assert MODULE._classify_stderr(fake_stderr, "1.2.8", returncode=3) == "agy_failed_unclassified"
-        assert MODULE._classify_stderr(fake_stderr, "", returncode=3) == "agy_failed_unclassified"
+        assert MODULE._classify_stderr(fake_stderr, "1.2.2", returncode=3) == "provider_terminal_error"
+        assert MODULE._classify_stderr(fake_stderr, "1.2.8", returncode=3) == "provider_terminal_error"
+        assert MODULE._classify_stderr(fake_stderr, "", returncode=3) == "provider_terminal_error"
 
         # Stderr syntax negatives:
         raw_json_stderr = root / "raw-json-stderr.txt"
@@ -2830,7 +3088,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
         # 7. Controller integration dispatch test
         ctrl_repo = root / "ctrl-agy-error-repo"; ctrl_repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(ctrl_repo)], check=True)
+        initialize_linked_fixture(ctrl_repo)
         ctrl_job = root / "ctrl-agy-error-job"; ctrl_job.mkdir(mode=0o700)
         ctrl_bin = root / "ctrl-agy-error-bin"; ctrl_bin.mkdir()
         fake_agy = ctrl_bin / "agy"
@@ -2842,14 +3100,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake_agy.chmod(0o755)
         bound_provider = root / "ctrl-agy-error-provider.json"
         provider_schema(bound_provider)
-        cmd = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error",
+        cmd = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error",
             "workdir": str(ctrl_repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.6", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(ctrl_job, MODULE.COMMAND_NAME, cmd)
         MODULE.create_state(ctrl_job, "initial", resume=False)
         c_exit = run_controller(ctrl_job, ctrl_bin)
@@ -2867,7 +3125,7 @@ with tempfile.TemporaryDirectory() as temporary:
         assert "resume" not in pub_actions and "continue" not in pub_actions and "result" not in pub_actions
 
         ctrl_repo_127 = root / "ctrl-agy-error-127-repo"; ctrl_repo_127.mkdir()
-        subprocess.run(["git", "init", "-q", str(ctrl_repo_127)], check=True)
+        initialize_linked_fixture(ctrl_repo_127)
         ctrl_job_127 = root / "ctrl-agy-error-127-job"; ctrl_job_127.mkdir(mode=0o700)
         ctrl_bin_127 = root / "ctrl-agy-error-127-bin"; ctrl_bin_127.mkdir()
         fake_agy_127 = ctrl_bin_127 / "agy"
@@ -2879,14 +3137,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake_agy_127.chmod(0o755)
         bound_provider_127 = root / "ctrl-agy-error-127-provider.json"
         provider_schema(bound_provider_127)
-        cmd_127 = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error-127",
+        cmd_127 = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "ctrl-agy-error-127",
             "workdir": str(ctrl_repo_127), "argv": ["agy", "--json-schema", str(bound_provider_127), "--print", "task"],
             "agy_version": "1.2.7", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(ctrl_job_127, MODULE.COMMAND_NAME, cmd_127)
         MODULE.create_state(ctrl_job_127, "initial", resume=False)
         c_exit_127 = run_controller(ctrl_job_127, ctrl_bin_127)
@@ -2930,9 +3188,9 @@ with tempfile.TemporaryDirectory() as temporary:
             b"[agy] print timeout after 7200s with turn in progress; returning partial output",
             b"[agy] print timeout after 2h0m0s with turn in progress; returning partial output",
         }
-        assert MODULE._reviewed_provider_timeout_lines("1.2.1", 20) == set()
-        assert MODULE._reviewed_provider_timeout_lines("1.2.8", 20) == set()
-        assert MODULE._reviewed_provider_timeout_lines("1.2.11", 20) == set()
+        assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
+        assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
+        assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
         timeout_line = next(iter(MODULE._reviewed_provider_timeout_lines("1.2.2", 20)))
 
         cases = [
@@ -2940,15 +3198,15 @@ with tempfile.TemporaryDirectory() as temporary:
             ("exact-1-2-6", "1.2.6", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("exact-1-2-7", "1.2.7", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("normal-1-2-11", "1.2.11", True, False, b"", report(summary="complete"), None, 0, True),
-            ("partial-1-2-11", "1.2.11", True, False, timeout_line, report(summary="partial"), None, 0, True),
+            ("partial-1-2-11", "1.2.11", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("empty-1-2-11", "1.2.11", True, False, b"", None, "invalid_envelope", 4, False),
             ("near-miss-1-2-7", "1.2.7", True, False, timeout_line + b".", report(summary="complete"), None, 0, True),
-            ("unobserved-version-1-2-7", "1.2.7", False, False, timeout_line, report(summary="complete"), None, 0, True),
+            ("unobserved-version-1-2-7", "1.2.7", False, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
             ("invalid-envelope-1-2-7", "1.2.7", True, False, timeout_line, None, "invalid_envelope", 4, False),
             ("timeout-and-denial", "1.2.2", True, True, timeout_line, report(summary="denied-partial"), "permission_required", 6, True),
             ("near-miss", "1.2.2", True, False, timeout_line + b".", report(summary="complete"), None, 0, True),
-            ("unreviewed-version", "1.2.1", True, False, timeout_line, report(summary="complete"), None, 0, True),
-            ("unobserved-version", "1.2.2", False, False, timeout_line, report(summary="complete"), None, 0, True),
+            ("unreviewed-version", "1.2.1", True, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
+            ("unobserved-version", "1.2.2", False, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
             ("invalid-envelope", "1.2.2", True, False, timeout_line, None, "invalid_envelope", 4, False),
         ]
         for (
@@ -2956,7 +3214,7 @@ with tempfile.TemporaryDirectory() as temporary:
             expected_reason, expected_exit, expected_candidate,
         ) in cases:
             repo = root / f"partial-timeout-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"partial-timeout-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"partial-timeout-{label}-bin"; bin_dir.mkdir()
             terminal = {
@@ -2984,14 +3242,14 @@ with tempfile.TemporaryDirectory() as temporary:
             ); fake.chmod(0o755)
             bound_provider = root / f"partial-timeout-{label}-provider.json"
             provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"partial-timeout-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"partial-timeout-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": version_observed,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             actual_exit = run_controller(job, bin_dir)
@@ -3027,7 +3285,7 @@ with tempfile.TemporaryDirectory() as temporary:
         # its process-group deadline, reap that descendant, and then retain the
         # already-bound partial candidate under the provider timeout signal.
         repo = root / "partial-timeout-descendant-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "partial-timeout-descendant-job"; job.mkdir(mode=0o700)
         bin_dir = root / "partial-timeout-descendant-bin"; bin_dir.mkdir()
         child_record = root / "partial-timeout-descendant-child"
@@ -3059,14 +3317,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake.chmod(0o755)
         bound_provider = root / "partial-timeout-descendant-provider.json"
         provider_schema(bound_provider)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-descendant",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-descendant",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.2", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 4, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         actual_exit = run_controller(job, bin_dir)
@@ -3098,7 +3356,7 @@ with tempfile.TemporaryDirectory() as temporary:
             ("idle-live-no-marker", False),
         ):
             repo = root / f"{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"{label}-bin"; bin_dir.mkdir()
             child_record = root / f"{label}-child"
@@ -3127,14 +3385,14 @@ with tempfile.TemporaryDirectory() as temporary:
             fake.write_text(program, encoding="utf-8"); fake.chmod(0o755)
             bound_provider = root / f"{label}-provider.json"
             provider_schema(bound_provider)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": label,
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": label,
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": "1.2.2", "agy_version_observed": True,
                 "idle_seconds": 1, "hard_seconds": 4, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["idle_timeout"]
@@ -3159,7 +3417,7 @@ with tempfile.TemporaryDirectory() as temporary:
         # Marker-driven recovery after an idle timeout still obeys denial
         # precedence and cannot make the retained conversation reusable.
         repo = root / "partial-timeout-denied-descendant-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "partial-timeout-denied-descendant-job"; job.mkdir(mode=0o700)
         bin_dir = root / "partial-timeout-denied-descendant-bin"; bin_dir.mkdir()
         denied_events = [
@@ -3188,15 +3446,15 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake.chmod(0o755)
         bound_provider = root / "partial-timeout-denied-descendant-provider.json"
         provider_schema(bound_provider)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command",
             "job_id": "partial-timeout-denied-descendant", "workdir": str(repo),
             "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.2", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 4, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["permission_required"]
@@ -3212,7 +3470,7 @@ with tempfile.TemporaryDirectory() as temporary:
         # This also tests 1.2.11 timeout handling without claiming that its
         # unobserved print-timeout warning matches an older release.
         repo = root / "partial-timeout-hard-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        initialize_linked_fixture(repo)
         job = root / "partial-timeout-hard-job"; job.mkdir(mode=0o700)
         bin_dir = root / "partial-timeout-hard-bin"; bin_dir.mkdir()
         fake = bin_dir / "agy"
@@ -3226,14 +3484,14 @@ with tempfile.TemporaryDirectory() as temporary:
         ); fake.chmod(0o755)
         bound_provider = root / "partial-timeout-hard-provider.json"
         provider_schema(bound_provider)
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-hard",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "partial-timeout-hard",
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
             "agy_version": "1.2.11", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 1, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
             "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
         assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["hard_deadline_exceeded"]
@@ -3258,7 +3516,7 @@ with tempfile.TemporaryDirectory() as temporary:
         ]
         for label, outer_status, candidate, expected_exit, status, reason, source_name, stage_name, terminal_status in cases:
             repo = root / f"{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = root / f"{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"{label}-bin"; bin_dir.mkdir()
             events = [
@@ -3276,14 +3534,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": label,
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": label,
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 4, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             assert run_controller(job, bin_dir) == expected_exit
@@ -3352,14 +3610,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"repair-{suffix}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"repair-{suffix}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
                 "agy_version": "1.2.11", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
                 "max_cycles": 3, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             assert run_controller(job, bin_dir) == 0
@@ -3439,14 +3697,14 @@ with tempfile.TemporaryDirectory() as temporary:
                 encoding="utf-8",
             )
             fake.chmod(0o755)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"projection-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"projection-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
                 "max_cycles": 3, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             return job, bin_dir, bound_provider
@@ -3638,130 +3896,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     check("explore and task allow two cycles while project allows five and legacy one", lifecycle_cycle_ranges_match_workflow_contract)
 
-    def legacy_candidate_read_is_nonmutating_and_approved_finalize_upgrades_atomically() -> None:
-        repo = root / "legacy-upgrade-repo"; repo.mkdir()
-        subprocess.run(["git", "init", "-q", str(repo)], check=True)
-        job = root / "legacy-upgrade-job"; job.mkdir(mode=0o700); job = job.resolve()
-        command = {
-            "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": "legacy-upgrade",
-            "workdir": str(repo), "argv": ["agy", "--json-schema", str(provider), "--print", "task"],
-            "agy_version": "1.1.16", "agy_version_observed": True,
-            "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 10, "notice_seconds": 3,
-            "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
-            "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
-        command_raw, _command_sha = MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
-        _loaded, _raw, command_identity = MODULE.load_command(job)
-        state = MODULE.initial_state(
-            command, "initial", 1, command_sha=MODULE.digest(command_raw),
-            command_identity=command_identity, stage_sha=None, stage_identity=None,
-            schema_bindings=MODULE._schema_bindings(command),
-        )
-        result_path = job / "envelope.json"
-        candidate_raw = json.dumps(report(), ensure_ascii=True, indent=2).encode("ascii") + b"\n"
-        result_path.write_bytes(candidate_raw); result_path.chmod(0o600)
-        _bound, result_info = MODULE.read_regular(result_path, 1024 * 1024, "fixture")
-        state.update({
-            "status": "succeeded", "exit_code": 0, "finished_epoch": 1.0,
-            "conversation_id": "legacy-conversation", "result_path": str(result_path),
-            "result_sha256": MODULE.digest(candidate_raw), "result_identity": list(MODULE._identity(result_info)),
-            "phase": None, "assurance": None,
-        })
-        state["schema_version"] = 4
-        for key in {*MODULE.STATE_V5_FIELDS, *MODULE.STATE_V6_FIELDS, *MODULE.STATE_V8_FIELDS, *MODULE.STATE_V9_FIELDS, *MODULE.STATE_V10_FIELDS, *MODULE.STATE_V11_FIELDS, *MODULE.STATE_V12_FIELDS, *MODULE.STATE_V13_FIELDS, *MODULE.STATE_V14_FIELDS}:
-            state.pop(key)
-        old_raw, old_sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
-        loaded, _raw, read_sha = MODULE.read_state_snapshot(job)
-        assert read_sha == old_sha and loaded["candidate_recognized"]
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        # A V4 historical read may establish no new mutation authority.  It
-        # cannot persist an assurance claim or a V9 migration.
-        public = MODULE.public_status(loaded, read_sha, job=job)
-        assert public["assurance"] is None and public["driver_disposition"] == "unreviewed"
-        assert public["controller_phase"] == "awaiting-verification"
-        assert "result" in {item["action"] for item in public["available_actions"]}
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        delivered = subprocess.run(
-            [sys.executable, str(SOURCE), "result", "--job-dir", str(job)],
-            check=True, stdout=subprocess.PIPE,
-        )
-        assert json.loads(delivered.stdout)["summary"] == "candidate"
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
 
-        # The current V3/V4 candidate is eligible only through a second,
-        # no-write migration approval.  Status and command use the same exact
-        # digest; omitting it must leave the old bytes untouched.
-        migration_sha = public["migration_binding_sha256"]
-        assert isinstance(migration_sha, str) and len(migration_sha) == 64
-        action_commands = {item["action"]: item.get("command", "") for item in public["available_actions"]}
-        assert "finalize" in action_commands and migration_sha in action_commands["finalize"]
-        verification = {
-            "schema_version": 2, "summary": "driver verified", "passed_checks": ["fixture"],
-            "failed_checks": [], "advisory_checks": 0, "missing_checks": 0,
-            "candidate_sha256": loaded["result_sha256"], "coverage": "complete",
-            "verified_findings": 1, "unresolved_gaps": 0, "diff_review_complete": True,
-        }
-        missing = subprocess.run(
-            [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-             "--approve-state-sha", old_sha, "--assurance", "verified"],
-            input=json.dumps(verification).encode(), check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert missing.returncode == 64 and missing.stdout == b""
-        assert b"legacy migration approval" in missing.stderr
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-
-        # A same-path symlink substitution cannot reuse a status-time approval.
-        moved_repo = root / "legacy-upgrade-repo-moved"
-        repo.rename(moved_repo)
-        repo.symlink_to(moved_repo, target_is_directory=True)
-        try:
-            replaced = MODULE.public_status(loaded, read_sha, job=job)
-            assert replaced["migration_binding_sha256"] is None
-            assert "finalize" not in {item["action"] for item in replaced["available_actions"]}
-            assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        finally:
-            repo.unlink()
-            moved_repo.rename(repo)
-
-        # A semantic snapshot change makes the previously displayed digest stale
-        # and must roll back before a verification artifact or V9 state write.
-        drift = repo / "migration-drift.txt"
-        drift.write_text("drift\n", encoding="utf-8")
-        stale_approval = subprocess.run(
-            [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-             "--approve-state-sha", old_sha, "--approve-migration-sha", migration_sha,
-             "--assurance", "verified"],
-            input=json.dumps(verification).encode(), check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert stale_approval.returncode == 64 and stale_approval.stdout == b""
-        assert b"legacy migration approval is stale" in stale_approval.stderr
-        assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        drift.unlink()
-
-        # Schema drift invalidates the advertised approval before state write.
-        provider_raw = provider.read_bytes()
-        provider.write_bytes(b"{")
-        try:
-            stale = MODULE.public_status(loaded, read_sha, job=job)
-            assert "result" not in {item["action"] for item in stale["available_actions"]}
-            assert (job / MODULE.STATE_NAME).read_bytes() == old_raw
-        finally:
-            provider.write_bytes(provider_raw)
-        approved = subprocess.run(
-            [sys.executable, str(SOURCE), "finalize", "--job-dir", str(job),
-             "--approve-state-sha", old_sha, "--approve-migration-sha", migration_sha,
-             "--assurance", "verified"],
-            input=json.dumps(verification).encode(), check=False, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert approved.returncode == 0 and approved.stderr == b""
-        current, _current_raw, _current_sha = MODULE.read_state_snapshot(job)
-        assert current["schema_version"] == MODULE.CURRENT_STATE_SCHEMA
-        assert current["driver_disposition"] == "verified"
-
-    check("v4 current candidate needs an exact migration approval then upgrades atomically", legacy_candidate_read_is_nonmutating_and_approved_finalize_upgrades_atomically)
 
     def preflight_rejections_never_invoke_provider() -> None:
         job = root / "controller-job"
@@ -3911,26 +4046,25 @@ with tempfile.TemporaryDirectory() as temporary:
             "--disable-slash-commands": "Disable slash commands", "--json-schema": "Schema path",
             "--mode": "Execution mode (accept-edits, plan)", "--model": "Select a model",
             "--output-format": "Format (text, json, stream-json)", "--print": "Run a prompt",
-            "--print-timeout": "Print timeout", "--sandbox": "Sandboxed",
+            "--print-timeout": "Print timeout", "--sandbox": "Sandboxed", "--effort": "Caller effort",
         }
         good = "\n".join(f"  {key}  {value}" for key, value in options.items()).encode() + b"\n"
-        capability, help_digest = MODULE.MODEL_SELECTION.parse_critical_help(good)
-        assert len(capability) == len(help_digest) == 64
+        MODULE.MODEL_SELECTION.parse_critical_help(good)
         for missing in options:
             candidate = "\n".join(
                 f"  {key}  {value}" for key, value in options.items() if key != missing
             ).encode() + b"\n"
             try:
-                MODULE.MODEL_SELECTION.parse_critical_help(candidate)
+                MODULE.MODEL_SELECTION.parse_critical_help(
+                    candidate, provider_isolation="native", conversation=True, effort=True,
+                )
             except MODULE.MODEL_SELECTION.EvidenceUnavailable:
                 pass
             else:
                 raise AssertionError(f"missing {missing} was accepted")
         adversarial = (
             good.replace(b"(accept-edits, plan)", b"(accept-edits, no-plan)"),
-            good.replace(b"(accept-edits, plan)", b"(accept-edits, plan, unsupported)"),
             good.replace(b"(text, json, stream-json)", b"(text, json, stream-jsonish)"),
-            good.replace(b"(text, json, stream-json)", b"(text, json, stream-json, unsupported)"),
             good.replace(b"Execution mode (accept-edits, plan)", b"Execution mode supports accept-edits and plan"),
             good.replace(b"  --model  Select a model", b"  --model  Duplicate\n  --model  Select a model"),
             good.replace(b"  --model  Select a model", b" --model  Select a model"),
@@ -4030,43 +4164,31 @@ with tempfile.TemporaryDirectory() as temporary:
             return ("\n".join(f"  {key}  {value}" for key, value in rows.items()) + "\n").encode()
 
         good = help_bytes(options)
-        capabilities, help_sha = MODULE.MODEL_SELECTION.parse_critical_help(good, "1.2.11")
-        assert len(capabilities) == len(help_sha) == 64
-        # An unknown future version cannot inherit an unreviewed help contract.
-        MODULE.MODEL_SELECTION.parse_critical_help(
-            help_bytes({key: value for key, value in options.items() if key != "--effort"}),
-            "9.9.9",
-        )
+        MODULE.MODEL_SELECTION.parse_critical_help(good)
         for missing in options:
             try:
                 MODULE.MODEL_SELECTION.parse_critical_help(
-                    help_bytes({key: value for key, value in options.items() if key != missing}), "1.2.11",
+                    help_bytes({key: value for key, value in options.items() if key != missing}),
+                    provider_isolation="native", conversation=True, effort=True,
                 )
             except MODULE.MODEL_SELECTION.EvidenceUnavailable:
                 pass
             else:
                 raise AssertionError(f"1.2.11 help accepted missing {missing}")
-        for bad in ("(low|medium|high)", "(low|medium|high|max|unsafe)", "(low, medium, high, max)"):
-            try:
-                MODULE.MODEL_SELECTION.parse_critical_help(
-                    help_bytes({**options, "--effort": f"Reasoning effort {bad}"}), "1.2.11",
-                )
-            except MODULE.MODEL_SELECTION.EvidenceUnavailable:
-                pass
-            else:
-                raise AssertionError(f"1.2.11 help accepted {bad}")
+        # Effort domains remain caller-owned; only the option is required.
+        for detail in ("Reasoning effort (low|medium|high)", "Literal effort", "Effort (future)"):
+            MODULE.MODEL_SELECTION.parse_critical_help(help_bytes({**options, "--effort": detail}))
 
         record = {
-            "schema_version": 3, "selection_mode": "exact-model", "probed_executable": {},
-            "installed_agy_version": "1.2.11", "critical_capabilities_sha256": capabilities,
-            "help_sha256": help_sha,
+            "schema_version": MODULE.MODEL_SELECTION.SELECTION_SCHEMA, "selection_mode": "exact-model", "probed_executable": {},
+            "installed_agy_version": "arbitrary-build",
         }
         binding = {"current": True}
-        observed: list[tuple[str, str | None]] = []
+        observed: list[str] = []
 
-        def probe(executable: str, version: str | None = None) -> tuple[str, str]:
-            observed.append((executable, version))
-            return MODULE.MODEL_SELECTION.parse_critical_help(good, version)
+        def probe(executable: str, **context) -> None:
+            observed.append(executable)
+            MODULE.MODEL_SELECTION.parse_critical_help(good, **context)
 
         with contextlib.ExitStack() as stack:
             selection = MODULE.MODEL_SELECTION
@@ -4078,98 +4200,152 @@ with tempfile.TemporaryDirectory() as temporary:
             stack.enter_context(mock.patch.object(selection, "frozen_executable_binding_matches", return_value=True))
             stack.enter_context(mock.patch.object(selection, "executable_bindings_match", return_value=True))
             assert selection.reprobe_selection_record(record) == ("/safe/agy", binding)
-        assert observed == [("/safe/agy", "1.2.11")]
+        assert observed == ["/safe/agy"]
+        diagnostic_path = root / "capability-diagnostic.stderr"
+        descriptor = os.open(diagnostic_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            streams = MODULE._ControllerStreams(root / "unused-stream", diagnostic_path, root / "unused-envelope", stderr_fd=descriptor)
+            for flag in MODULE.MODEL_SELECTION.KNOWN_AGY_CAPABILITIES:
+                failure = MODULE.SelectionPreflightError("private cause must not be exposed")
+                failure.__cause__ = MODULE.MODEL_SELECTION.MissingCapabilities((flag,))
+                outcome = MODULE._ControllerOutcome()
+                with mock.patch.object(MODULE, "_reprobe_direct_selection", side_effect=failure):
+                    MODULE._launch_controller_provider(root, MODULE._ControllerBinding(), MODULE._ProviderExecution(), streams, MODULE._ScopedLaunch(), outcome)
+                assert outcome.reason == "selection_preflight_failed"
+        finally:
+            os.close(descriptor)
+        diagnostic = diagnostic_path.read_text()
+        assert "private cause" not in diagnostic
+        for flag in MODULE.MODEL_SELECTION.KNOWN_AGY_CAPABILITIES:
+            assert "agy missing required capabilities: " + flag + "\n" in diagnostic
 
     check("exact 1.2.11 help and launch reprobe retain required options", exact_1_2_11_help_and_launch_reprobe_agree)
 
-    def v3_selection_schema_matches_the_current_runtime_binding() -> None:
-        """The public V3 schema may not accept records the strict decoder rejects."""
-        schema = ROOT / "skills/agy-worker/runtime/schemas/model-selection.schema.json"
-        record = {
-            "schema_version": 3,
-            "kind": "agy-worker-selection",
-            "selection_mode": "exact-model",
-            "user_model": "gemini-3.6-flash-high",
-            "user_model_source": "cli",
-            "resolved_agy_model": "gemini-3.6-flash-high",
-            "installed_agy_version": "1.1.17",
-            "matrix_sha256": "a" * 64,
-            "matrix_agy_version": "1.1.22",
-            "matrix_source_revision": "b" * 40,
-            "version_relation": "drift",
-            "compatibility_status": "critical-interface-compatible-version-drift",
-            "critical_interface_probe_version": 1,
-            "critical_interface_status": "compatible",
-            "critical_capabilities_sha256": "c" * 64,
-            "help_sha256": "d" * 64,
-            "model_availability": "not_assessed",
-            "probed_executable": {
-                "path_sha256": "e" * 64,
-                "content_sha256": "f" * 64,
-                "target_lstat": {
-                    "device": 1, "inode": 1, "mode": 0o100755,
-                    "uid": os.geteuid(), "gid": os.getegid(), "size": 1,
-                    "mtime_ns": 1, "ctime_ns": 1,
-                },
-                "symlink_chain": [],
-                "components": [],
-            },
-            "compatibility_disposition": "proceed",
-            "approved_help_sha256": "d" * 64,
+    def conditional_capabilities_follow_operation() -> None:
+        selection = MODULE.MODEL_SELECTION
+        contexts = {
+            "--sandbox": {"provider_isolation": "native"},
+            "--conversation": {"conversation": True},
+            "--effort": {"effort": True},
         }
-        record["compatibility_decision_sha256"] = (
-            MODULE.MODEL_SELECTION.compatibility_decision_sha256(record)
-        )
+        for flag, active in contexts.items():
+            rows = FAKE_CAPABILITY_HELP.splitlines()
+            original = next(row for row in rows if row.startswith("  " + flag + " "))
+            absent = "\n".join(row for row in rows if row != original) + "\n"
+            malformed = absent + " " + flag + "  malformed indentation\n"
+            duplicate = FAKE_CAPABILITY_HELP + original + "\n"
+            for raw in (absent, malformed, duplicate):
+                selection.parse_critical_help(raw.encode())
+                # Other optional operations also leave this unused row alone.
+                for other, context in contexts.items():
+                    if other != flag:
+                        selection.parse_critical_help(raw.encode(), **context)
+                try:
+                    selection.parse_critical_help(raw.encode(), **active)
+                except selection.EvidenceUnavailable:
+                    pass
+                else:
+                    raise AssertionError(f"active {flag} accepted invalid row")
 
-        document = json.loads(schema.read_text(encoding="utf-8"))
-        for title in (
-            "v3 approved drift exact-model selection",
-            "v3 approved drift model and effort selection",
-        ):
-            v3_variant = next(
-                item for item in document["oneOf"] if item.get("title") == title
+        observed = []
+        binding = {"current": True}
+        for effort in (None, "Caller-Level"):
+            record = selection.resolve_selection(
+                "vendor/Future", effort, "cli", "environment" if effort else None,
+                probe_version=False,
             )
-            v3_properties = v3_variant["properties"]
-            assert v3_properties["resolved_agy_model"] == {
-                "type": "string", "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)+$", "maxLength": 128,
+            record.update(probed_executable=binding, installed_agy_version="fixture-build")
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(selection, "validate_selection_record_shape"))
+                stack.enter_context(mock.patch.object(selection, "probe_capabilities", return_value=("/safe/agy", binding, "fixture-build")))
+                probe = selection.probe_capabilities
+                stack.enter_context(mock.patch.object(selection, "frozen_executable_binding_matches", return_value=True))
+                stack.enter_context(mock.patch.dict(os.environ, {"AGY_WORKER_EFFORT": "Ambient-Later"}))
+                assert selection.reprobe_selection_record(record) == ("/safe/agy", binding)
+                assert probe.call_args.kwargs == {
+                    "provider_isolation": "session", "conversation": False, "effort": effort is not None,
+                }
+                stack.enter_context(mock.patch.object(MODULE, "_load_bound_selection", return_value=record))
+                stack.enter_context(mock.patch.object(MODULE, "_selection_launch_is_authorized", return_value=True))
+                for isolation in ("session", "native"):
+                    for origin in ("initial", "fresh-restart", "conversation-resume", "conversation-continue"):
+                        command = {
+                            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA,
+                            "provider_isolation": isolation,
+                            "argv": ["agy", "--model", "vendor/Future", "--print", "task"],
+                            "resume_prompt": "resume", "continue_prompt": "repair",
+                        }
+                        if effort:
+                            command["argv"][1:1] = ["--effort", effort]
+                        state = {"attempt_origin": origin, "conversation_id": "fixture-conversation", "provider_scope_path": None}
+                        launch = MODULE._ScopedLaunch()
+                        controller = MODULE._ControllerBinding(command=command, state=state, feedback=root / "feedback.json")
+                        MODULE._build_controller_argv(controller, launch)
+                        MODULE._reprobe_direct_selection(command, state, launch.argv)
+                        assert probe.call_args.kwargs == {
+                            "provider_isolation": isolation,
+                            "conversation": origin in {"conversation-resume", "conversation-continue"},
+                            "effort": effort is not None,
+                        }
+                        observed.append((isolation, origin, effort))
+                # Frozen caller effort must match argv before even probing.
+                drifted = ["agy", "--model", "vendor/Future", "--print", "task"]
+                if effort is None:
+                    drifted[1:1] = ["--effort", "Ambient-Later"]
+                before = probe.call_count
+                try:
+                    MODULE._reprobe_direct_selection({"provider_isolation": "session"}, {}, drifted)
+                except MODULE.DispatchError as exc:
+                    assert "--effort" in str(exc)
+                else:
+                    raise AssertionError("caller effort drift accepted")
+                assert probe.call_count == before
+        assert len(observed) == 16
+        # Legacy record-free dispatch still checks the flags in its actual argv.
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(MODULE, "_load_bound_selection", return_value=None))
+            probe = stack.enter_context(mock.patch.object(
+                selection, "probe_capabilities", return_value=("/safe/agy", binding, "fixture-build"),
+            ))
+            MODULE._reprobe_direct_selection(
+                {"schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "native"},
+                {"attempt_origin": "conversation-continue"},
+                ["agy", "--sandbox", "--conversation", "fixture-conversation", "--effort", "Caller-Level", "--print", "task"],
+            )
+            assert probe.call_args.kwargs == {
+                "provider_isolation": "native", "conversation": True, "effort": True,
             }
-            binding_rules = v3_properties["probed_executable"]["allOf"]
-            assert binding_rules[0] == {"$ref": "#/properties/probed_executable"}
-            current_binding = binding_rules[1]
-            assert current_binding["required"] == ["content_sha256"]
-            assert current_binding["properties"]["target_lstat"]["required"] == ["ctime_ns"]
-            assert current_binding["properties"]["symlink_chain"]["items"]["properties"]["lstat"]["required"] == ["ctime_ns"]
-            assert current_binding["properties"]["components"]["items"]["properties"]["lstat"]["required"] == ["ctime_ns"]
-        MODULE.MODEL_SELECTION.validate_selection_record_shape(record)
-        effort_record = copy.deepcopy(record)
-        effort_record.update({
-            "selection_mode": "model-effort",
-            "user_effort": "high",
-            "user_effort_source": "cli",
+
+    check("conditional capabilities follow operation and frozen caller effort", conditional_capabilities_follow_operation)
+
+    def current_selection_schema_matches_the_runtime_binding() -> None:
+        schema = ROOT / "skills/agy-worker/runtime/schemas/model-selection.schema.json"
+        record = MODULE.MODEL_SELECTION.resolve_selection("Caller.Model/future", "maximum", "cli", "cli", probe_version=False)
+        record.update(installed_agy_version="future-build", probed_executable={
+            "path_sha256": "e" * 64, "content_sha256": "f" * 64,
+            "target_lstat": {"device": 1, "inode": 1, "mode": 0o100755,
+                             "uid": os.geteuid(), "gid": os.getegid(), "size": 1,
+                             "mtime_ns": 1, "ctime_ns": 1},
+            "symlink_chain": [], "components": [],
         })
-        effort_record["compatibility_decision_sha256"] = (
-            MODULE.MODEL_SELECTION.compatibility_decision_sha256(effort_record)
-        )
-        MODULE.MODEL_SELECTION.validate_selection_record_shape(effort_record)
-
-        # V3 decoder validation must be no weaker than the public schema.  In
-        # particular, recomputing the approval digest cannot make an invalid
-        # model field a valid current selection artifact.
-        for valid_record in (record, effort_record):
-            for field in ("user_model", "resolved_agy_model"):
-                for invalid_model in ("not a model slug", "a." * 64 + "a"):
-                    malformed = copy.deepcopy(valid_record)
-                    malformed[field] = invalid_model
-                    malformed["compatibility_decision_sha256"] = (
-                        MODULE.MODEL_SELECTION.compatibility_decision_sha256(malformed)
-                    )
-                    try:
-                        MODULE.MODEL_SELECTION.validate_selection_record_shape(malformed)
-                    except MODULE.MODEL_SELECTION.CallerError:
-                        pass
-                    else:
-                        raise AssertionError("runtime decoder accepted an invalid V3 model slug")
-
+        document = json.loads(schema.read_text())
+        assert document["properties"]["schema_version"]["const"] == 4
+        binding = document["properties"]["probed_executable"]
+        assert "content_sha256" in binding["required"]
+        assert "ctime_ns" in binding["properties"]["target_lstat"]["required"]
+        for field in ("symlink_chain", "components"):
+            assert "ctime_ns" in binding["properties"][field]["items"]["properties"]["lstat"]["required"]
+        MODULE.MODEL_SELECTION.validate_selection_record_shape(record)
+        for field in ("user_model", "resolved_agy_model", "user_effort"):
+            for invalid in ("not one argument", "x" * 129, "bad\x00value"):
+                malformed = copy.deepcopy(record)
+                malformed[field] = invalid
+                try:
+                    MODULE.MODEL_SELECTION.validate_selection_record_shape(malformed)
+                except MODULE.MODEL_SELECTION.CallerError:
+                    pass
+                else:
+                    raise AssertionError("invalid caller argument accepted")
         mutations = (
             lambda value: value.update({"resolved_agy_model": None}),
             lambda value: value.update({"resolved_agy_model": "not a model slug"}),
@@ -4204,12 +4380,12 @@ with tempfile.TemporaryDirectory() as temporary:
             except MODULE.MODEL_SELECTION.CallerError:
                 pass
             else:
-                raise AssertionError("runtime decoder accepted a malformed V3 schema shape")
+                raise AssertionError("runtime decoder accepted a malformed current schema shape")
 
-    check("v3 selection schema rejects records missing the current runtime binding", v3_selection_schema_matches_the_current_runtime_binding)
+    check("current selection schema rejects records missing the current runtime binding", current_selection_schema_matches_the_runtime_binding)
 
     def completed_probe_descendants_are_always_reaped() -> None:
-        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
+        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --effort  Caller effort\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
 
         def group_is_gone(child: int, group: int) -> bool:
             deadline = time.monotonic() + 2.0
@@ -4266,15 +4442,15 @@ with tempfile.TemporaryDirectory() as temporary:
                 )
                 probe.chmod(0o755)
                 if argument == "--version":
-                    action = lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe))
+                    action = lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe))  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 else:
-                    action = lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe))
+                    action = lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe))  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 if returncode == 0:
                     result = action()
                     if argument == "--version":
                         assert result == "1.1.16"
                     else:
-                        assert len(result) == 2
+                        assert result is None
                 else:
                     try:
                         action()
@@ -4289,7 +4465,7 @@ with tempfile.TemporaryDirectory() as temporary:
     check("completed success and nonzero version/help probes reap pipe-closing live descendants", completed_probe_descendants_are_always_reaped)
 
     def completed_probe_leader_does_not_wait_for_descendant_held_pipe_eof() -> None:
-        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
+        help_text = b"""Usage of agy:\n  --add-dir  Add a directory\n  --conversation  Resume a conversation\n  --disable-slash-commands  Disable slash commands\n  --effort  Caller effort\n  --json-schema  Schema path\n  --mode  Execution mode (accept-edits, plan)\n  --model  Select a model\n  --output-format  Format (text, json, stream-json)\n  --print  Run a prompt\n  --print-timeout  Print timeout\n  --sandbox  Sandboxed\n"""
 
         def group_is_gone(child: int, group: int) -> bool:
             deadline = time.monotonic() + 2.0
@@ -4339,9 +4515,9 @@ with tempfile.TemporaryDirectory() as temporary:
             )
             probe.chmod(0o755)
             action = (
-                (lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe)))
+                (lambda: MODULE.MODEL_SELECTION.probe_installed_version(str(probe)))  # noqa: B023 -- callback is invoked and restored within this loop iteration
                 if argument == "--version"
-                else (lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe)))
+                else (lambda: MODULE.MODEL_SELECTION.probe_critical_interface(str(probe)))  # noqa: B023 -- callback is invoked and restored within this loop iteration
             )
             started = time.monotonic()
             result = action()
@@ -4350,7 +4526,7 @@ with tempfile.TemporaryDirectory() as temporary:
             if argument == "--version":
                 assert result == "1.1.16"
             else:
-                assert len(result) == 2
+                assert result is None
             child, group = map(int, child_record.read_text(encoding="ascii").split())
             assert child != group and group_is_gone(child, group), (child, group)
             assert not provider_marker.exists()
@@ -4361,6 +4537,8 @@ with tempfile.TemporaryDirectory() as temporary:
         record = root / "mutual-selection.json"; record.write_text("{}\n", encoding="utf-8")
         selector = ROOT / "skills/agy-worker/runtime/scripts/model_selection.py"
         for args in (
+            ("--observe-installed-version", "--probe-interface"),
+            ("--probe-interface", "--observe-installed-version"),
             ("--validate-record", str(record), "--verify-record-executable", str(record)),
             ("--verify-record-executable", str(record), "--validate-record", str(record)),
         ):
@@ -4383,7 +4561,7 @@ with tempfile.TemporaryDirectory() as temporary:
     def queued_baseline_drift_blocks_every_provider_launch_origin() -> None:
         def make_job(label: str) -> tuple[Path, Path, Path, dict]:
             repo = root / f"queued-drift-{label}-repo"; repo.mkdir()
-            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            initialize_linked_fixture(repo)
             job = (root / f"queued-drift-{label}-job"); job.mkdir(mode=0o700); job = job.resolve()
             bin_dir = root / f"queued-drift-{label}-bin"; bin_dir.mkdir()
             marker = root / f"queued-drift-{label}-provider"
@@ -4391,14 +4569,14 @@ with tempfile.TemporaryDirectory() as temporary:
             fake.write_text("#!/bin/sh\ntouch " + shlex.quote(str(marker)) + "\nexit 99\n", encoding="utf-8")
             fake.chmod(0o755)
             schema = root / f"queued-drift-{label}-provider.json"; provider_schema(schema)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"queued-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"queued-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             MODULE.create_state(job, "initial", resume=False)
             return repo, job, bin_dir, command
@@ -4466,11 +4644,11 @@ with tempfile.TemporaryDirectory() as temporary:
         empty.rmdir()
         removed = MODULE._worktree_snapshot(str(repo)); assert removed is not None
         assert removed["sha256"] == baseline["sha256"] and removed["entries"] == baseline["entries"]
-        command = {
-            "schema_version": 10, "provider_isolation": "session",
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
             "workdir": str(repo), "workflow": "task", "max_cycles": 2, "job_id": "empty-topology",
             "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
-        }
+        }, bind_launch=False)
         state = MODULE.initial_state(
             command, "initial", 1, command_sha="0" * 64,
             command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
@@ -4484,6 +4662,101 @@ with tempfile.TemporaryDirectory() as temporary:
             raise AssertionError("empty directory topology drift was accepted as a queued baseline")
 
     check("empty directory create remove and metadata changes bind snapshot digest and entries", empty_directory_topology_is_snapshot_bound)
+
+    def candidate_drift_diagnostic_names_bound_paths() -> None:
+        repo = root / "candidate-diagnostic-repo"; repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        source = repo / "wordfreq"; source.write_text("print('ok')\n", encoding="utf-8")
+        source.chmod(0o644)
+        subprocess.run(["git", "-C", str(repo), "add", "wordfreq"], check=True)
+        subprocess.run([
+            "git", "-C", str(repo), "-c", "user.email=test@example.com",
+            "-c", "user.name=test", "commit", "-qm", "initial",
+        ], check=True)
+        bound = MODULE._worktree_snapshot(str(repo)); assert bound is not None
+        state = {
+            "schema_version": MODULE.CURRENT_STATE_SCHEMA,
+            "status": "succeeded", "controller_pid": None,
+            "worktree_snapshot_algorithm": MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM,
+            "worktree_root_identity": MODULE._dispatch_root_identity(str(repo)),
+            "candidate_worktree_sha256": bound["sha256"],
+            "candidate_worktree_entries": bound["entries"],
+            "candidate_worktree_path_facts": bound.get("path_facts"),
+        }
+        command = {"workdir": str(repo)}
+        MODULE._bound_candidate_worktree(state, command)
+        source.chmod(0o755)
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert "wordfreq" in message and "mode" in message, message
+        else:
+            raise AssertionError("driver mode drift was accepted")
+        source.chmod(0o644)
+        cache = repo / "__pycache__"; cache.mkdir()
+        (cache / "wordfreq.cpython-311.pyc").write_bytes(b"cache")
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert "__pycache__/wordfreq.cpython-311.pyc" in message, message
+            assert "cache" in message and "worker" in message, message
+        else:
+            raise AssertionError("verifier cache drift was accepted")
+        (cache / "wordfreq.cpython-311.pyc").unlink(); cache.rmdir()
+        escaped = repo / "line\nbreak"; escaped.write_text("content\n", encoding="utf-8")
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert '"line\\nbreak"' in message and "line\nbreak" not in message, message
+        else:
+            raise AssertionError("control-character path drift was accepted")
+        limited = {"complete": False, "items": [["first.txt", "file", 0o644, "a" * 64]]}
+        assert MODULE.WORKTREE._snapshot_drift_details(limited, limited) == (
+            "path diagnostics incomplete (first 64 paths / 8192 bytes only)"
+        )
+        for index in range(70):
+            (repo / f"sample-{index:03d}").write_text("content\n", encoding="utf-8")
+        large = MODULE._worktree_snapshot(str(repo))
+        assert large is not None and not large["path_facts"]["complete"]
+        state.update({
+            "candidate_worktree_sha256": large["sha256"],
+            "candidate_worktree_entries": large["entries"],
+            "candidate_worktree_path_facts": large["path_facts"],
+        })
+        (repo / "sample-069").chmod(0o755)
+        try:
+            MODULE._bound_candidate_worktree(state, command)
+        except MODULE.DispatchError as exc:
+            message = str(exc)
+            assert "path diagnostics incomplete (first 64 paths / 8192 bytes only)" in message, message
+            assert "sample-069" not in message, message
+        else:
+            raise AssertionError("late path drift was accepted past diagnostic cap")
+        validation_command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "provider_isolation": "session",
+            "workdir": str(repo), "workflow": "task", "max_cycles": 2, "job_id": "diagnostic-mode",
+            "hard_seconds": 2, "max_seconds": 4, "idle_seconds": 1,
+        }, bind_launch=False)
+        malformed = MODULE.initial_state(
+            validation_command, "initial", 1, command_sha="0" * 64,
+            command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
+        )
+        malformed["candidate_worktree_sha256"] = large["sha256"]
+        malformed["candidate_worktree_entries"] = large["entries"]
+        malformed["candidate_worktree_path_facts"] = {
+            "complete": True, "items": [["wordfreq", "file", None, "a" * 64]],
+        }
+        try:
+            MODULE._validate_worktree_state(malformed)
+        except MODULE.DispatchError as exc:
+            assert "candidate path fact is invalid" in str(exc), exc
+        else:
+            raise AssertionError("malformed file mode was accepted in path facts")
+
+    check("candidate drift names mode and verifier-cache paths without accepting edits", candidate_drift_diagnostic_names_bound_paths)
 
     def snapshot_git_requires_safe_path_authority_before_execution() -> None:
         repo = root / "safe-git-repo"; repo.mkdir()
@@ -4515,7 +4788,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 # may use only a separately bound system Git fallback.
                 original_which = MODULE.shutil.which
                 original_lstat = MODULE.os.lstat
-                original_git_read = MODULE._bounded_git_read
+                original_git_read = MODULE.WORKTREE._bounded_git_read
                 homebrew_marker = root / "rejected-homebrew-git-marker"
                 homebrew_paths = {
                     "/opt/homebrew": bin_dir,
@@ -4537,7 +4810,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
                 MODULE.shutil.which = lambda name: "/opt/homebrew/bin/git" if name == "git" else original_which(name)
                 MODULE.os.lstat = rejected_homebrew_lstat
-                MODULE._bounded_git_read = observed_git_read
+                MODULE.WORKTREE._bounded_git_read = observed_git_read
                 fake.chmod(0o777)
                 try:
                     fallback = MODULE._safe_git_executable()
@@ -4547,7 +4820,7 @@ with tempfile.TemporaryDirectory() as temporary:
                     assert not homebrew_marker.exists(), "a rejected Homebrew launcher executed"
                 finally:
                     fake.chmod(0o700)
-                    MODULE._bounded_git_read = original_git_read
+                    MODULE.WORKTREE._bounded_git_read = original_git_read
                     MODULE.os.lstat = original_lstat
                     MODULE.shutil.which = original_which
             fake.chmod(0o777)
@@ -4597,14 +4870,14 @@ with tempfile.TemporaryDirectory() as temporary:
             repo = repo.resolve()
             job = root / f"result-current-{label}-job"; job.mkdir(mode=0o700); job = job.resolve()
             schema = root / f"result-current-{label}-provider.json"; provider_schema(schema)
-            command = {
-                "schema_version": 3, "kind": "agy-worker-dispatch-command", "job_id": f"result-{label}",
+            command = current_command_fixture({
+                "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"result-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
                 "agy_version": "1.1.16", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "project",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
-            }
+            })
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
             state, _state_sha = MODULE.create_state(job, "initial", resume=False)
             older = job / "older.json"; current = job / "current.json"
@@ -4664,7 +4937,7 @@ with tempfile.TemporaryDirectory() as temporary:
 
     def current_candidate_fixture(
         label: str, *, selection: bool = False, staged: bool = False,
-        wrapper_addressable: bool = False, workflow: str = "task", linked: bool = False,
+        wrapper_addressable: bool = False, workflow: str = "task", linked: bool = True,
         inside_worktree: bool = False,
     ) -> tuple[Path, dict, str, Path]:
         """Create one schema-bound terminal candidate without any provider call."""
@@ -4684,12 +4957,9 @@ with tempfile.TemporaryDirectory() as temporary:
             repo.mkdir()
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
         job_id = f"current-{label}"
-        if inside_worktree:
-            logs_dir = repo / "logs"
-            logs_dir.mkdir(mode=0o700, exist_ok=True)
-            job = logs_dir / job_id
-        else:
-            job = root / (job_id if wrapper_addressable else f"current-candidate-{label}-job")
+        # Bind a current job externally first. Relocation below preserves its
+        # original launch approval, which becomes stale when artifacts move in.
+        job = root / (job_id if wrapper_addressable else f"current-candidate-{label}-job")
         job.mkdir(mode=0o700); job = job.resolve()
         schema = root / f"current-candidate-{label}-provider.json"; provider_schema(schema)
         selection_path = None
@@ -4698,7 +4968,7 @@ with tempfile.TemporaryDirectory() as temporary:
         if selection:
             selection_path = job / "selection.json"
             MODULE.MODEL_SELECTION.publish_record(
-                selection_path, MODULE.MODEL_SELECTION.resolve_literal_selection("gemini-3.7-flash"),
+                selection_path, MODULE.MODEL_SELECTION.resolve_selection("gemini-3.7-flash", None, "cli", None, probe_version=False),
             )
             selection_raw, selection_info = MODULE.read_regular(
                 selection_path, MODULE.MAX_COMMAND_BYTES, "fixture selection",
@@ -4712,15 +4982,15 @@ with tempfile.TemporaryDirectory() as temporary:
             stage_file = stage_dir / "full-prompt.txt"
             stage_file.write_text("bounded fixture prompt", encoding="utf-8")
             stage_file.chmod(0o600)
-        command = {
-            "schema_version": 4 if selection else 3, "kind": "agy-worker-dispatch-command", "job_id": job_id,
+        command = current_command_fixture({
+            "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": job_id,
             "workdir": str(repo), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
             "agy_version": "1.1.16", "agy_version_observed": True,
             "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20, "notice_seconds": 3,
             "stage_dir": None if stage_dir is None else str(stage_dir),
             "stage_file": None if stage_file is None else str(stage_file), "child_umask": "022", "workflow": workflow,
             "max_cycles": 1 if workflow == "legacy" else 2, "resume_prompt": "resume", "continue_prompt": "continue",
-        }
+        })
         if selection:
             command.update({
                 "selection_path": str(selection_path), "selection_sha256": selection_sha,
@@ -4728,6 +4998,17 @@ with tempfile.TemporaryDirectory() as temporary:
             })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         state, _initial_sha = MODULE.create_state(job, "initial", resume=False)
+        if inside_worktree:
+            assert not selection and not staged
+            logs_dir = repo / "logs"
+            logs_dir.mkdir(mode=0o700, exist_ok=True)
+            original_command = (job / MODULE.COMMAND_NAME).read_bytes()
+            original_identity = MODULE._identity((job / MODULE.COMMAND_NAME).stat())
+            destination = logs_dir / job_id
+            job.rename(destination)
+            job = destination
+            assert (job / MODULE.COMMAND_NAME).read_bytes() == original_command
+            assert MODULE._identity((job / MODULE.COMMAND_NAME).stat()) == original_identity
         envelope = job / "envelope.json"
         payload = json.dumps(report(summary=f"candidate-{label}"), ensure_ascii=True, indent=2).encode("ascii") + b"\n"
         envelope.write_bytes(payload); envelope.chmod(0o600)
@@ -4749,14 +5030,14 @@ with tempfile.TemporaryDirectory() as temporary:
         assert loaded_sha == sha
         return job, loaded, sha, envelope
 
-    def v9_repository_controlled_git_fails_closed_before_guarded_commands() -> None:
-        """A V9 root probe must never execute a worktree's ``bin/git`` wrapper."""
-        job, state, sha, _envelope = current_candidate_fixture("v9-root-git-guard")
+    def current_repository_controlled_git_fails_closed_before_guarded_commands() -> None:
+        """A current root probe must never execute a worktree's ``bin/git`` wrapper."""
+        job, state, sha, _envelope = current_candidate_fixture("current-root-git-guard")
         command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
         repo = Path(command["workdir"])
         real_git = shutil.which("git"); assert real_git is not None
         repo_bin = repo / "bin"; repo_bin.mkdir(mode=0o700); repo_bin.chmod(0o700)
-        marker = root / "v9-root-git-executed"
+        marker = root / "current-root-git-executed"
         wrapper = repo_bin / "git"
         wrapper.write_text(
             "#!/bin/sh\nprintf ran > " + shlex.quote(str(marker)) + "\nexec "
@@ -4809,7 +5090,7 @@ with tempfile.TemporaryDirectory() as temporary:
         })
         assert not marker.exists()
 
-    check("V9 repository-controlled Git fails closed before status result continue or finalize", v9_repository_controlled_git_fails_closed_before_guarded_commands)
+    check("Current repository-controlled Git fails closed before status result continue or finalize", current_repository_controlled_git_fails_closed_before_guarded_commands)
 
     def outward_symlink_removes_candidate_actions_and_rejects_their_commands() -> None:
         """Status must not advertise lifecycle actions that their guards reject."""
@@ -5337,8 +5618,8 @@ with tempfile.TemporaryDirectory() as temporary:
 
     check("public verification-copy wrapper preserves output privacy and maps runtime failures", public_verification_copy_wrapper_has_exact_success_privacy_and_runtime_exits)
 
-    def v9_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement() -> None:
-        """V9 separates stable Git authority from mutable candidate content."""
+    def current_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement() -> None:
+        """Current state separates stable Git authority from mutable candidate content."""
         def git_toplevel_alias_is_narrowly_bound_to_the_held_directory() -> None:
             """Only macOS's documented spelling alias survives a full binding."""
             fixture = root / "git-toplevel-alias"; fixture.mkdir()
@@ -5395,16 +5676,17 @@ with tempfile.TemporaryDirectory() as temporary:
             for malformed in (b"relative\n", b"/tmp/has\0nul\n", b"\xff\n", b"/tmp/one\nsecond\n"):
                 assert not MODULE._bound_git_worktree_root(malformed, str(fixture), binding)
 
-            helper_source = WORKTREE_SOURCE.read_text(encoding="utf-8")
-            boundary = helper_source[
-                helper_source.index("def _git_boundary_identity"):
-                helper_source.index("\ndef _worktree_snapshot")
-            ]
-            snapshot = helper_source[
-                helper_source.index("def _worktree_snapshot"):helper_source.index("\n\n_IMPLEMENTATION_FUNCTIONS")
-            ]
+            boundary = worktree_function_source("_git_boundary_identity")
+            snapshot = worktree_function_source("_worktree_snapshot_raw")
+            source = WORKTREE_SOURCE.read_text(encoding="utf-8")
+            context_node = next(node for node in ast.parse(source).body
+                                if isinstance(node, ast.ClassDef) and node.name == "_SnapshotGitContext")
+            context = ast.get_source_segment(source, context_node)
+            assert context is not None
             assert "_bound_git_worktree_root(top_level, root, root_binding)" in boundary
-            assert "_bound_git_worktree_root(top_level[1], root, root_binding)" in snapshot
+            assert "_bound_git_worktree_root(top_level[1], self.root, self.root_binding)" in context
+            assert "if not context.bound_worktree():" in worktree_function_source("_snapshot_bind_git")
+            assert "or not context.bound_worktree()" in snapshot
 
         git_toplevel_alias_is_narrowly_bound_to_the_held_directory()
 
@@ -5416,7 +5698,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True,
             }
 
-        def provider_changed_candidate(label: str, *, linked: bool = False) -> tuple[Path, dict, str, Path, Path]:
+        def provider_changed_candidate(label: str, *, linked: bool = True) -> tuple[Path, dict, str, Path, Path]:
             job, state, _sha, envelope = current_candidate_fixture(label, linked=linked)
             command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
             repo = Path(command["workdir"])
@@ -5442,36 +5724,37 @@ with tempfile.TemporaryDirectory() as temporary:
 
         # Ordinary provider-tracked/untracked changes remain candidate content;
         # result, continue, and finalize each retain their normal authority.
-        result_job, result_state, _result_sha, _envelope, _repo = provider_changed_candidate("v9-standard-result")
+        result_job, result_state, _result_sha, _envelope, _repo = provider_changed_candidate("current-standard-result")
         result = subprocess.run(
             [sys.executable, str(SOURCE), "result", "--job-dir", str(result_job)],
             check=True, stdout=subprocess.PIPE,
         )
-        assert json.loads(result.stdout)["summary"] == "candidate-v9-standard-result"
+        assert json.loads(result.stdout)["summary"] == "candidate-current-standard-result"
 
-        continue_job, continue_state, continue_sha, _envelope, _repo = provider_changed_candidate("v9-standard-continue")
+        continue_job, continue_state, continue_sha, _envelope, _repo = provider_changed_candidate("current-standard-continue")
         queued, _queued_sha = MODULE.create_state(
             continue_job, "conversation-continue", resume=True,
-            approve_sha=continue_sha, verification=verification(continue_state, "v9-standard-continue"),
+            approve_sha=continue_sha, verification=verification(continue_state, "current-standard-continue"),
         )
         assert queued["attempt_origin"] == "conversation-continue"
 
         finalize_job, finalize_state, finalize_sha, _envelope, linked_repo = provider_changed_candidate(
-            "v9-linked-finalize", linked=True,
+            "current-linked-finalize", linked=True,
         )
         marker = finalize_state["worktree_root_identity"]["git_marker"]
         assert marker["kind"] == "file" and marker["content_sha256"] is not None
         finalized = subprocess.run(
             [sys.executable, str(SOURCE), "finalize", "--job-dir", str(finalize_job),
              "--approve-state-sha", finalize_sha, "--assurance", "partially_verified"],
-            input=json.dumps(verification(finalize_state, "v9-linked-finalize")).encode("utf-8"),
+            input=json.dumps(verification(finalize_state, "current-linked-finalize")).encode("utf-8"),
             check=True, stdout=subprocess.PIPE,
         )
         assert json.loads(finalized.stdout)["driver_disposition"] == "partially_verified"
 
         # HEAD/ref/object and index-cache activity is mutable repository state,
-        # not a V9 root boundary replacement, in both normal and linked roots.
-        for label, repo in (("standard", _repo), ("linked", linked_repo)):
+        # not a stable root boundary replacement. A plain-root snapshot is
+        # tested separately from current linked-worktree launch authority.
+        for label, repo in (("first-linked", _repo), ("second-linked", linked_repo)):
             before = MODULE._dispatch_root_identity(str(repo)); assert before is not None
             subprocess.run(["git", "-C", str(repo), "update-index", "--refresh"], check=True)
             subprocess.run([
@@ -5531,44 +5814,47 @@ with tempfile.TemporaryDirectory() as temporary:
         # Same-path roots, direct .git directories, linked marker contents and
         # the Git-dir/common-dir/synthetic-worktree boundaries all fail closed
         # without a provider launch or controller-state rewrite.
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-root-replacement")
-        displaced = root / "v9-root-replacement-displaced"; repo.rename(displaced)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-root-replacement")
+        displaced = root / "current-root-replacement-displaced"; repo.rename(displaced)
         repo.mkdir(); subprocess.run(["git", "init", "-q", str(repo)], check=True)
         reject_without_write(job, state, sha, "root replacement")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-git-dir-replacement")
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-git-dir-replacement")
         (repo / ".git").rename(repo / ".git-displaced")
         (repo / ".git").mkdir()
         reject_without_write(job, state, sha, "git dir replacement")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-linked-marker-replacement", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-linked-marker-replacement", linked=True)
         marker = repo / ".git"; original = marker.read_bytes(); replacement = repo / ".git.replacement"
         replacement.write_bytes(original); replacement.chmod(marker.stat().st_mode & 0o777)
         os.replace(replacement, marker)
         reject_without_write(job, state, sha, "linked marker replacement")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-linked-marker-retarget", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-linked-marker-retarget", linked=True)
         (repo / ".git").write_text("gitdir: /nonexistent\n", encoding="utf-8")
         reject_without_write(job, state, sha, "linked marker retarget")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-git-dir-symlink", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-git-dir-symlink", linked=True)
         git_dir = Path(state["worktree_root_identity"]["git_dir"]["realpath"])
         displaced = git_dir.with_name(git_dir.name + "-displaced")
         git_dir.rename(displaced); git_dir.symlink_to(displaced, target_is_directory=True)
         reject_without_write(job, state, sha, "git dir symlink")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-common-dir-symlink", linked=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-common-dir-symlink", linked=True)
         common_dir = Path(state["worktree_root_identity"]["common_dir"]["realpath"])
         displaced = common_dir.with_name(common_dir.name + "-displaced")
         common_dir.rename(displaced); common_dir.symlink_to(displaced, target_is_directory=True)
         reject_without_write(job, state, sha, "common dir outward symlink")
 
-        job, state, sha, _envelope, repo = provider_changed_candidate("v9-top-level-drift")
-        outside = root / "v9-top-level-outside"; outside.mkdir()
-        subprocess.run(["git", "-C", str(repo), "config", "core.worktree", str(outside)], check=True)
+        job, state, sha, _envelope, repo = provider_changed_candidate("current-top-level-drift")
+        outside = root / "current-top-level-outside"; outside.mkdir()
+        subprocess.run(["git", "-C", str(repo), "config", "extensions.worktreeConfig", "true"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "--worktree", "core.worktree", str(outside)], check=True)
+        observed = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"], check=True, stdout=subprocess.PIPE)
+        assert observed.stdout.decode().strip() == str(outside)
         reject_without_write(job, state, sha, "show-toplevel drift")
 
-    check("v9 stable Git boundary permits provider content while rejecting root and Git authority replacement", v9_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement)
+    check("current stable Git boundary permits provider content while rejecting root and Git authority replacement", current_git_boundary_identity_is_stable_for_provider_content_and_rejects_replacement)
 
     def candidate_snapshot_actions_reject(
         job: Path, state: dict, label: str, *,
@@ -5636,7 +5922,10 @@ with tempfile.TemporaryDirectory() as temporary:
         command = json.loads((job / MODULE.COMMAND_NAME).read_text(encoding="utf-8"))
         candidate_repo = Path(command["workdir"])
         candidate_outside = root / "redirected-candidate-outside"; candidate_outside.mkdir()
-        subprocess.run(["git", "-C", str(candidate_repo), "config", "core.worktree", str(candidate_outside)], check=True)
+        subprocess.run(["git", "-C", str(candidate_repo), "config", "extensions.worktreeConfig", "true"], check=True)
+        subprocess.run(["git", "-C", str(candidate_repo), "config", "--worktree", "core.worktree", str(candidate_outside)], check=True)
+        observed = subprocess.run(["git", "-C", str(candidate_repo), "rev-parse", "--show-toplevel"], check=True, stdout=subprocess.PIPE)
+        assert observed.stdout.decode().strip() == str(candidate_outside)
         candidate_snapshot_actions_reject(
             job, state, "core-worktree",
             continuation_error="dispatch worktree root binding changed",
@@ -5705,7 +5994,7 @@ with tempfile.TemporaryDirectory() as temporary:
         fake.chmod(0o755)
         previous_path = os.environ.get("PATH", "")
         os.environ["PATH"] = f"{bin_dir}{os.pathsep}{previous_path}"
-        original_reader = MODULE._bounded_git_read
+        original_reader = MODULE.WORKTREE._bounded_git_read
         calls: list[tuple[tuple[str, ...], tuple[str, tuple[int, ...]] | None]] = []
 
         def count_reader(*args, **kwargs):
@@ -5713,13 +6002,13 @@ with tempfile.TemporaryDirectory() as temporary:
             calls.append((tuple(arguments), getattr(arguments, "git_directory", None)))
             return original_reader(*args, **kwargs)
 
-        MODULE._bounded_git_read = count_reader
+        MODULE.WORKTREE._bounded_git_read = count_reader
         try:
             snapshot = MODULE._worktree_snapshot(str(repo))
             assert snapshot is not None and snapshot["entries"] == 0
         finally:
             os.environ["PATH"] = previous_path
-            MODULE._bounded_git_read = original_reader
+            MODULE.WORKTREE._bounded_git_read = original_reader
         commands = log.read_text(encoding="utf-8").splitlines()
         # A committed empty repository used to make 83 bounded subprocesses:
         # 25 enumerations each repeated two root facts.  The pinned context
@@ -5756,6 +6045,113 @@ with tempfile.TemporaryDirectory() as temporary:
             assert f"--work-tree={expected_root}" in parts, command
 
     check("snapshot pins Git context while retaining initial/final root checks", snapshot_git_context_is_pinned_and_avoids_redundant_root_probes)
+
+    def whole_repair_prompt_uses_one_immutable_base() -> None:
+        origin = root / "whole-base-origin"; origin.mkdir()
+        subprocess.run(["/usr/bin/git", "init", "-q", str(origin)], check=True)
+        subprocess.run([
+            "/usr/bin/git", "-C", str(origin), "-c", "user.name=Fixture",
+            "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty",
+            "-qm", "base",
+        ], check=True)
+        repo = root / "whole-base-worktree"
+        subprocess.run([
+            "/usr/bin/git", "-C", str(origin), "worktree", "add", "-q", "-b",
+            "fixture/whole-base", str(repo),
+        ], check=True)
+        repo = repo.resolve()
+        base = subprocess.check_output(
+            ["/usr/bin/git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        (repo / "preexisting.txt").write_text("approved dirty input\n", encoding="utf-8")
+        try:
+            MODULE._bound_whole_worktree_base(str(repo), "f" * len(base), "task")
+        except MODULE.DispatchError as exc:
+            assert str(exc) == "Git HEAD differs from the immutable base commit"
+        else:
+            raise AssertionError("mismatched facade base reached provider launch")
+        job = root / "whole-base-job"; job.mkdir(mode=0o700); job = job.resolve()
+        bin_dir = root / "whole-base-bin"; bin_dir.mkdir()
+        schema = root / "whole-base-provider-schema.json"; provider_schema(schema)
+        first_prompt = root / "whole-base-first-prompt"
+        second_prompt = root / "whole-base-second-prompt"
+        fake = bin_dir / "agy"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, pathlib, sys\n"
+            f"first = pathlib.Path({str(first_prompt)!r})\n"
+            f"second = pathlib.Path({str(second_prompt)!r})\n"
+            "prompt = sys.argv[sys.argv.index('--print') + 1]\n"
+            "target = pathlib.Path.cwd() / 'artifact.txt'\n"
+            "if first.exists():\n"
+            "    second.write_text(prompt)\n"
+            "    target.write_text('repair\\n')\n"
+            "else:\n"
+            "    first.write_text(prompt)\n"
+            "    target.write_text('first\\n')\n"
+            "result = {'status':'completed','summary':'fixture','files_changed':"
+            "[{'path':'artifact.txt','change':'created'},"
+            "{'path':'preexisting.txt','change':'created'}], 'commands_run':[],"
+            "'tests_run':[], 'risks':[], 'open_questions':[], 'confidence':1,"
+            "'requires_human':False}\n"
+            "print(json.dumps({'event':'init','init':{},'conversation_id':'whole-base'}))\n"
+            "print(json.dumps({'event':'result','result':{'conversation_id':'whole-base',"
+            "'status':'SUCCESS','structured_output':result}}))\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        command = current_command_fixture({
+            "job_id": "whole-base", "workdir": str(repo),
+            "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+            "idle_seconds": 2, "hard_seconds": 10, "max_seconds": 20,
+        })
+        assert command["base_commit"] == base
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.create_state(job, "initial", resume=False)
+        assert run_controller(job, bin_dir) == 0
+        first_state, _raw, first_sha = MODULE.load_state(job)
+        assert first_state["continue_available"]
+        verification = {
+            "schema_version": 2, "summary": "repair artifact", "passed_checks": [],
+            "failed_checks": ["fixture"], "advisory_checks": 0, "missing_checks": 0,
+            "candidate_sha256": first_state["result_sha256"], "coverage": "partial",
+            "verified_findings": 1, "unresolved_gaps": 1,
+            "diff_review_complete": True,
+        }
+        MODULE.create_state(
+            job, "conversation-continue", resume=True,
+            approve_sha=first_sha, verification=verification,
+        )
+        assert run_controller(job, bin_dir) == 0
+        first_text = first_prompt.read_text(encoding="utf-8")
+        second_text = second_prompt.read_text(encoding="utf-8")
+        for prompt in (first_text, second_text):
+            assert f"immutable Git base commit {base}" in prompt
+            assert "cumulative net changes relative to that base commit" in prompt
+            assert "state at provider launch" not in prompt
+        assert '"path":"preexisting.txt","change":"created"' in first_text
+        assert "artifact.txt" not in first_text
+        assert '"path":"artifact.txt","change":"created"' in second_text
+        assert (repo / "artifact.txt").read_text(encoding="utf-8") == "repair\n"
+        final, _raw, _sha = MODULE.load_state(job)
+        assert json.loads(Path(final["result_path"]).read_text())["files_changed"] == [
+            {"path": "artifact.txt", "change": "created"},
+            {"path": "preexisting.txt", "change": "created"},
+        ]
+        wrong = job / "per-attempt-envelope.json"
+        per_attempt = json.loads(Path(final["result_path"]).read_text())
+        per_attempt["files_changed"][0]["change"] = "modified"
+        wrong.write_text(json.dumps(per_attempt), encoding="utf-8")
+        for envelope, expected in ((Path(final["result_path"]), 0), (wrong, 10)):
+            gate = subprocess.run(
+                [str(ROOT / "qa-gate.sh"), "--envelope", str(envelope),
+                 "--repo", str(repo), "--base", base,
+                 "--verify-argv", '["/usr/bin/true"]'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            )
+            assert gate.returncode == expected, gate.stderr.decode("utf-8", "replace")
+
+    check("whole-worktree two-cycle prompt preserves created change against immutable base", whole_repair_prompt_uses_one_immutable_base)
 
     recovery_path = ROOT / "tests/agy_worker_remediation_recovery_cases.py"
     recovery_spec = importlib.util.spec_from_file_location(

@@ -131,10 +131,6 @@ runs no provider</code></pre>
       <h3>Authority remains separate</h3>
       <p>This means session mode uses the existing AGY session; explicit native mode requires supported macOS containment. Scope approval alone grants no provider execution, Git, acceptance, or publication authority.</p>
     </article>
-    <article class="evidence-item">
-      <h3>Offline comparison only</h3>
-      <p><a href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/docs/BENCHMARKING.md">Benchmark v1</a> compares fixed synthetic tasks from canonical gate receipts. It has no live provider mode, score, ranking, winner, route, or recommendation.</p>
-    </article>
   </div>
 </section>
 

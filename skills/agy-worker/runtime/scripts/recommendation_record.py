@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Side-effect-free validation for recommendation-only record version 1."""
+"""Side-effect-free validation for recommendation-only record version 2."""
 
 from __future__ import annotations
 
@@ -103,14 +103,11 @@ COMMON_FIELDS = {
 DIRECT_FIELDS = {
     "user_model",
     "resolved_agy_model",
-    "matrix_sha256",
-    "matrix_agy_version",
-    "matrix_source_revision",
 }
 
 
 class RecommendationRecordError(ValueError):
-    """A recommendation record is not internally valid version-1 evidence."""
+    """A recommendation record is not internally valid version-2 evidence."""
 
 
 def _fail(message: str) -> None:
@@ -162,6 +159,7 @@ def _higher(selected: str, recommended: str, reason: str) -> tuple[str, str, str
 
 
 def _tier_expectation(stage: str, tier: str, code: str) -> tuple[str, str, tuple[Any, ...]]:
+    expected: tuple[str, str | None, str, dict[str, Any]]
     if stage == "pre-dispatch":
         if code not in PRE_DISPATCH_EVIDENCE:
             _fail("pre-dispatch evidence code is invalid")
@@ -201,12 +199,12 @@ def _tier_expectation(stage: str, tier: str, code: str) -> tuple[str, str, tuple
 
 
 def validate_recommendation_record(value: Any, *, required_stage: str | None = None) -> dict[str, Any]:
-    """Validate and return one exact side-effect-free v1 recommendation record."""
+    """Validate and return one exact side-effect-free v2 recommendation record."""
 
     if not isinstance(value, dict):
         _fail("recommendation must be one object")
-    if type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
-        _fail("recommendation schema_version must be integer 1")
+    if type(value.get("schema_version")) is not int or value.get("schema_version") != 2:
+        _fail("recommendation schema_version must be integer 2")
     if value.get("kind") != "model-tier-recommendation":
         _fail("recommendation kind is invalid")
     stage = value.get("stage")
@@ -235,16 +233,10 @@ def validate_recommendation_record(value: Any, *, required_stage: str | None = N
         for key in ("user_model", "resolved_agy_model"):
             if SAFE_LABEL.fullmatch(_string(value[key], key.replace("_", " "), 128)) is None:
                 _fail(f"{key.replace('_', ' ')} is invalid")
-        if "user_effort" in value and value["user_effort"] not in ("low", "medium", "high"):
-            _fail("user effort is invalid")
-        if "user_effort" not in value and value["resolved_agy_model"] != value["user_model"]:
-            _fail("exact model recommendation resolution is inconsistent")
-        if SHA256_RE.fullmatch(_string(value["matrix_sha256"], "matrix SHA-256", 64)) is None:
-            _fail("matrix SHA-256 is invalid")
-        if VERSION_RE.fullmatch(_string(value["matrix_agy_version"], "matrix version", 32)) is None:
-            _fail("matrix version is invalid")
-        if REVISION_RE.fullmatch(_string(value["matrix_source_revision"], "matrix revision", 40)) is None:
-            _fail("matrix revision is invalid")
+        if "user_effort" in value:
+            _string(value["user_effort"], "user effort", 128)
+        if value["resolved_agy_model"] != value["user_model"]:
+            _fail("model recommendation resolution is inconsistent")
 
     evidence = value.get("evidence")
     if not isinstance(evidence, dict) or set(evidence) != {"owner", "code", "description"}:
@@ -258,7 +250,7 @@ def validate_recommendation_record(value: Any, *, required_stage: str | None = N
         "code": expected_code,
         "description": expected_description,
     }:
-        _fail("recommendation evidence differs from v1 policy")
+        _fail("recommendation evidence differs from v2 policy")
     if not has_tier:
         expected = _no_change(
             "An explicit model/effort selection is caller-owned and unranked; this advisory cannot change or redispatch it."
@@ -270,5 +262,5 @@ def validate_recommendation_record(value: Any, *, required_stage: str | None = N
         value.get("cost_impact"),
     )
     if actual != expected:
-        _fail("recommendation decision differs from v1 policy")
+        _fail("recommendation decision differs from v2 policy")
     return value

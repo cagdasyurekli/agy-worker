@@ -2,7 +2,6 @@
 """Offline dispatcher lifecycle coverage for advisory self-verification."""
 from __future__ import annotations
 
-import hashlib
 import contextlib
 import io
 import importlib.util
@@ -34,7 +33,7 @@ def report() -> dict:
 class SelfVerificationLifecycle(unittest.TestCase):
     def fixture(self, temporary: str, *, requested: list[str] | None = None,
                 allow: bool = True, scoped: bool = False, optional_only: bool = False,
-                manifest_seconds: int = 10, command_schema: int = 10) -> tuple[Path, str, Path]:
+                manifest_seconds: int = 10) -> tuple[Path, str, Path]:
         root = Path(temporary).resolve()
         root.mkdir(mode=0o700, exist_ok=True)
         owner = root / "owner"; owner.mkdir(mode=0o700)
@@ -70,9 +69,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
             approved_transmission = DISPATCH._compute_transmission_sha256(
                 DISPATCH._canonical_digest(DISPATCH._parse_provider_scope(scope_raw)),
                 readable_digest, DISPATCH._selected_content_digest(selected))
-        if command_schema not in {9, 10, 11}:
-            raise ValueError("fixture command schema is unsupported")
-        command = {"schema_version": command_schema, "kind": "agy-worker-dispatch-command", "job_id": "fixture",
+        command = {"schema_version": DISPATCH.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "fixture",
             "workdir": str(worktree), "argv": ["agy", "--json-schema", str(schema), "--print", "task"], "agy_version": "1.1.22", "agy_version_observed": True,
             "idle_seconds": 1, "hard_seconds": 2, "max_seconds": 30, "notice_seconds": 3, "stage_dir": None, "stage_file": None,
             "child_umask": "022", "resume_prompt": "resume", "continue_prompt": "continue", "selection_path": None,
@@ -82,33 +79,28 @@ class SelfVerificationLifecycle(unittest.TestCase):
             "provider_scope_identity": None if scope is None else list(DISPATCH._identity(scope_info)),
             "approved_transmission_sha256": None if scope is None else approved_transmission,
             "approved_whole_worktree_sha256": readable_digest if scope is None else None,
-            "boost": False, "boost_policy_sha256": None, "approved_boost_risk_sha256": None,
+            "base_commit": None if scope is not None else DISPATCH._bound_whole_worktree_base(str(worktree), None, "task"),
             "allow_self_verification": allow, "self_verification_manifest_path": str(manifest) if allow else None,
             "self_verification_manifest_sha256": DISPATCH.digest(raw_manifest) if allow else None,
             "self_verification_manifest_identity": list(DISPATCH._identity(info)) if allow else None,
             "allow_scoped_repair": False, "workflow": "task", "max_cycles": 2, "repair_authority_sha256": None}
-        if command_schema in {10, 11}:
-            command["provider_isolation"] = "session"
-            if command_schema == 11:
-                command["native_grant_profile"] = "baseline"
-                command["whole_worktree_content_sha256"] = None
-                if scope is None:
-                    content = DISPATCH.whole_worktree_content_manifest(str(worktree))
-                    command["whole_worktree_content_sha256"] = content["manifest_sha256"]
-            if scope is None:
-                command["approved_whole_worktree_sha256"] = (
-                    DISPATCH._compute_v11_launch_approval_sha256(
-                        "session", "baseline",
-                        whole_worktree_content_sha256=command["whole_worktree_content_sha256"],
-                        readable_manifest_sha256=readable_digest,
-                    ) if command_schema == 11 else
-                    DISPATCH._compute_provider_launch_approval_sha256("session", readable_digest)
-                )
-            else:
-                command["approved_transmission_sha256"] = DISPATCH._bound_transmission_sha256(
-                    command, DISPATCH._canonical_digest(DISPATCH._parse_provider_scope(scope_raw)),
-                    readable_digest, DISPATCH._selected_content_digest(selected),
-                )
+        command["provider_isolation"] = "session"
+        command["native_grant_profile"] = "baseline"
+        command["whole_worktree_content_sha256"] = None
+        if scope is None:
+            content = DISPATCH.whole_worktree_content_manifest(str(worktree))
+            command["whole_worktree_content_sha256"] = content["manifest_sha256"]
+            command["approved_whole_worktree_sha256"] = DISPATCH._compute_v11_launch_approval_sha256(
+                "session", "baseline",
+                whole_worktree_content_sha256=content["manifest_sha256"],
+                readable_manifest_sha256=readable_digest,
+            )
+        else:
+            command["approved_transmission_sha256"] = DISPATCH._bound_transmission_sha256(
+                command, DISPATCH._canonical_digest(DISPATCH._parse_provider_scope(scope_raw)),
+                readable_digest, DISPATCH._selected_content_digest(selected),
+            )
+        assert set(command) == DISPATCH.CURRENT_COMMAND_FIELDS
         DISPATCH.write_atomic(job, DISPATCH.COMMAND_NAME, command)
         state, _sha = DISPATCH.create_state(job, "initial", resume=False)
         envelope = job / "envelope.json"; payload = json.dumps({**report(), "requested_check_ids": requested or []}, sort_keys=True).encode() + b"\n"
@@ -132,7 +124,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
         with mock.patch.object(DISPATCH.SELF_VERIFICATION, "run_checks", return_value=results):
             with contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
                 return DISPATCH.SELF_VERIFICATION.command_self_verify(
-                    DISPATCH.LEGACY_API, job, sha, "text",
+                    DISPATCH.VERIFICATION_API, job, sha, "text",
                     containment=SimpleNamespace(require_supported_host=lambda: None, ContainmentError=OSError))
 
     def test_candidate_outcomes_are_advisory_and_do_not_finalize(self):
@@ -145,31 +137,17 @@ class SelfVerificationLifecycle(unittest.TestCase):
                     command, _command_raw, _command_identity = DISPATCH.load_command(job)
                     self.assertEqual(result, 0)
                     self.assertEqual((state["schema_version"], command["schema_version"], command["provider_isolation"]),
-                                     (14, 10, "session"))
+                                     (DISPATCH.CURRENT_STATE_SCHEMA, DISPATCH.CURRENT_COMMAND_SCHEMA, "session"))
                     self.assertEqual((state["status"], state["phase"], state["driver_disposition"]),
                                      ("succeeded", "awaiting-verification", "unreviewed"))
                     self.assertEqual(state["self_verification_run"], state["attempt"])
 
-    def test_v9_command_remains_eligible_after_state_upgrade(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            job, sha, _worktree = self.fixture(temporary, command_schema=9)
-            state, _raw, _state_sha = DISPATCH.load_state(job)
-            command, command_raw, _command_identity = DISPATCH.load_command(job)
-            self.assertEqual((state["schema_version"], command["schema_version"]), (14, 9))
-            self.assertNotIn("provider_isolation", json.loads(command_raw))
-            self.assertEqual(
-                self.invoke(job, sha, [DISPATCH.SELF_VERIFICATION.CheckResult("required", "passed", 0, 0, 0, 0)]),
-                0,
-            )
-            current, _raw, _state_sha = DISPATCH.load_state(job)
-            self.assertEqual((current["schema_version"], current["phase"]), (14, "awaiting-verification"))
-
-    def test_v11_command_uses_bound_profile_and_content_for_self_verification(self):
+    def test_current_command_uses_bound_profile_and_content_for_self_verification(self):
         with tempfile.TemporaryDirectory() as temporary:
             for scoped in (False, True):
                 with self.subTest(scoped=scoped):
                     job, sha, _worktree = self.fixture(
-                        str(Path(temporary) / str(scoped)), command_schema=11, scoped=scoped,
+                        str(Path(temporary) / str(scoped)), scoped=scoped,
                     )
                     command, _raw, _identity = DISPATCH.load_command(job)
                     self.assertEqual(command["native_grant_profile"], "baseline")
@@ -181,7 +159,55 @@ class SelfVerificationLifecycle(unittest.TestCase):
                         0,
                     )
                     state, _raw, _sha = DISPATCH.load_state(job)
-                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (14, 1))
+                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (16, 1))
+
+    def test_denial_deadline_stays_nonreusable_after_verification_and_recovery(self):
+        # The controller collision test establishes this persisted reason from
+        # real terminal bytes. Here every later producer must keep its meaning.
+        with tempfile.TemporaryDirectory() as temporary:
+            for phase in ("manual", "self-verification", "interrupted-self-verification"):
+                with self.subTest(phase=phase):
+                    job, _sha, _worktree = self.fixture(str(Path(temporary) / phase))
+                    state, _raw, _sha = DISPATCH.load_state(job)
+                    state.update(status="failed", reason="permission_required", exit_code=6,
+                                 limit_kind="hard", elapsed_seconds=1.0,
+                                 continue_available=False, resume_available=False)
+                    _raw, sha = DISPATCH.write_atomic(job, DISPATCH.STATE_NAME, state)
+                    if phase == "self-verification":
+                        self.assertEqual(self.invoke(job, sha, [DISPATCH.SELF_VERIFICATION.CheckResult(
+                            "required", "passed", 0, 0, 0, 0)]), 0)
+                    elif phase == "interrupted-self-verification":
+                        state.update(phase="self-verifying", self_verification_run=state["attempt"],
+                                     self_verification_started_epoch=100.0,
+                                     self_verification_return_phase="awaiting-verification")
+                        DISPATCH.write_atomic(job, DISPATCH.STATE_NAME, state)
+                        with mock.patch.object(DISPATCH.time, "time", return_value=100.1), \
+                                contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
+                            self.assertEqual(DISPATCH.command_status(job, "text"), 0)
+                    state, _raw, sha = DISPATCH.load_state(job)
+                    self.assertEqual((state["reason"], state["exit_code"], state["limit_kind"]),
+                                     ("permission_required", 6, "hard"))
+                    self.assertTrue(state["result_available"])
+                    DISPATCH._bound_current_candidate(job, state)
+                    self.assertFalse(state["resume_available"] or state["continue_available"])
+                    self.assertFalse(DISPATCH._continue_from_facts(state, 101.0))
+                    self.assertFalse(DISPATCH._resume_is_eligible(state, 101.0))
+                    self.assertFalse({"resume", "continue"} & {
+                        item["action"] for item in DISPATCH.public_status(state, sha, job=job)["available_actions"]})
+                    feedback = DISPATCH.SELF_VERIFICATION.advisory_feedback(state["result_sha256"], [])
+                    with mock.patch.object(DISPATCH, "_verification_from_stdin", return_value=feedback), \
+                            self.assertRaises(DISPATCH.DispatchError):
+                        DISPATCH.command_continue(job, sha)
+                    if phase == "self-verification":
+                        with self.assertRaises(DISPATCH.DispatchError):
+                            DISPATCH.command_continue(job, sha, use_self_verification=True)
+                    with self.assertRaises(DISPATCH.DispatchError):
+                        DISPATCH.spawn(job, "conversation-resume", resume=True,
+                                       foreground=False, approve_sha=sha)
+                    projected = DISPATCH._terminal_projection(
+                        {**state, "attempt_origin": "conversation-continue"},
+                        status="failed", reason="permission_required", exit_code=6)
+                    self.assertFalse(projected["continue_available"])
 
     def test_attempt_is_single_use_default_off_and_unknown_ids_blocked(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -201,12 +227,12 @@ class SelfVerificationLifecycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             job, sha, worktree = self.fixture(temporary, scoped=True)
             with mock.patch.object(DISPATCH.SELF_VERIFICATION, "run_checks", side_effect=RuntimeError("controlled")):
-                self.assertEqual(DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.LEGACY_API, job, sha, "json", containment=mock.Mock()), 20)
+                self.assertEqual(DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.VERIFICATION_API, job, sha, "json", containment=mock.Mock()), 20)
             state, raw, _sha = DISPATCH.load_state(job)
             self.assertEqual(state["phase"], "awaiting-verification")
             self.assertGreaterEqual(state["self_verification_elapsed_seconds"], 0)
             copy = job / "manual-copy"
-            DISPATCH.SELF_VERIFICATION._copy_candidate(DISPATCH.LEGACY_API, job, json.loads((job / DISPATCH.COMMAND_NAME).read_text()), state, copy)
+            DISPATCH.SELF_VERIFICATION._copy_candidate(DISPATCH.VERIFICATION_API, job, json.loads((job / DISPATCH.COMMAND_NAME).read_text()), state, copy)
             self.assertTrue((copy / "check.py").exists())
             self.assertFalse((copy / "private.txt").exists())
 
@@ -229,7 +255,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
             containment = SimpleNamespace(
                 require_supported_host=mock.Mock(side_effect=OSError("unsupported")), ContainmentError=OSError)
             with self.assertRaises(DISPATCH.DispatchError), mock.patch.object(DISPATCH.SELF_VERIFICATION, "run_checks") as checks:
-                DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.LEGACY_API, job, sha, "json", containment=containment)
+                DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.VERIFICATION_API, job, sha, "json", containment=containment)
             checks.assert_not_called()
             state, _raw, _sha = DISPATCH.load_state(job)
             self.assertEqual(state["phase"], "awaiting-verification")
@@ -250,7 +276,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
                     mock.patch.object(DISPATCH.SELF_VERIFICATION, "run_checks", side_effect=checks), \
                     mock.patch.object(DISPATCH.SELF_VERIFICATION.time, "monotonic", side_effect=lambda: clock[0]), \
                     contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
-                self.assertEqual(DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.LEGACY_API, job, sha, "text", containment=native), 0)
+                self.assertEqual(DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.VERIFICATION_API, job, sha, "text", containment=native), 0)
             state, _raw, _sha = DISPATCH.load_state(job)
             self.assertGreater(seen[0], 1.0)
             self.assertGreaterEqual(state["self_verification_elapsed_seconds"], 2.0)
@@ -264,7 +290,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
             native = SimpleNamespace(require_supported_host=lambda: None, ContainmentError=OSError)
             with mock.patch.object(DISPATCH.SELF_VERIFICATION, "run_checks", side_effect=drift), \
                     contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO(), encoding="utf-8")):
-                self.assertEqual(DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.LEGACY_API, job, sha, "text", containment=native), 20)
+                self.assertEqual(DISPATCH.SELF_VERIFICATION.command_self_verify(DISPATCH.VERIFICATION_API, job, sha, "text", containment=native), 20)
             state, _raw, _sha = DISPATCH.load_state(job)
             self.assertEqual(state["phase"], "awaiting-verification")
             self.assertIsNone(state["verification_path"])

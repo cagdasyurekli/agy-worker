@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch bounded compatibility evidence from fixed official GitHub API paths."""
+"""Fetch bounded project release evidence from fixed official GitHub API paths."""
 
 from __future__ import annotations
 
@@ -23,14 +23,8 @@ SEMVER_PATTERN = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 SEMVER_RE = re.compile(SEMVER_PATTERN)
 REVISION_RE = re.compile(r"[0-9a-f]{40}")
 FIXED_PATH_RE = re.compile(
-    rf"(?:"
     rf"/repos/cagdasyurekli/codex-agy-worker/"
     rf"(?:releases/latest|git/ref/tags/v{SEMVER_PATTERN}|git/tags/[0-9a-f]{{40}})"
-    rf"|/repos/google-antigravity/antigravity-cli/"
-    rf"(?:releases/latest|git/ref/heads/main)"
-    rf"|/repos/openai/codex/"
-    rf"(?:releases/latest|git/ref/tags/rust-v{SEMVER_PATTERN}|git/tags/[0-9a-f]{{40}})"
-    rf")"
 )
 
 
@@ -39,7 +33,6 @@ class ToolPolicy:
     owner: str
     repository: str
     tag_pattern: re.Pattern[str]
-    main_branch: Optional[str]
 
 
 POLICIES = {
@@ -47,19 +40,6 @@ POLICIES = {
         owner="cagdasyurekli",
         repository="codex-agy-worker",
         tag_pattern=re.compile(rf"v({SEMVER_PATTERN})"),
-        main_branch=None,
-    ),
-    "agy": ToolPolicy(
-        owner="google-antigravity",
-        repository="antigravity-cli",
-        tag_pattern=re.compile(rf"v?({SEMVER_PATTERN})"),
-        main_branch="main",
-    ),
-    "codex": ToolPolicy(
-        owner="openai",
-        repository="codex",
-        tag_pattern=re.compile(rf"rust-v({SEMVER_PATTERN})"),
-        main_branch=None,
     ),
 }
 
@@ -271,34 +251,6 @@ def _release(value: Any, policy: ToolPolicy) -> tuple[str, str]:
     return tag, match.group(1)
 
 
-def _source_ref(value: Any, branch: str) -> str:
-    document = _object(value, "source")
-    target = _object(document.get("object"), "source")
-    revision = target.get("sha")
-    if (
-        document.get("ref") != f"refs/heads/{branch}"
-        or target.get("type") != "commit"
-        or not isinstance(revision, str)
-        or REVISION_RE.fullmatch(revision) is None
-    ):
-        raise OfficialEvidenceError("invalid source evidence")
-    return revision
-
-
-def _tag_ref(value: Any, tag: str) -> str:
-    document = _object(value, "release tag")
-    target = _object(document.get("object"), "release tag")
-    revision = target.get("sha")
-    if (
-        document.get("ref") != f"refs/tags/{tag}"
-        or target.get("type") != "commit"
-        or not isinstance(revision, str)
-        or REVISION_RE.fullmatch(revision) is None
-    ):
-        raise OfficialEvidenceError("invalid release tag evidence")
-    return revision
-
-
 def _tag_target(value: Any, tag: str) -> tuple[str, str]:
     document = _object(value, "release tag")
     target = _object(document.get("object"), "release tag")
@@ -357,7 +309,7 @@ def latest_evidence(tool: str, *, opener: Optional[Any] = None) -> tuple[str, st
     if policy is None:
         raise OfficialEvidenceError("invalid tool policy")
     fixed_opener = opener if opener is not None else build_fixed_opener()
-    tag, version = _release(
+    tag, _version = _release(
         fetch_json(
             fixed_opener,
             _repository_url(policy, "releases/latest"),
@@ -365,17 +317,8 @@ def latest_evidence(tool: str, *, opener: Optional[Any] = None) -> tuple[str, st
         ),
         policy,
     )
-    if policy.main_branch is None:
-        revision = _resolved_tag_commit(fixed_opener, policy, tag)
-        return tool, version if tool == "codex" else tag, revision
-    revision = _source_ref(
-        fetch_json(
-            fixed_opener,
-            _repository_url(policy, f"git/ref/heads/{policy.main_branch}"),
-        ),
-        policy.main_branch,
-    )
-    return tool, version, revision
+    revision = _resolved_tag_commit(fixed_opener, policy, tag)
+    return tool, tag, revision
 
 
 def project_release_evidence(tag: str, *, opener: Optional[Any] = None) -> tuple[str, str, str]:

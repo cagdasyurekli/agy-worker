@@ -21,19 +21,18 @@ import signal
 import stat
 import subprocess
 import sys
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence, cast
 
 sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve(strict=True).parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from candidate_state import CandidateStateError, candidate_state_digest
-import agy_dispatch as DISPATCH
-from delegation_policy import evaluate_policy
+from candidate_state import CandidateStateError, candidate_state_digest  # noqa: E402 -- sibling imports follow startup isolation/path setup
+import agy_dispatch as DISPATCH  # noqa: E402 -- sibling imports follow startup isolation/path setup
+from delegation_policy import evaluate_policy  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
-SCHEMA_VERSION = 3
-FACADE_SCHEMA_VERSION = 4
+STATUS_SCHEMA_VERSION = 3
 BOUND_SCHEMA_VERSION = 5
 BOUND_FACADE_SCHEMA_VERSION = 6
 JOB_STATE_SCHEMA_VERSION = 2
@@ -51,6 +50,10 @@ MAX_RECEIPT_BYTES = 1024 * 1024
 
 class WorkflowError(ValueError):
     """Fail-closed error in workflow facade."""
+
+
+class UnsupportedWorkflowSchemaError(WorkflowError):
+    """Keep unsupported records distinct from ordinary unavailable bindings."""
 
 
 def canonical_json(value: Any) -> bytes:
@@ -91,6 +94,14 @@ def real_absolute(path: Path, label: str, *, must_exist: bool = True) -> Path:
         raise WorkflowError(f"{label} must be one canonical absolute path")
     canonical = Path(os.path.realpath(path))
     if canonical != path:
+        # macOS spells the same temporary directory through /var and /private/var.
+        # Only show that predictable alias, never an arbitrary symlink target.
+        if (
+            path.parts[:3] == ("/", "var", "folders")
+            and canonical == Path("/private") / path.relative_to("/")
+            and all(char.isascii() and (char.isalnum() or char in "/._-") for char in str(canonical))
+        ):
+            raise WorkflowError(f"{label} must be one canonical absolute path; use {canonical}")
         raise WorkflowError(f"{label} must be one canonical absolute path")
     if must_exist and not path.exists():
         raise WorkflowError(f"{label} is unavailable")
@@ -224,44 +235,30 @@ def parse_strict(data: bytes, label: str) -> Any:
         raise WorkflowError(f"{label} is invalid") from exc
 
 
-def _valid_provider_execution(value: Any) -> bool:
-    return (
-        isinstance(value, dict)
-        and set(value) == {"legacy", "scope", "agy_sandbox", "native_containment"}
-        and value["legacy"] is True
-        and value["scope"] in {"provider-scope", "whole-worktree"}
-        and value["agy_sandbox"] is True
-        and type(value["native_containment"]) is bool
-        and (not value["native_containment"] or value["scope"] == "provider-scope")
-    )
-
-
 def validate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
-    legacy_base_keys = {
+    try:
+        DISPATCH._require_supported_schema(
+            state, label="workflow state",
+            supported=(BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION),
+        )
+    except DISPATCH.UnsupportedSchemaError as exc:
+        raise UnsupportedWorkflowSchemaError(str(exc)) from exc
+    base_keys = {
         "schema_version", "kind", "job_id", "repo_path", "repo_identity",
         "worktree_path", "worktree_identity", "branch", "branch_ref", "base",
         "preview_manifest_sha256", "dispatch_job_dir", "job_state_path",
-        "receipt_path",
+        "receipt_path", "provider_isolation", "provider_execution",
     }
-    base_keys = legacy_base_keys | {"provider_isolation", "provider_execution"}
-    legacy_facade_keys = legacy_base_keys | {"origin", "job_state_sha256"}
-    facade_keys = base_keys | {"origin", "job_state_sha256"}
     bound_keys = base_keys | {
         "preview_content_sha256", "preview_launch_approval_sha256", "native_grant_profile",
     }
     bound_facade_keys = bound_keys | {"origin", "job_state_sha256"}
     expected_keys = {
-        1: legacy_base_keys,
-        2: legacy_facade_keys,
-        SCHEMA_VERSION: base_keys,
-        FACADE_SCHEMA_VERSION: facade_keys,
         BOUND_SCHEMA_VERSION: bound_keys,
         BOUND_FACADE_SCHEMA_VERSION: bound_facade_keys,
-    }.get(state.get("schema_version"))
+    }.get(cast(int, state.get("schema_version")))
     if set(state.keys()) != expected_keys:
         raise WorkflowError("workflow state fields mismatch")
-    if state["schema_version"] not in {1, 2, SCHEMA_VERSION, FACADE_SCHEMA_VERSION, BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
-        raise WorkflowError("workflow state schema_version is invalid")
     if state["kind"] != KIND_WORKFLOW_STATE:
         raise WorkflowError("workflow state kind is invalid")
     if not isinstance(state["job_id"], str) or JOB_RE.fullmatch(state["job_id"]) is None:
@@ -304,7 +301,7 @@ def validate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
             or "\0" in value
         ):
             raise WorkflowError(f"workflow state {label} is invalid")
-    if state["schema_version"] in {2, FACADE_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
+    if state["schema_version"] == BOUND_FACADE_SCHEMA_VERSION:
         if state["origin"] != FACADE_ORIGIN:
             raise WorkflowError("workflow state origin is invalid")
         if state["job_state_path"] is None:
@@ -314,28 +311,16 @@ def validate_workflow_state(state: dict[str, Any]) -> dict[str, Any]:
             or SHA_RE.fullmatch(state["job_state_sha256"]) is None
         ):
             raise WorkflowError("workflow state job_state_sha256 is invalid")
-    if state["schema_version"] in {SCHEMA_VERSION, FACADE_SCHEMA_VERSION, BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
-        provider_isolation = state["provider_isolation"]
-        provider_execution = state["provider_execution"]
-        if provider_isolation in {"session", "native"}:
-            if provider_execution is not None:
-                raise WorkflowError("workflow state provider execution is invalid")
-        elif provider_isolation is None:
-            if not _valid_provider_execution(provider_execution):
-                raise WorkflowError("workflow state legacy provider execution is invalid")
-        else:
-            raise WorkflowError("workflow state provider isolation is invalid")
-    if state["schema_version"] in {BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
-        if state["provider_isolation"] not in {"session", "native"} or state["provider_execution"] is not None:
-            raise WorkflowError("bound workflow provider execution is invalid")
-        for label in ("preview_content_sha256", "preview_launch_approval_sha256"):
-            if not isinstance(state[label], str) or SHA_RE.fullmatch(state[label]) is None:
-                raise WorkflowError(f"workflow state {label} is invalid")
-        profile = state["native_grant_profile"]
-        if not isinstance(profile, str) or profile not in {"baseline", "A", "B", "AB"} or (
-            state["provider_isolation"] != "native" and profile != "baseline"
-        ):
-            raise WorkflowError("workflow state native grant profile is invalid")
+    if state["provider_isolation"] not in {"session", "native"} or state["provider_execution"] is not None:
+        raise WorkflowError("bound workflow provider execution is invalid")
+    for label in ("preview_content_sha256", "preview_launch_approval_sha256"):
+        if not isinstance(state[label], str) or SHA_RE.fullmatch(state[label]) is None:
+            raise WorkflowError(f"workflow state {label} is invalid")
+    profile = state["native_grant_profile"]
+    if not isinstance(profile, str) or profile not in {"baseline", "A", "B", "AB"} or (
+        state["provider_isolation"] != "native" and profile != "baseline"
+    ):
+        raise WorkflowError("workflow state native grant profile is invalid")
     return state
 
 
@@ -344,7 +329,7 @@ def bind_provider_isolation(args: argparse.Namespace, state: dict[str, Any] | No
 
     stored = (
         None
-        if state is None or state["schema_version"] in {1, 2}
+        if state is None
         else state.get("provider_isolation")
     )
     if args.provider_isolation is None:
@@ -357,22 +342,24 @@ class WorkflowStateStore:
     def __init__(self, path: Path, *, initial: bool = False) -> None:
         self.path = real_absolute(path, "workflow state", must_exist=not initial)
         self.parent, self.parent_fd = validate_private_parent(self.path.parent)
-        self.parent_identity = identity(os.fstat(self.parent_fd))
         try:
-            fcntl.flock(self.parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            os.close(self.parent_fd)
-            self.parent_fd = -1
-            raise WorkflowError("state parent is busy") from exc
-        self.name = self.path.name
-        if not self.name or self.name in {".", ".."}:
-            raise WorkflowError("state name is invalid")
-        self.raw: bytes | None = None
-        self.metadata: os.stat_result | None = None
-        self.sha256: str | None = None
-        self.value: dict[str, Any] | None = None
-        if not initial:
-            self.load()
+            self.parent_identity = identity(os.fstat(self.parent_fd))
+            try:
+                fcntl.flock(self.parent_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise WorkflowError("state parent is busy") from exc
+            self.name = self.path.name
+            if not self.name or self.name in {".", ".."}:
+                raise WorkflowError("state name is invalid")
+            self.raw: bytes | None = None
+            self.metadata: os.stat_result | None = None
+            self.sha256: str | None = None
+            self.value: dict[str, Any] | None = None
+            if not initial:
+                self.load()
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         if self.parent_fd >= 0:
@@ -508,6 +495,28 @@ class WorkflowStateStore:
             self._validate_parent_path()
 
 
+def dispatch_log_root_from_workflow_state(state_path: Path, job_id: str) -> Path:
+    """Resolve an advanced control's log root from an existing bound facade job."""
+    store = WorkflowStateStore(state_path, initial=False)
+    try:
+        state = store.value
+        if state is None or state["job_id"] != job_id or not state["dispatch_job_dir"]:
+            raise WorkflowError("workflow state does not bind the requested dispatch job")
+        dispatch_dir = Path(state["dispatch_job_dir"])
+        if dispatch_dir.name != job_id:
+            raise WorkflowError("workflow dispatch directory does not bind the requested job")
+        try:
+            job = DISPATCH.canonical_job(dispatch_dir)
+            dispatch, _raw, _sha = DISPATCH.load_state(job)
+        except (OSError, DISPATCH.DispatchError) as exc:
+            raise WorkflowError("bound dispatch job is unavailable") from exc
+        if dispatch["job_id"] != job_id:
+            raise WorkflowError("dispatch state job binding is invalid")
+        return dispatch_dir.parent
+    finally:
+        store.close()
+
+
 def validate_worktree_registration(repo: Path, worktree: Path) -> None:
     try:
         proc = subprocess.run(
@@ -604,9 +613,16 @@ def canonical_transmission_preview(
             timeout=60.0,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise WorkflowError("transmission preview timed out") from exc
+    except OSError as exc:
         raise WorkflowError("transmission preview unavailable") from exc
     if proc.returncode != 0:
+        prefix = b"agy-worker.sh: transmission preview invalid: "
+        if proc.stderr.startswith(prefix) and proc.stderr.endswith(b"\n"):
+            detail = proc.stderr[len(prefix):-1]
+            if 0 < len(detail) <= 600 and all(32 <= byte <= 126 for byte in detail):
+                raise WorkflowError(f"transmission preview invalid: {detail.decode('ascii')}")
         raise WorkflowError("transmission preview unavailable")
     value = parse_strict(proc.stdout, "transmission preview")
     if not isinstance(value, dict):
@@ -710,6 +726,8 @@ def _delegation_from_dispatch(
         preflight_passed, provider_state = False, "unverified"
     elif reason == "provider_quota_exhausted":
         preflight_passed, provider_state = True, "quota_exhausted"
+    elif reason == "native_host_sandbox_unavailable":
+        preflight_passed, provider_state = True, "unverified"
     elif reason in {
         "provider_terminal_error", "provider_timeout", "agy_failed_unclassified",
         "provider_unavailable", "authentication_failed", "provider_terminal_cancelled",
@@ -721,7 +739,7 @@ def _delegation_from_dispatch(
     elif status == "failed" and (
         reason in {"empty_output", "invalid_envelope", "output_oversized", "permission_required"}
         or facts.get("failure_stage") in {
-            "framing", "missing_structured_output", "boost_contract",
+            "framing", "missing_structured_output",
         }
     ):
         preflight_passed, provider_state = True, "available"
@@ -754,8 +772,8 @@ def _delegation_from_dispatch(
         "user_opt_in": True, "transmission_approved": True,
         "scope_path_approved": True, "preflight_passed": preflight_passed,
         "provider_state": provider_state,
-        "hard_stop_triggered": reason == "permission_required",
-        "hard_stop_reasons": ["permission_required"] if reason == "permission_required" else [],
+        "hard_stop_triggered": reason in {"permission_required", "native_host_sandbox_unavailable"},
+        "hard_stop_reasons": [reason] if reason in {"permission_required", "native_host_sandbox_unavailable"} else [],
         "cycle_budget_exhausted": status == "failed" and attempt >= max_cycles,
         "attempt_count": attempt, "max_cycles": max_cycles,
         "prior_candidate_available": facts.get("result_available") is True,
@@ -774,6 +792,8 @@ def _announce_delegation(
     """Make the ordinary run outcome visible without changing dispatch output."""
     try:
         facts = _bound_dispatch_status(dispatch_dir, job_id)
+    except UnsupportedWorkflowSchemaError:
+        raise
     except WorkflowError:
         facts = None
     if facts is None and result in {7, 8}:
@@ -797,15 +817,11 @@ def _announce_delegation(
 
 def transmission_choice(
     args: argparse.Namespace, preview_data: dict[str, Any],
-) -> tuple[str, str | None, str, str, bool]:
+) -> tuple[str, str | None, str, str]:
     """Resolve one explicit launch mode without widening provider readability."""
 
     if args.provider_scope:
-        if (
-            args.approve_whole_worktree
-            or args.approve_preview_sha
-            or args.legacy_preview_approval
-        ):
+        if args.approve_whole_worktree:
             raise WorkflowError(
                 "--provider-scope conflicts with whole-worktree approval options"
             )
@@ -816,38 +832,18 @@ def transmission_choice(
             f"--approve-transmission-sha {expected}"
         )
         mode = "provider-scope"
-        legacy = False
     else:
         if args.approve_transmission_sha:
             raise WorkflowError(
                 "--approve-transmission-sha requires --provider-scope"
             )
-        if args.approve_whole_worktree and args.approve_preview_sha:
-            raise WorkflowError(
-                "--approve-whole-worktree conflicts with --approve-preview-sha"
-            )
-        if args.approve_preview_sha:
-            if not args.legacy_preview_approval:
-                raise WorkflowError(
-                    "--approve-preview-sha is deprecated; use "
-                    "--approve-whole-worktree or add "
-                    "--legacy-preview-approval during the migration window"
-                )
-            approved = args.approve_preview_sha
-            legacy = True
-        else:
-            if args.legacy_preview_approval:
-                raise WorkflowError(
-                    "--legacy-preview-approval requires --approve-preview-sha"
-                )
-            approved = args.approve_whole_worktree
-            legacy = False
+        approved = args.approve_whole_worktree
         expected = preview_data["launch_approval_sha256"]
         hint = f"--approve-whole-worktree {expected}"
         mode = "whole-worktree"
     if approved is not None and SHA_RE.fullmatch(approved) is None:
         raise WorkflowError(f"{mode} approval must be one lowercase SHA-256")
-    return mode, approved, expected, hint, legacy
+    return mode, approved, expected, hint
 
 
 def _owner_directory(path: Path, label: str, *, private: bool) -> Path:
@@ -1016,86 +1012,6 @@ def _validate_facade_job_state(
         )
 
 
-def _legacy_ready_for_migration(
-    state: dict[str, Any], *, repo: Path, worktree: Path, branch: str,
-    base: str, job_id: str, dispatch_job_dir: Path,
-) -> None:
-    """Prove an old facade record never reached a provider-causing dispatch."""
-
-    if state["schema_version"] not in {1, 2}:
-        raise WorkflowError("workflow state is not a legacy ready record")
-    if state["dispatch_job_dir"] != str(dispatch_job_dir):
-        raise WorkflowError("legacy workflow dispatch binding changed")
-    job_state_path = state.get("job_state_path")
-    if not isinstance(job_state_path, str):
-        raise WorkflowError("legacy workflow readiness cannot be proved")
-    job_value, job_sha = _job_state_snapshot(Path(job_state_path))
-    _validate_facade_job_state(
-        job_value, repo=repo, worktree=worktree, branch=branch,
-        base=base, job_id=job_id,
-    )
-    if state["schema_version"] == 2 and state.get("job_state_sha256") != job_sha:
-        raise WorkflowError("legacy workflow lifecycle state changed")
-    if dispatch_job_dir.exists() or dispatch_job_dir.is_symlink():
-        raise WorkflowError("legacy workflow dispatch artifacts are unavailable")
-
-
-def _migrate_legacy_ready(
-    state: dict[str, Any], *, provider_isolation: str,
-) -> dict[str, Any]:
-    """Produce one complete new state only after readiness was proved."""
-
-    if state["schema_version"] not in {1, 2}:
-        raise WorkflowError("workflow state is not a legacy ready record")
-    migrated = dict(state)
-    migrated["schema_version"] = (
-        FACADE_SCHEMA_VERSION if state["schema_version"] == 2 else SCHEMA_VERSION
-    )
-    migrated["provider_isolation"] = provider_isolation
-    migrated["provider_execution"] = None
-    validate_workflow_state(migrated)
-    return migrated
-
-
-def _migrate_legacy_bound_for_update(
-    state: dict[str, Any], *, provider_execution: dict[str, Any], receipt_path: str,
-) -> dict[str, Any]:
-    """Replace an old bound facade state instead of mutating its raw shape."""
-
-    if state["schema_version"] not in {1, 2} or not _valid_provider_execution(provider_execution):
-        raise WorkflowError("legacy workflow execution binding is unavailable")
-    migrated = dict(state)
-    migrated["schema_version"] = (
-        FACADE_SCHEMA_VERSION if state["schema_version"] == 2 else SCHEMA_VERSION
-    )
-    migrated["provider_isolation"] = None
-    migrated["provider_execution"] = provider_execution
-    migrated["receipt_path"] = receipt_path
-    validate_workflow_state(migrated)
-    return migrated
-
-
-def _migrate_legacy_unbound_for_receipt(
-    state: dict[str, Any], *, receipt_path: str,
-) -> dict[str, Any]:
-    """Record local receipt evidence without claiming a legacy dispatch."""
-
-    if (
-        state["schema_version"] not in {1, 2}
-        or state["dispatch_job_dir"] is not None
-    ):
-        raise WorkflowError("legacy workflow execution binding is unavailable")
-    migrated = dict(state)
-    migrated["schema_version"] = (
-        FACADE_SCHEMA_VERSION if state["schema_version"] == 2 else SCHEMA_VERSION
-    )
-    migrated["provider_isolation"] = "session"
-    migrated["provider_execution"] = None
-    migrated["receipt_path"] = receipt_path
-    validate_workflow_state(migrated)
-    return migrated
-
-
 def _rollback_facade_ready(
     *, state_path: Path, workflow_state_path: Path | None,
     workflow_sha: str | None, workflow_identity: dict[str, int] | None,
@@ -1148,7 +1064,7 @@ class SingleValue(argparse.Action):
 
     def __call__(
         self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
-        values: str, option_string: str | None = None,
+        values: str | Sequence[Any] | None, option_string: str | None = None,
     ) -> None:
         if getattr(namespace, self.dest, None) is not None:
             parser.error(f"repeated {option_string}")
@@ -1182,31 +1098,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--approve-transmission-sha",
         help="Approved scoped transmission SHA-256 from the exact preview.",
     )
-    run_parser.add_argument(
-        "--approve-preview-sha",
-        help="Deprecated whole-worktree approval spelling; requires --legacy-preview-approval.",
-    )
-    run_parser.add_argument(
-        "--legacy-preview-approval",
-        action="store_true",
-        help="Temporarily acknowledge the deprecated --approve-preview-sha spelling.",
-    )
     run_parser.add_argument("--preview", action="store_true", help="Run transmission preview only.")
     run_parser.add_argument("--job-dir", help="Explicit dispatch job directory.")
     run_parser.add_argument("--job-state", help="Optional path to job.sh state file.")
     run_parser.add_argument("--workflow", choices=("explore", "task", "project"), default="task")
-    run_parser.add_argument("--mode", choices=("plan", "accept-edits"), default="accept-edits")
+    run_parser.add_argument("--mode", choices=("plan", "accept-edits"))
     run_parser.add_argument("--tier", action=SingleValue)
     run_parser.add_argument("--model", action=SingleValue)
     run_parser.add_argument("--effort", action=SingleValue)
-    run_parser.add_argument(
-        "--compatibility-disposition", choices=("proceed",), action=SingleValue,
-        help="Explicit caller disposition for reviewed agy version drift.",
-    )
-    run_parser.add_argument(
-        "--approve-help-sha", action=SingleValue,
-        help="Exact observed raw agy help SHA-256 approved for version drift.",
-    )
     run_parser.add_argument("--max-cycles", type=int)
     run_parser.add_argument("--allow-scoped-repair", action="store_true",
                              help="Permit same-conversation repair within the approved scoped job.")
@@ -1252,14 +1151,9 @@ def build_parser() -> argparse.ArgumentParser:
     vf_parser.add_argument("--selection")
     vf_parser.add_argument("--pre-recommendation")
     vf_parser.add_argument("--assurance", required=True, choices=("verified", "partially_verified", "rejected", "blocked"))
-    approval_group = vf_parser.add_mutually_exclusive_group()
-    approval_group.add_argument(
+    vf_parser.add_argument(
         "--approve-dispatch-sha",
         help="Exact dispatch-state SHA copied from workflow status before verification.",
-    )
-    approval_group.add_argument(
-        "--approve-state-sha",
-        help="Deprecated compatibility alias for --approve-dispatch-sha.",
     )
     vf_parser.add_argument("--verification-json")
     vf_parser.add_argument("--format", choices=("json", "text"), default="json")
@@ -1269,7 +1163,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _dispatch_run(
     args: argparse.Namespace, *, worktree: Path, dispatch_job_dir: Path,
-    approved_whole_worktree: str | None,
+    approved_whole_worktree: str | None, base: str | None = None,
 ) -> int:
     runtime = SCRIPTS.parent
     cmd = [
@@ -1287,20 +1181,16 @@ def _dispatch_run(
     else:
         if approved_whole_worktree is None:
             raise WorkflowError("whole-worktree dispatch approval is unavailable")
-        cmd += [
-            "--add-dir", str(worktree),
-            "--approve-whole-worktree", approved_whole_worktree,
-        ]
+        cmd += ["--add-dir", str(worktree)]
+        if base is not None:
+            cmd += ["--base-commit", base]
+        cmd += ["--approve-whole-worktree", approved_whole_worktree]
     if args.tier:
         cmd += ["--tier", args.tier]
     if args.model:
         cmd += ["--model", args.model]
     if args.effort:
         cmd += ["--effort", args.effort]
-    if args.compatibility_disposition:
-        cmd += ["--compatibility-disposition", args.compatibility_disposition]
-    if args.approve_help_sha:
-        cmd += ["--approve-help-sha", args.approve_help_sha]
     if args.max_cycles:
         cmd += ["--max-cycles", str(args.max_cycles)]
     if args.allow_scoped_repair:
@@ -1362,7 +1252,7 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
         preview_bindings = preview_binding_fields(
             preview_data, scoped=bool(args.provider_scope),
         )
-        mode, approved_sha, expected_sha, approval_hint, legacy = (
+        mode, approved_sha, expected_sha, approval_hint = (
             transmission_choice(args, preview_data)
         )
         if args.preview:
@@ -1379,11 +1269,6 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
             return 20
         if approved_sha != expected_sha:
             raise WorkflowError("transmission preview approval is stale or mismatched")
-        if legacy:
-            sys.stderr.write(
-                "workflow: warning: --approve-preview-sha is deprecated; "
-                "use --approve-whole-worktree\n"
-            )
         if store.value is not None:
             raise WorkflowError(
                 "workflow state already exists; use status or the advanced recovery commands"
@@ -1428,6 +1313,7 @@ def _explicit_run(args: argparse.Namespace, repo: Path) -> int:
     result = _dispatch_run(
         args, worktree=worktree, dispatch_job_dir=dispatch_job_dir,
         approved_whole_worktree=approved_sha if mode == "whole-worktree" else None,
+        base=args.base,
     )
     _announce_delegation(
         dispatch_job_dir, args.job_id, result=result, intent=args.workflow,
@@ -1507,11 +1393,6 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
     state_sha: str | None = None
     state_identity: dict[str, int] | None = None
     try:
-        if store.value is not None and store.value["schema_version"] in {1, 2}:
-            _legacy_ready_for_migration(
-                store.value, repo=repo, worktree=worktree, branch=branch,
-                base=base, job_id=args.job_id, dispatch_job_dir=dispatch_job_dir,
-            )
         bind_provider_isolation(args, store.value)
         try:
             preview_raw, preview_data = canonical_transmission_preview(
@@ -1533,13 +1414,7 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
         preview_bindings = preview_binding_fields(
             preview_data, scoped=bool(args.provider_scope),
         )
-        if store.value is not None and store.value["schema_version"] in {1, 2}:
-            if store.value["preview_manifest_sha256"] != manifest_sha:
-                raise WorkflowError("legacy workflow binding or preview changed")
-            store.replace(_migrate_legacy_ready(
-                store.value, provider_isolation=args.provider_isolation,
-            ))
-        mode, approved_sha, expected_sha, approval_hint, legacy = (
+        mode, approved_sha, expected_sha, approval_hint = (
             transmission_choice(args, preview_data)
         )
         if store.value is None:
@@ -1583,13 +1458,12 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
                 "job_state_path": str(job_state_path),
                 "preview_manifest_sha256": manifest_sha,
             }
-            if state["schema_version"] in {FACADE_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
+            if state["schema_version"] == BOUND_FACADE_SCHEMA_VERSION:
                 expected.update({
                     "origin": FACADE_ORIGIN,
                     "job_state_sha256": job_sha,
                 })
-            if state["schema_version"] in {BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
-                expected.update(preview_bindings)
+            expected.update(preview_bindings)
             if any(state.get(key) != value for key, value in expected.items()):
                 raise WorkflowError("facade workflow binding or preview changed")
             state_sha = store.sha256
@@ -1610,17 +1484,13 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
             return 20
         if approved_sha != expected_sha:
             raise WorkflowError("transmission preview approval is stale or mismatched")
-        if legacy:
-            sys.stderr.write(
-                "workflow: warning: --approve-preview-sha is deprecated; "
-                "use --approve-whole-worktree\n"
-            )
     finally:
         store.close()
 
     result = _dispatch_run(
         args, worktree=worktree, dispatch_job_dir=dispatch_job_dir,
         approved_whole_worktree=approved_sha if mode == "whole-worktree" else None,
+        base=base,
     )
     _announce_delegation(
         dispatch_job_dir, args.job_id, result=result, intent=args.workflow,
@@ -1638,16 +1508,15 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
     return result
 
 
+def _resolved_mode(args: argparse.Namespace) -> str:
+    expected = "plan" if args.workflow == "explore" else "accept-edits"
+    if args.workflow != "task" and args.mode is not None and args.mode != expected:
+        raise WorkflowError(f"--workflow {args.workflow} conflicts with --mode {args.mode}")
+    return args.mode or expected
+
+
 def command_run(args: argparse.Namespace) -> int:
-    if bool(args.compatibility_disposition) != bool(args.approve_help_sha):
-        raise WorkflowError(
-            "--compatibility-disposition and --approve-help-sha must be supplied together"
-        )
-    if args.compatibility_disposition:
-        if not args.model or args.tier:
-            raise WorkflowError("compatibility approval requires one explicit --model")
-        if SHA_RE.fullmatch(args.approve_help_sha) is None:
-            raise WorkflowError("--approve-help-sha must be a lowercase SHA-256 digest")
+    args.mode = _resolved_mode(args)
     repo = real_absolute(Path(args.repo), "repository")
     if args.provider_scope:
         args.provider_scope = str(
@@ -1670,13 +1539,15 @@ def _bound_dispatch_status(dispatch_dir: Path, job_id: str) -> dict[str, Any]:
         execution = DISPATCH.bound_provider_execution(job, value)
         facts = DISPATCH.public_status(value, state_sha, job=job)
         _after, after_raw, after_sha = DISPATCH.load_state(job)
+    except DISPATCH.UnsupportedSchemaError as exc:
+        raise UnsupportedWorkflowSchemaError(str(exc)) from exc
     except (OSError, DISPATCH.DispatchError) as exc:
         raise WorkflowError("dispatcher status unavailable") from exc
     if raw != after_raw or state_sha != after_sha:
         raise WorkflowError("dispatch state changed during read-only projection")
     if not isinstance(facts, dict) or facts.get("job_id") != job_id:
         raise WorkflowError("dispatcher status contract is invalid")
-    expected_isolation = None if execution["legacy"] else value["provider_isolation"]
+    expected_isolation = value["provider_isolation"]
     if (
         facts.get("provider_execution") != execution
         or facts.get("provider_isolation") != expected_isolation
@@ -1685,6 +1556,15 @@ def _bound_dispatch_status(dispatch_dir: Path, job_id: str) -> dict[str, Any]:
     facts = dict(facts)
     facts["provider_execution"] = execution
     return facts
+
+
+def _next_required_workflow_action(facts: dict[str, Any] | None) -> str | None:
+    if not facts or not facts.get("result_available") or facts.get("driver_disposition") != "unreviewed":
+        return None
+    actions = facts.get("available_actions", [])
+    if any(isinstance(item, dict) and item.get("action") == "finalize" for item in actions):
+        return "verify-finalize"
+    return None
 
 
 def _workflow_status(args: argparse.Namespace) -> int:
@@ -1709,6 +1589,8 @@ def _workflow_status(args: argparse.Namespace) -> int:
             if dispatch_dir.exists() or dispatch_dir.is_symlink():
                 try:
                     dispatch_facts = _bound_dispatch_status(dispatch_dir, job_id)
+                except UnsupportedWorkflowSchemaError:
+                    raise
                 except WorkflowError:
                     dispatch_facts = None
                 if dispatch_facts is not None:
@@ -1733,7 +1615,7 @@ def _workflow_status(args: argparse.Namespace) -> int:
                     verification_facts = None
 
         status_result = {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": STATUS_SCHEMA_VERSION,
             "kind": KIND_WORKFLOW_STATUS,
             "source_kind": "workflow_facade",
             "job_id": job_id,
@@ -1748,9 +1630,7 @@ def _workflow_status(args: argparse.Namespace) -> int:
             "dispatch": dispatch_facts,
             "delegation_policy": _delegation_from_dispatch(
                 dispatch_facts,
-                approval_bound=state["schema_version"] in {
-                    BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION,
-                },
+                approval_bound=True,
             ),
             "verification": verification_facts,
             "phase": dispatch_facts.get("phase") if dispatch_facts else "ready",
@@ -1760,17 +1640,17 @@ def _workflow_status(args: argparse.Namespace) -> int:
             "available_actions": (
                 dispatch_facts.get("available_actions", []) if dispatch_facts else []
             ),
+            "next_required_action": _next_required_workflow_action(dispatch_facts),
             "advanced_recovery": (
                 "Use workflow verify-finalize for driver-owned verification; "
                 "use job.sh or agy-worker.sh directly only for advanced recovery."
             ),
         }
-        if state["schema_version"] in {BOUND_SCHEMA_VERSION, BOUND_FACADE_SCHEMA_VERSION}:
-            status_result.update({
-                "preview_content_sha256": state["preview_content_sha256"],
-                "preview_launch_approval_sha256": state["preview_launch_approval_sha256"],
-                "native_grant_profile": state["native_grant_profile"],
-            })
+        status_result.update({
+            "preview_content_sha256": state["preview_content_sha256"],
+            "preview_launch_approval_sha256": state["preview_launch_approval_sha256"],
+            "native_grant_profile": state["native_grant_profile"],
+        })
 
         if args.format == "json":
             sys.stdout.buffer.write(canonical_json(status_result) + b"\n")
@@ -1786,6 +1666,9 @@ def _workflow_status(args: argparse.Namespace) -> int:
             verdict = verification_facts.get("verdict", "unverified") if verification_facts else "unverified"
             assurance = dispatch_facts.get("assurance") if dispatch_facts else "none"
             line3 = f"verification: verdict={verdict} assurance={assurance or 'none'}"
+            required = status_result["next_required_action"]
+            if required:
+                line3 += f" next-required-action={required}"
             sys.stdout.write(f"{line1}\n{line2}\n{line3}\n")
             delegation = status_result["delegation_policy"]
             decision = delegation.get("decision") or {}
@@ -1822,7 +1705,7 @@ def _low_level_status(args: argparse.Namespace, state_path: Path) -> int:
     elif phase == "dispatch-failed":
         actions.append("abort")
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": STATUS_SCHEMA_VERSION,
         "kind": KIND_WORKFLOW_STATUS,
         "source_kind": "job_lifecycle",
         "job_id": facts.get("job_id"),
@@ -1864,6 +1747,8 @@ def _dispatcher_status(
             raise WorkflowError("dispatch state job binding is invalid")
         facts = DISPATCH.public_status(value, state_sha, job=job)
         _after, after_raw, after_sha = DISPATCH.load_state(job)
+    except DISPATCH.UnsupportedSchemaError as exc:
+        raise UnsupportedWorkflowSchemaError(str(exc)) from exc
     except (OSError, DISPATCH.DispatchError) as exc:
         raise WorkflowError("dispatcher status unavailable") from exc
     if raw != after_raw or state_sha != after_sha:
@@ -1871,7 +1756,7 @@ def _dispatcher_status(
     if not isinstance(facts, dict) or facts.get("job_id") != job_id:
         raise WorkflowError("dispatcher status contract is invalid")
     result = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": STATUS_SCHEMA_VERSION,
         "kind": KIND_WORKFLOW_STATUS,
         "source_kind": "dispatcher",
         "job_id": job_id,
@@ -1972,7 +1857,7 @@ def command_verify_finalize(args: argparse.Namespace) -> int:
                 dispatch_state_file = possible_dispatch_state
                 dispatch_facts = _bound_dispatch_status(dispatch_dir, state["job_id"])
                 dispatch_approve_sha = (
-                    args.approve_dispatch_sha or args.approve_state_sha
+                    args.approve_dispatch_sha
                 )
                 if dispatch_approve_sha is None:
                     raise WorkflowError(
@@ -2073,29 +1958,9 @@ def command_verify_finalize(args: argparse.Namespace) -> int:
             if receipt_json.get("final_candidate_state_sha256") != current_cand:
                 raise WorkflowError("receipt does not bind current candidate state")
 
-            # The receipt is useful bounded evidence even when later controller
-            # finalization rejects a stale approval or another binding. Old raw
-            # facade states are replaced atomically: bound records retain their
-            # command-derived execution fact, while null-dispatch records claim
-            # no prior execution. Never write projected fields into V1/V2 bytes.
-            if state["schema_version"] in {1, 2}:
-                if dispatch_facts is not None:
-                    migrated = _migrate_legacy_bound_for_update(
-                        state,
-                        provider_execution=dispatch_facts["provider_execution"],
-                        receipt_path=str(receipt_path),
-                    )
-                elif state["dispatch_job_dir"] is None:
-                    migrated = _migrate_legacy_unbound_for_receipt(
-                        state, receipt_path=str(receipt_path),
-                    )
-                else:
-                    raise WorkflowError("legacy workflow execution binding is unavailable")
-                store.replace(migrated)
-                state = store.value
-                assert state is not None
-            else:
-                store.update({"receipt_path": str(receipt_path)})
+            # Retain bounded receipt evidence even if later finalization rejects
+            # a stale approval or another binding.
+            store.update({"receipt_path": str(receipt_path)})
 
             # Rejected/routed gate outcomes remain useful bounded receipts, but
             # they can never authorize a lifecycle assurance transition.
@@ -2142,8 +2007,35 @@ def command_verify_finalize(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    args = parser.parse_args(argv)
+    value_options = {
+        option
+        for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        for subparser in action.choices.values()
+        for argument in subparser._actions if argument.nargs != 0
+        for option in argument.option_strings
+    }
+    removed = {
+        "--approve-preview-sha": "--approve-whole-worktree",
+        "--legacy-preview-approval": "--approve-whole-worktree",
+        "--approve-state-sha": "--approve-dispatch-sha",
+    }
+    remaining = iter(arguments)
+    for argument in remaining:
+        option = argument.partition("=")[0]
+        if option in {"--boost", "--approve-boost-risk-sha", "--persona"}:
+            sys.stderr.write(f"workflow: {option} was removed after v0.22.0; use the ordinary task workflow.\n")
+            return 64
+        if option in removed:
+            sys.stderr.write(
+                f"workflow: {option} was removed after {DISPATCH.LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE}; "
+                f"use {removed[option]}.\n"
+            )
+            return 64
+        if option in value_options and "=" not in argument:
+            next(remaining, None)
+    args = parser.parse_args(arguments)
     try:
         if args.command == "run":
             return command_run(args)

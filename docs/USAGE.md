@@ -48,12 +48,17 @@ rule also permits wildcard binds; it is not a loopback-only guarantee.
 
 Prepare one approval package for the task and its foreseeable repairs. Include the
 transmitted content, provider permissions, model, and shared retry/time budget.
+The content digest does not cover task text, self-verification manifest,
+`--allow-scoped-repair`, workflow/edit mode, model/effort, budget or environment
+opt-ins. Show the exact task and selected settings separately beside the digest
+before approval; a material change needs renewed authority. See the
+[binding details](PROJECT_WORKFLOW.md#lifecycle-at-a-glance).
 Use initial `--allow-scoped-repair` for approved multi-turn scoped work. One exact
 upfront approval may cover predictable same-scope repairs and mechanical digest/state
 refresh; provider-launch notices are status, not repeated permission requests. New scope,
 content exposure, destination, isolation, permissions or budget still require authority.
-Preserve required current raw-help/semantic version preflight on each launch; add no cache
-or alternate controller. Codex generates current state and candidate approval hashes as it works; these
+Probe required capabilities before each launch and recheck the executable immediately
+before starting it; add no cache or alternate controller. Codex generates current state and candidate approval hashes as it works; these
 mechanical bindings do not themselves require another human approval. Ask again
 only when an action exceeds the approved content, permissions, destination, or budget,
 or the user reserved that decision. Preserve Goal as an ordinary-use opt-in, not a
@@ -125,8 +130,8 @@ For a larger request:
 > the project, run the relevant checks, and repair failures in the same conversation.
 
 Codex creates an isolated worktree, dispatches the matching workflow, inspects the
-diff, and runs driver-owned checks. You do not need to supply a final file list, a
-persona, or every verification command before starting.
+diff, and runs driver-owned checks. You do not need to supply a final file list or
+every verification command before starting.
 
 ## Primary run, status, verify-finalize path
 
@@ -157,14 +162,14 @@ model may proceed through that observed drift by pairing `--model MODEL_SLUG` wi
 model-specific drift decision and does not qualify that model or establish live AGY
 compatibility.
 
-The former `--approve-preview-sha` spelling is deprecated and cannot preserve an
-implicit broad default: through at least v0.16.x it works only when paired with
-`--legacy-preview-approval`, and it emits a migration warning. New callers must use
-one of the two canonical modes above.
+The facade flags `--approve-preview-sha` and `--legacy-preview-approval` were removed
+after v0.22.0. Use one of the two canonical transmission
+modes above; there is no implicit whole-worktree default.
 
-The deprecated `--approve-state-sha` facade spelling remains a strict alias for
-`--approve-dispatch-sha` during the compatibility window; neither may be omitted for
-a bound dispatch and the facade never synthesizes an approval. Gate exits 10–15 keep
+Facade `verify-finalize` requires `--approve-dispatch-sha` for a bound dispatch;
+its former `--approve-state-sha` alias was removed after v0.22.0. The facade never synthesizes an approval. Advanced dispatcher and job
+lifecycle commands retain their own `--approve-state-sha` flag. See
+[retired job formats and flags](PROJECT_WORKFLOW.md#retired-job-formats-and-flags). Gate exits 10–15 keep
 their receipt but do not call the lifecycle finalizer. A local pre-dispatch rejection
 removes only the exact unchanged facade state created by that invocation when the
 dispatch artifact path never appeared, so a corrected invocation can retry safely.
@@ -258,10 +263,16 @@ The driver runs every command. Return commands_run and tests_run as empty arrays
   exit 1
 fi
 
+VERIFY_PARENT="$(mktemp -d -t agyworker-verify.XXXXXX)" || exit $?
+VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
+VERIFY_DIR="$VERIFY_PARENT/candidate"
+"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
+  --destination "$VERIFY_DIR" --format text || exit $?
+( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q tests/test_parser.py ) || exit $?
+
 if "$PIPELINE/qa-gate.sh" --envelope "$ENVELOPE" --repo "$WT" --base "$BASE" \
   --only 'tests/**' --expect-edits \
-  --verify-argv '["/usr/bin/git","diff","--check"]' \
-  --verify-argv '["python3","-m","pytest","-q","tests/test_parser.py"]'; then
+  --verify-argv '["/usr/bin/git","diff","--check"]'; then
   echo "Candidate passed the evidence gate; review the diff before preserving it."
 else
   GATE_RC=$?
@@ -269,6 +280,9 @@ else
   exit "$GATE_RC"
 fi
 ```
+
+The gate verifier runs in the bound candidate. Copy test results are driver evidence
+for Verification v2; a gate snapshot only detects candidate mutation after it occurs.
 
 Provider children/probes and gate verifiers receive only the documented baseline
 environment. If a selected tool genuinely needs another caller variable, opt in its
@@ -336,19 +350,15 @@ prove the worker's architecture prose or completeness.
 | `--max-cycles 1..5` | — | `project` attempt budget; default `5`. |
 | `--mode plan|accept-edits` | `AGY_WORKER_MODE` | Raw compatibility mode; explicit workflows constrain it. |
 | `--tier cheap|bulk|hard|hardest|default` | `AGY_WORKER_TIER` | Legacy named tier or agy-owned default. |
-| `--model EXACT_MODEL` | `AGY_WORKER_MODEL` | Reviewed exact slug or adjustable base used with effort. |
-| `--effort low|medium|high` | `AGY_WORKER_EFFORT` | Requires an adjustable base and resolves to one exact slug. |
-| `--literal-model EXACT_SLUG` | — | CLI-only unreconciled caller-owned pass-through. |
+| `--model EXACT_MODEL` | `AGY_WORKER_MODEL` | Caller-owned literal model value. |
+| `--effort VALUE` | `AGY_WORKER_EFFORT` | Requires `--model`; forwards the literal effort separately. |
 | `--workdir DIR` | — | Source worktree. Without `--provider-scope`, treat all content as worker-readable and potentially transmissible. |
 | `--add-dir DIR` | — | Repeatable file-tool root for explicit whole-worktree dispatch; it does not narrow provider reads and conflicts with scoped mode. |
 | `--provider-scope FILE` | — | Recommended closed read/write policy for bounded jobs; stages selected content only and requires `--approve-transmission-sha`. |
 | `--provider-isolation session|native` | — | Default `session` uses existing account/session and normal host access; explicit `native` requires scoped mode on supported macOS. Bound for the job's lifetime. |
 | `--approve-transmission-sha SHA256` | — | Exact scoped policy/path/content and execution-mode binding; grants no downstream authority. |
 | `--approve-whole-worktree SHA256` | — | Broad-mode approval bound to current contents, kinds, permissions, symlink targets, and execution mode; use the preview's `launch_approval_sha256`. |
-| `--boost` | — | Advanced one-cycle `task` profile; may invoke provider-side subagents and protected tools and requires a job-bound risk acknowledgement. |
-| `--approve-boost-risk-sha SHA256` | — | Exact warning/job acknowledgement printed by the provider-free Boost preflight; grants no permission or wider transmission. |
 | `--provider-env NAME` | — | Repeatable exact-name opt-in for an additional caller variable passed to local `agy` probes and provider launches. |
-| `--persona NAME` | — | Optional bounded prompt specialization; never authorization or quality evidence. |
 | `--allow-slash-commands` | — | Expert-only opt-in for a fully caller-controlled prompt; disables the normal embedded slash-command protection. |
 | `--idle-timeout DURATION` | `AGY_WORKER_IDLE_TIMEOUT` | No valid progress deadline; default `10m`. |
 | `--hard-timeout DURATION` | `AGY_WORKER_HARD_TIMEOUT`; `AGY_WORKER_TIMEOUT` | Initial attempt deadline; default `2h`. |
@@ -359,30 +369,24 @@ The source-owned option contract is the bundled
 [`SKILL.md`](../skills/agy-worker/SKILL.md). Do not infer compatibility, provider
 availability, quality, cost, or routing from a label.
 
-Boost is limited to `task`, `accept-edits`, `--max-cycles 1`, no persona, and
-default slash protection. The controller also requires the provider init frame to
-report `agent=Boost` and `permission_mode=request-review`. A Boost job cannot resume,
-restart, or continue; any further attempt uses a new job plus fresh transmission and
-risk approvals.
-
 Leave slash expansion disabled when any prompt content comes from a repository or
 another model. `--allow-slash-commands` exists only for callers who fully control the
 entire prompt because it permits embedded `/skill` and slash-command text. The plan
 dispatcher is the narrow built-in exception: it privately stages content and enables
 expansion only for its fixed driver prompt.
 
-## Optional personas
-
-`--persona NAME` selects one shipped prompt template. Persona text is guidance only:
-it never grants capability or approval, chooses routing, verifies a result, or changes
-the driver’s acceptance decision. The direct selection and its read-only/edit-mode
-restrictions remain part of the dispatcher contract.
+The retired `--boost`, `--approve-boost-risk-sha`, and `--persona` flags report
+“removed after v0.22.0”. New work uses the ordinary workflows and task prompt.
+Existing jobs must satisfy the [current format policy](PROJECT_WORKFLOW.md#retired-job-formats-and-flags).
 
 ## Model and effort selection
 
 Model and effort selection belongs to the caller. Recommendations are advisory and
 never silently alter that selection. With no selector, the dispatcher sends no model
 and leaves agy's default unchanged.
+The `selection` record, `resolved_agy_model`, and an override label establish only
+the model requested or forwarded on AGY's CLI; the backend model that actually ran
+remains unknown unless AGY stream JSON reports it.
 
 Legacy named tiers currently resolve as follows:
 
@@ -394,28 +398,23 @@ Legacy named tiers currently resolve as follows:
 | `hardest` | `claude-opus-4-6-thinking` |
 | `default` | no `--model`; let agy choose |
 
-These constants predate the current compatibility matrix. During version drift they
-remain best-effort labels, not verified claims about price, difficulty, provider,
-availability, or behavioral equivalence.
+These constants are convenience labels, not verified claims about price, difficulty,
+provider, availability, or behavioral equivalence.
 
-Reviewed `--model` and `--effort` inputs resolve through the current checked-in
-matrix to one exact slug. Fixed, compound, literal, and already-compound slugs do not
-accept an invented effort or thinking flag. Selector sources have no silent
-precedence: repeated selectors, CLI/environment duplicates, tier plus direct
-selection, effort without an adjustable model, and unsupported pairs fail before
-dispatch.
+`--model` and an optional `--effort` are forwarded unchanged as separate AGY options.
+There is no model/effort matrix or inferred compound slug. AGY decides whether a
+pair is supported; rejection does not trigger a different model or effort. Selector
+sources have no silent precedence: repeated selectors, CLI/environment duplicates,
+tier plus direct selection, and effort without a model fail before dispatch.
 
-`--literal-model` is a narrow, CLI-only caller-owned pass-through for a closed slug.
-It performs no matrix lookup and records
-`compatibility_status: unreconciled-pass-through`. It makes no compatibility, cost,
-provider, availability, or routing claim; agy or the provider may reject it.
+`--literal-model` is retired; use `--model` for a caller-owned literal choice.
 
 Every provider attempt reuses the caller-owned frozen selection for that job. A
 model recommendation can report advice but cannot dispatch, change state, apply
 itself, or turn permission, authentication, path-policy, or human-required failures
 into a reason for higher model spend. See
-[installation and compatibility](INSTALLATION.md#version-drift-and-direct-model-selection)
-for the drift preflight boundary.
+[capability requirements](INSTALLATION.md#agy-capability-requirements)
+for the launch preflight boundary.
 
 Request advisory JSON before dispatch or after a driver-owned gate result:
 
@@ -465,7 +464,7 @@ Stop before dispatch, continuation, or external action when:
   its separately required approval.
 
 Ordinary uncertainty is not a hard stop. A broad codebase, unknown files, missing
-initial test commands, lack of a persona, a partial worker answer, or a failed first
+initial test commands, a partial worker answer, or a failed first
 check should normally lead to discovery, bounded same-conversation repair, or an
 honest partial result.
 

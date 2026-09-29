@@ -47,9 +47,6 @@ make_fixture() {
         "$destination/tmp"
     cp -R "$ROOT/skills/agy-worker/runtime" "$destination/runtime"
     rm -rf "$destination/runtime/__pycache__" "$destination/runtime/scripts/__pycache__"
-    printf '1.2.11\n' > "$destination/runtime/compat/agy-verified-version.txt"
-    "$HOST_PYTHON" -B -c 'from datetime import date; print(date.today().isoformat())' \
-        > "$destination/runtime/compat/agy-last-reviewed.txt"
     printf 'CONFIG_SECRET_DO_NOT_READ\n' > "$destination/home/.codex/config.toml"
     printf 'GEMINI_SECRET_DO_NOT_READ\n' > "$destination/home/.gemini/credentials"
     ln -s /bin/bash "$destination/bin/bash"
@@ -59,7 +56,7 @@ make_fixture() {
     printf '%s\n' '#!/usr/bin/env bash' \
         'printf "python:%s\\n" "${TMPDIR-UNSET}" >> "${DOCTOR_TMP_OBSERVATIONS:-/dev/null}"' \
         '[[ "${FAKE_PYTHON_MODE:-ready}" == "fail" ]] && exit 7' \
-        'if [[ "${2:-}" == *doctor-metadata.py && "${3:-}" == "capture-agy-version" ]]; then' \
+        'if [[ "${2:-}" == *model_selection.py && "${3:-}" == "--probe-interface" ]]; then' \
         '  case "${FAKE_PYTHON_CAPTURE_MODE:-real}" in' \
         '    no-newline) printf "1.2.11"; exit 0 ;;' \
         '    multiline) printf "1.2.11\\nextra\\n"; exit 0 ;;' \
@@ -123,6 +120,34 @@ make_fixture() {
         ': > "$DOCTOR_NETWORK_MARKER"' \
         'exit 99' > "$destination/bin/curl"
     cp "$destination/bin/curl" "$destination/bin/wget"
+    "$HOST_PYTHON" -B - "$destination" "$TMP/agy-test-controls" <<'PYFIXTURE'
+from pathlib import Path
+import shlex
+import sys
+fixture, controls = Path(sys.argv[1]), sys.argv[2]
+wrapper = fixture / "bin/python3"
+names = "DOCTOR_TEST_PYTHON DOCTOR_AGY_CALLS DOCTOR_TMP_OBSERVATIONS DOCTOR_HANG_READY DOCTOR_AGY_PID DOCTOR_DESCENDANT_PID FAKE_AGY_MODE"
+s = wrapper.read_text()
+s = s.replace('exec "$DOCTOR_TEST_PYTHON"', 'declare -p ' + names + ' > ' + shlex.quote(controls) + ' 2>/dev/null\nexec "$DOCTOR_TEST_PYTHON"')
+wrapper.write_text(s)
+agy = fixture / "bin/agy"
+s = agy.read_text().replace('#!/usr/bin/env bash\n', '#!/usr/bin/env bash\nsource ' + shlex.quote(controls) + '\n', 1)
+needle = 'case "${FAKE_AGY_MODE:-ready}" in'
+help_probe = """if [[ "$1" == --help ]]; then
+    for option in add-dir conversation disable-slash-commands effort json-schema model print print-timeout sandbox; do
+        [[ "$option" == "${FAKE_AGY_MODE#missing-}" ]] && continue
+        printf '  --%s  Supported option\n' "$option"
+    done
+    [[ "$FAKE_AGY_MODE" == missing-mode ]] || printf '%s\n' '  --mode  Execution mode (plan, accept-edits)'
+    [[ "$FAKE_AGY_MODE" == missing-output-format ]] || printf '%s\n' '  --output-format  Output (stream-json)'
+    exit 0
+fi
+"""
+s = s.replace(needle, help_probe + needle)
+s = s.replace('  ready) printf "agy 1.2.11', '  ready|missing-*) printf "agy 1.2.11')
+s = s.replace('  drift) printf "agy 1.1.11', '  drift) printf "canary-build')
+agy.write_text(s)
+PYFIXTURE
     chmod +x "$destination/bin/python3" "$destination/bin/git" \
         "$destination/bin/agy" "$destination/bin/curl" "$destination/bin/wget"
 }
@@ -165,7 +190,7 @@ assert value["overall"] == overall
 assert value["exit_code"] == int(exit_code)
 assert [item["id"] for item in value["checks"]] == [
     "runtime_bundle", "private_workspace", "bash", "python", "git", "repository", "git_worktree",
-    "agy", "agy_version", "agy_source", "compatibility_review",
+    "agy", "agy_capabilities",
 ]
 assert all(list(item) == ["id", "status", "detail"] for item in value["checks"])
 assert value["scope"] == "offline-prerequisites-only"
@@ -181,6 +206,36 @@ echo
 
 BASE_FIXTURE="$TMP/base-fixture"
 make_fixture "$BASE_FIXTURE"
+
+# A fresh tracked distribution has no empty runtime/agents directory after persona retirement.
+TRACKED_FIXTURE="$TMP/tracked-fixture"
+cp -R "$BASE_FIXTURE" "$TRACKED_FIXTURE"
+"$HOST_PYTHON" -B - "$ROOT" "$TRACKED_FIXTURE/runtime" <<'PYTRACKED'
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+root, destination = Path(sys.argv[1]), Path(sys.argv[2])
+shutil.rmtree(destination)
+prefix = "skills/agy-worker/runtime/"
+paths = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", prefix]).split(b"\0")
+for raw in paths:
+    if not raw: continue
+    relative = raw.decode("utf-8")
+    source = root / relative
+    if not source.is_file(): continue  # staged feature removals have no distributable bytes
+    target = destination / relative.removeprefix(prefix)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+assert not (destination / "agents").exists()
+PYTRACKED
+run_doctor "$TRACKED_FIXTURE" tracked-runtime --format json
+rc=$?
+if [[ "$rc" == 0 ]] && assert_json_contract "$TMP/tracked-runtime.out" ready 0; then
+    ok "doctor accepts a fresh tracked runtime without untracked empty directories"
+else
+    bad "doctor accepts a fresh tracked runtime without untracked empty directories"
+fi
 
 if /bin/bash -c 'source "$1"; doctor_bash_compatible 3 2' _ \
         "$BASE_FIXTURE/runtime/doctor.sh"; then
@@ -199,8 +254,7 @@ run_doctor "$BASE_FIXTURE" ready-text
 rc=$?
 expect_exit "compatible fake toolchain is ready" 0 "$rc"
 if grep -Fxq 'overall: ready' "$TMP/ready-text.out" \
-        && grep -Fxq 'check agy_version: ready - verified-version-match' "$TMP/ready-text.out" \
-        && grep -Fxq 'check agy_source: ready - reviewed-source-match' "$TMP/ready-text.out" \
+        && grep -Fxq 'check agy_capabilities: ready - required-interface-present' "$TMP/ready-text.out" \
         && grep -Fxq 'scope: offline-prerequisites-only' "$TMP/ready-text.out"; then
     ok "text output has the stable ready contract"
 else
@@ -438,11 +492,11 @@ review_rc=$?
 after_root="$(snapshot_tree "$ROOT")"
 after_fixture="$(snapshot_tree "$REVIEW_FIXTURE")"
 after_home="$(snapshot_tree "$REVIEW_FIXTURE/home")"
-if [[ "$review_rc" == 3 && "$before_root" == "$after_root" \
+if [[ "$review_rc" == 0 && "$before_root" == "$after_root" \
         && "$before_fixture" == "$after_fixture" && "$before_home" == "$after_home" ]]; then
-    ok "review-required run leaves checkout, fixture, and HOME byte-identical"
+    ok "unregistered diagnostic version leaves checkout, fixture, and HOME byte-identical"
 else
-    bad "review-required run leaves checkout, fixture, and HOME byte-identical"
+    bad "unregistered diagnostic version leaves checkout, fixture, and HOME byte-identical"
 fi
 unset FAKE_AGY_MODE
 
@@ -512,11 +566,11 @@ else
     bad "usage-like git output is not semantic availability evidence"
 fi
 
-for mode in empty usage multiline two-newlines carriage-return control nul oversize huge prefix-junk fail signal; do
+for mode in empty multiline two-newlines carriage-return control nul oversize huge fail signal; do
     FAKE_AGY_MODE="$mode" run_doctor "$BASE_FIXTURE" "agy-$mode" --format json
     rc=$?
     if [[ "$rc" == 3 ]] \
-            && grep -Fq '"id": "agy_version", "status": "not-ready", "detail": "invalid-version-output"' "$TMP/agy-$mode.out"; then
+            && grep -Fq '"id": "agy_capabilities", "status": "not-ready", "detail": "unavailable-or-unsupported"' "$TMP/agy-$mode.out"; then
         ok "agy $mode output is rejected semantically"
     else
         bad "agy $mode output is rejected semantically"
@@ -528,7 +582,7 @@ for capture_mode in no-newline multiline short-write disk-full; do
         "$BASE_FIXTURE" "capture-$capture_mode" --format json
     rc=$?
     if [[ "$rc" == 3 ]] \
-            && grep -Fq '"id": "agy_version", "status": "not-ready", "detail": "invalid-version-output"' \
+            && grep -Fq '"id": "agy_capabilities", "status": "not-ready", "detail": "unavailable-or-unsupported"' \
                 "$TMP/capture-$capture_mode.out" \
             && ! grep -Fq "$TMP" "$TMP/capture-$capture_mode.out" \
                 "$TMP/capture-$capture_mode.err"; then
@@ -538,21 +592,35 @@ for capture_mode in no-newline multiline short-write disk-full; do
     fi
 done
 
-FAKE_AGY_MODE=bare run_doctor "$BASE_FIXTURE" agy-bare --format json
-rc=$?
-if [[ "$rc" == 0 ]] && grep -Fq 'verified-version-match' "$TMP/agy-bare.out"; then
-    ok "documented bare semantic agy version is accepted"
-else
-    bad "documented bare semantic agy version is accepted"
-fi
+for mode in bare no-newline prefix-junk usage drift; do
+    FAKE_AGY_MODE="$mode" run_doctor "$BASE_FIXTURE" "diagnostic-$mode" --format json
+    rc=$?
+    if [[ "$rc" == 0 ]] && assert_json_contract "$TMP/diagnostic-$mode.out" ready 0; then
+        ok "bounded diagnostic version $mode needs no registry activation"
+    else
+        bad "bounded diagnostic version $mode needs no registry activation"
+    fi
+done
 
-FAKE_AGY_MODE=no-newline run_doctor "$BASE_FIXTURE" agy-no-newline --format json
-rc=$?
-if [[ "$rc" == 0 ]] && grep -Fq 'verified-version-match' "$TMP/agy-no-newline.out"; then
-    ok "documented agy version without a terminal newline is accepted"
-else
-    bad "documented agy version without a terminal newline is accepted"
-fi
+for option in sandbox conversation effort; do
+    FAKE_AGY_MODE="missing-$option" run_doctor "$BASE_FIXTURE" "optional-$option" --format json
+    rc=$?
+    if [[ "$rc" == 0 ]] && grep -Fq '"id": "agy_capabilities", "status": "ready"' "$TMP/optional-$option.out"; then
+        ok "doctor base readiness ignores unused capability --$option"
+    else
+        bad "doctor base readiness for unused capability --$option"
+    fi
+done
+
+for option in add-dir disable-slash-commands json-schema model mode output-format print print-timeout; do
+    FAKE_AGY_MODE="missing-$option" run_doctor "$BASE_FIXTURE" "missing-$option" --format json
+    rc=$?
+    if [[ "$rc" == 3 ]] && grep -Fq '"id": "agy_capabilities", "status": "not-ready"' "$TMP/missing-$option.out"; then
+        ok "doctor rejects missing required capability --$option"
+    else
+        bad "doctor rejects missing required capability --$option"
+    fi
+done
 
 HOSTILE_TMPDIR_FILE="$BASE_FIXTURE/SECRET_TMPDIR_PATH"
 printf 'not a directory\n' > "$HOSTILE_TMPDIR_FILE"
@@ -618,7 +686,7 @@ else
     bad "doctor accepts bundle-owned real runtime parent directories"
 fi
 
-for parent in scripts agents schemas compat benchmarks; do
+for parent in scripts schemas; do
     for link_kind in absolute relative in-root; do
         label="doctor-parent-$parent-$link_kind"
         fixture="$TMP/$label-fixture"
@@ -639,8 +707,8 @@ for parent in scripts agents schemas compat benchmarks; do
         fi
         if [[ "$parent" == scripts ]]; then
             printf '#!/usr/bin/env bash\n: > %q\nprintf "1.1.10\\n"\n' "$marker" \
-                > "$foreign_parent/doctor-metadata.py"
-            chmod +x "$foreign_parent/doctor-metadata.py"
+                > "$foreign_parent/model_selection.py"
+            chmod +x "$foreign_parent/model_selection.py"
         fi
         run_doctor "$fixture" "$label" --format json
         rc=$?
@@ -668,11 +736,7 @@ for specification in \
     'scripts/agy_dispatch_verification.py:data' \
     'schemas/worker-result.schema.json:data' \
     'schemas/worker-result.provider.schema.json:data' \
-    'schemas/evidence-receipt.schema.json:data' \
-    'agents/repo-inventory.md:data' \
-    'compat/agy-verified-version.txt:data' \
-    'compat/agy-model-effort-matrix.json:data' \
-    'compat/agy-models-inventory-binding.json:data'; do
+    'schemas/evidence-receipt.schema.json:data'; do
     dependency_path="${specification%:*}"
     dependency_class="${specification##*:}"
     for wrong_type in directory symlink-directory symlink-foreign fifo wrong-mode; do
@@ -760,15 +824,6 @@ for helper_mode in malformed side-effect exit stale; do
     fi
 done
 
-FAKE_AGY_MODE=drift run_doctor "$BASE_FIXTURE" version-drift --format json
-rc=$?
-if [[ "$rc" == 3 ]] && assert_json_contract "$TMP/version-drift.out" review-required 3 \
-        && grep -Fq '"id": "agy_version", "status": "review-required", "detail": "version-drift"' "$TMP/version-drift.out"; then
-    ok "semantic agy version drift requires review"
-else
-    bad "semantic agy version drift requires review"
-fi
-
 INCOMPLETE="$TMP/incomplete-bundle"
 cp -R "$BASE_FIXTURE" "$INCOMPLETE"
 rm -f "$INCOMPLETE/runtime/qa-gate.sh"
@@ -788,22 +843,12 @@ for dependency in \
     'scripts/agy_dispatch_worktree.py:worktree-snapshot-helper' \
     'scripts/agy_dispatch_containment.py:containment-helper' \
     'scripts/agy_dispatch_verification.py:verification-helper' \
-    'scripts/legacy_dispatch_state.py:legacy-state-helper' \
     'scripts/job_lifecycle.py:lifecycle-helper' \
     'scripts/model_selection.py:model-resolver' \
     'schemas/worker-result.schema.json:schema' \
     'schemas/evidence-receipt.schema.json:receipt-schema' \
     'schemas/job-state.schema.json:lifecycle-schema' \
-    'schemas/model-selection.schema.json:selection-schema' \
-    'benchmarks/v1/portable-source.json:benchmark-source-manifest' \
-    'agents/repo-inventory.md:persona' \
-    'compat/agy-upstream-head.txt:source-record' \
-    'compat/agy-verified-version.txt:compat-record' \
-    'compat/agy-model-effort-matrix.json:model-matrix' \
-    'compat/model-effort-matrix.schema.json:matrix-schema' \
-    'compat/agy-model-effort-matrix.sha256:matrix-hash' \
-    'compat/agy-models-inventory-binding.json:inventory-binding' \
-    'compat/agy-models-inventory-binding.sha256:inventory-binding-hash'; do
+    'schemas/model-selection.schema.json:selection-schema'; do
     dependency_path="${dependency%:*}"
     dependency_class="${dependency##*:}"
     dependency_label="${dependency_path//\//-}"
@@ -821,17 +866,6 @@ for dependency in \
     fi
 done
 
-NO_HELPER="$TMP/no-helper"
-cp -R "$BASE_FIXTURE" "$NO_HELPER"
-rm -f "$NO_HELPER/runtime/scripts/doctor-metadata.py"
-run_doctor "$NO_HELPER" no-helper --format json
-rc=$?
-if [[ "$rc" == 3 ]] && grep -Fq '"id": "compatibility_review", "status": "not-ready", "detail": "metadata-unavailable"' "$TMP/no-helper.out"; then
-    ok "missing doctor metadata helper is not-ready"
-else
-    bad "missing doctor metadata helper is not-ready"
-fi
-
 FAKE_GIT_MODE=invalid-repo run_doctor "$BASE_FIXTURE" invalid-repo --format json
 rc=$?
 if [[ "$rc" == 3 ]] && grep -Fq '"id": "repository", "status": "not-ready", "detail": "invalid-git-worktree"' "$TMP/invalid-repo.out"; then
@@ -847,99 +881,6 @@ for mode in worktree-fail worktree-empty worktree-usage; do
         ok "git $mode does not prove worktree support"
     else
         bad "git $mode does not prove worktree support"
-    fi
-done
-
-for kind in missing malformed symlink tamper; do
-    fixture="$TMP/$kind-source"
-    cp -R "$BASE_FIXTURE" "$fixture"
-    source_record="$fixture/runtime/compat/agy-upstream-head.txt"
-    case "$kind" in
-        missing) rm -f "$source_record" ;;
-        malformed) printf 'not-a-revision\n' > "$source_record" ;;
-        symlink)
-            rm -f "$source_record"
-            ln -s /dev/null "$source_record"
-            ;;
-        tamper) printf '%040d\n' 0 > "$source_record" ;;
-    esac
-    run_doctor "$fixture" "$kind-source" --format json
-    rc=$?
-    if [[ "$kind" == tamper ]]; then
-        expected_detail='reviewed-source-mismatch'
-    else
-        expected_detail='reviewed-source-metadata-unavailable'
-    fi
-    if [[ "$rc" == 3 ]] \
-            && grep -Fq "\"id\": \"agy_source\", \"status\": \"not-ready\", \"detail\": \"$expected_detail\"" \
-                "$TMP/$kind-source.out" \
-            && ! grep -Eq 'not-a-revision|0000000000000000000000000000000000000000|/dev/null' \
-                "$TMP/$kind-source.out" "$TMP/$kind-source.err"; then
-        ok "$kind source revision is rejected without raw metadata"
-    else
-        bad "$kind source revision is rejected without raw metadata"
-    fi
-done
-
-MISSING_REVIEW="$TMP/missing-review"
-cp -R "$BASE_FIXTURE" "$MISSING_REVIEW"
-rm -f "$MISSING_REVIEW/runtime/compat/agy-last-reviewed.txt"
-run_doctor "$MISSING_REVIEW" missing-review --format json
-rc=$?
-if [[ "$rc" == 3 ]] && grep -Fq '"id": "compatibility_review", "status": "not-ready"' "$TMP/missing-review.out"; then
-    ok "missing review metadata is not-ready"
-else
-    bad "missing review metadata is not-ready"
-fi
-
-MALFORMED_REVIEW="$TMP/malformed-review"
-cp -R "$BASE_FIXTURE" "$MALFORMED_REVIEW"
-printf 'not-a-date\n' > "$MALFORMED_REVIEW/runtime/compat/agy-last-reviewed.txt"
-run_doctor "$MALFORMED_REVIEW" malformed-review --format json
-rc=$?
-if [[ "$rc" == 3 ]] && grep -Fq '"id": "compatibility_review", "status": "not-ready", "detail": "invalid"' "$TMP/malformed-review.out"; then
-    ok "malformed review metadata is not-ready"
-else
-    bad "malformed review metadata is not-ready"
-fi
-
-FUTURE_REVIEW="$TMP/future-review"
-cp -R "$BASE_FIXTURE" "$FUTURE_REVIEW"
-printf '2999-01-01\n' > "$FUTURE_REVIEW/runtime/compat/agy-last-reviewed.txt"
-run_doctor "$FUTURE_REVIEW" future-review --format json
-rc=$?
-if [[ "$rc" == 3 ]] && grep -Fq '"id": "compatibility_review", "status": "not-ready", "detail": "invalid"' "$TMP/future-review.out"; then
-    ok "future review metadata is not-ready"
-else
-    bad "future review metadata is not-ready"
-fi
-
-DUE_REVIEW="$TMP/due-review"
-cp -R "$BASE_FIXTURE" "$DUE_REVIEW"
-printf '2000-01-01\n' > "$DUE_REVIEW/runtime/compat/agy-last-reviewed.txt"
-run_doctor "$DUE_REVIEW" due-review --format json
-rc=$?
-if [[ "$rc" == 3 ]] && assert_json_contract "$TMP/due-review.out" review-required 3 \
-        && grep -Fq '"id": "compatibility_review", "status": "review-required", "detail": "due"' "$TMP/due-review.out"; then
-    ok "due review metadata requires review"
-else
-    bad "due review metadata requires review"
-fi
-
-for kind in malformed missing; do
-    fixture="$TMP/$kind-version"
-    cp -R "$BASE_FIXTURE" "$fixture"
-    if [[ "$kind" == malformed ]]; then
-        printf 'v1.1.10\n' > "$fixture/runtime/compat/agy-verified-version.txt"
-    else
-        rm -f "$fixture/runtime/compat/agy-verified-version.txt"
-    fi
-    run_doctor "$fixture" "$kind-version" --format json
-    rc=$?
-    if [[ "$rc" == 3 ]] && grep -Fq '"id": "agy_version", "status": "not-ready", "detail": "verified-metadata-unavailable"' "$TMP/$kind-version.out"; then
-        ok "$kind version metadata is not-ready"
-    else
-        bad "$kind version metadata is not-ready"
     fi
 done
 
@@ -984,10 +925,10 @@ else
 fi
 
 run_doctor "$BASE_FIXTURE" exact-calls
-if [[ "$(cat "$TMP/exact-calls.agy-calls")" == '--version' ]]; then
-    ok "doctor invokes only exact agy --version"
+if [[ "$(cat "$TMP/exact-calls.agy-calls")" == $'--version\n--help' ]]; then
+    ok "doctor invokes only exact agy --version and --help"
 else
-    bad "doctor invokes only exact agy --version"
+    bad "doctor invokes only exact agy --version and --help"
 fi
 if [[ "$(wc -l < "$TMP/exact-calls.git-calls" | tr -d ' ')" == 3 ]] \
         && grep -Fxq 'git --version' "$TMP/exact-calls.git-calls" \
@@ -1010,7 +951,18 @@ else
 fi
 if ! grep -Eq '\.codex|\.gemini|settings\.json|credentials' \
         "$ROOT/doctor.sh" "$ROOT/skills/agy-worker/runtime/doctor.sh" \
-        "$ROOT/skills/agy-worker/runtime/scripts/doctor-metadata.py"; then
+        && "$HOST_PYTHON" -B - "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" <<'PYPRIVACY'
+import ast
+from pathlib import Path
+import re
+import sys
+# Inspect executable string literals; comments about excluding credentials are harmless.
+tree = ast.parse(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for node in ast.walk(tree):
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        assert not re.search(r"\.codex|\.gemini|settings\.json|credentials", node.value)
+PYPRIVACY
+then
     ok "doctor implementation has no personal-config discovery surface"
 else
     bad "doctor implementation has no personal-config discovery surface"
@@ -1042,9 +994,9 @@ fi
 FAKE_AGY_MODE=drift FAKE_GIT_MODE=invalid-repo run_doctor "$BASE_FIXTURE" precedence --format json
 rc=$?
 if [[ "$rc" == 3 ]] && assert_json_contract "$TMP/precedence.out" not-ready 3; then
-    ok "not-ready takes precedence over review-required"
+    ok "repository failure remains not-ready with an unregistered version"
 else
-    bad "not-ready takes precedence over review-required"
+    bad "repository failure remains not-ready with an unregistered version"
 fi
 
 if DOCTOR_TEST_PYTHON="$HOST_PYTHON" HOME=/private/tmp PATH="$BASE_FIXTURE/bin" \

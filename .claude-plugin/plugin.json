@@ -1,0 +1,12 @@
+{
+  "name": "agy-worker",
+  "version": "0.22.0",
+  "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results. Supports Claude Code; keep headless sessions active until dispatch completes.",
+  "author": {
+    "name": "cagdasyurekli",
+    "url": "https://github.com/cagdasyurekli"
+  },
+  "homepage": "https://cagdasyurekli.github.io/codex-agy-worker/",
+  "repository": "https://github.com/cagdasyurekli/codex-agy-worker",
+  "license": "MIT"
+}

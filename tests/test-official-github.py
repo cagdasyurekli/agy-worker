@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import importlib.util
-import io
 import json
 import sys
 import urllib.error
@@ -107,10 +106,6 @@ def release(tag: str, *, draft: Any = False, prerelease: Any = False) -> dict[st
     }
 
 
-def source(revision: str = "a" * 40, *, ref: str = "refs/heads/main", kind: str = "commit") -> dict[str, Any]:
-    return {"ref": ref, "object": {"sha": revision, "type": kind, "url": "ignored"}}
-
-
 def tag_ref(
     revision: str = "b" * 40,
     *,
@@ -123,7 +118,7 @@ def tag_ref(
 def annotated_tag(
     revision: str = "c" * 40,
     *,
-    tag: str = "rust-v0.150.1",
+    tag: str = "v0.150.1",
     tag_revision: str = "d" * 40,
     kind: str = "commit",
 ) -> dict[str, Any]:
@@ -167,55 +162,6 @@ def collect(tool: str, release_value: Any, second: Any) -> tuple[tuple[str, str,
     return MODULE.latest_evidence(tool, opener=opener), opener
 
 
-check(
-    "agy stable release and source are canonical",
-    lambda: collect("agy", release("1.1.11"), source())[0]
-    == ("agy", "1.1.11", "a" * 40),
-)
-check(
-    "agy accepts its documented optional v tag prefix",
-    lambda: collect("agy", release("v1.1.11"), source())[0]
-    == ("agy", "1.1.11", "a" * 40),
-)
-def codex_stable_tag_is_canonical() -> bool:
-    opener = Opener(
-        response(release("rust-v0.150.1")),
-        response(tag_ref("d" * 40, tag="rust-v0.150.1", kind="tag")),
-        response(annotated_tag()),
-    )
-    result = MODULE.latest_evidence("codex", opener=opener)
-    return (
-        result == ("codex", "0.150.1", "c" * 40)
-        and [call[0] for call in opener.calls]
-        == [
-            "https://api.github.com/repos/openai/codex/releases/latest",
-            "https://api.github.com/repos/openai/codex/git/ref/tags/rust-v0.150.1",
-            "https://api.github.com/repos/openai/codex/git/tags/" + "d" * 40,
-        ]
-        and rejects(
-            "invalid annotated tag evidence",
-            lambda: MODULE.latest_evidence(
-                "codex",
-                opener=Opener(
-                    response(release("rust-v0.150.1")),
-                    response(tag_ref("d" * 40, tag="rust-v0.150.1", kind="tag")),
-                    response(annotated_tag(kind="tree")),
-                ),
-            ),
-        )
-    )
-
-
-check("codex stable tag and exact tag source are canonical", codex_stable_tag_is_canonical)
-check(
-    "codex lightweight stable tag stops at exact commit ref",
-    lambda: collect(
-        "codex",
-        release("rust-v0.150.1"),
-        tag_ref("c" * 40, tag="rust-v0.150.1"),
-    )[0]
-    == ("codex", "0.150.1", "c" * 40),
-)
 def project_release_path_is_bounded() -> bool:
     large_release = {
         **release("v0.1.0"),
@@ -313,21 +259,21 @@ check("project annotated tags reject mismatch and chaining", project_annotated_t
 check(
     "inert extra API keys cannot change selected evidence",
     lambda: collect(
-        "agy",
-        {**release("1.1.11"), "credential": "not-rendered"},
-        {**source(), "extra": {"sha": "f" * 40}},
+        "project",
+        {**release("v1.1.11"), "credential": "not-rendered"},
+        {**tag_ref(tag="v1.1.11"), "extra": {"sha": "f" * 40}},
     )[0]
-    == ("agy", "1.1.11", "a" * 40),
+    == ("project", "v1.1.11", "b" * 40),
 )
 
 
 def request_policy() -> bool:
-    result, opener = collect("agy", release("1.1.11"), source())
+    result, opener = collect("project", release("v1.1.11"), tag_ref(tag="v1.1.11"))
     first_url, timeout, headers = opener.calls[0]
     return (
-        result[0] == "agy"
+        result[0] == "project"
         and first_url
-        == "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest"
+        == "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest"
         and timeout == MODULE.FETCH_TIMEOUT_SECONDS
         and headers.get("Accept") == "application/vnd.github+json"
         and headers.get("X-github-api-version") == "2022-11-28"
@@ -345,7 +291,7 @@ check(
                 headers={"Content-Type": "application/vnd.github+json; charset=utf-8"},
             )
         ),
-        "https://api.github.com/repos/openai/codex/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
     )
     == {"ok": True},
 )
@@ -353,7 +299,7 @@ check(
     "identity content encoding is accepted",
     lambda: MODULE.fetch_json(
         Opener(response({"ok": True}, headers={"Content-Encoding": "identity"})),
-        "https://api.github.com/repos/openai/codex/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
     )
     == {"ok": True},
 )
@@ -361,7 +307,7 @@ check(
     "chunked bounded response without Content-Length is accepted",
     lambda: MODULE.fetch_json(
         Opener(response({"ok": True}, headers={"Content-Length": []})),
-        "https://api.github.com/repos/openai/codex/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
     )
     == {"ok": True},
 )
@@ -389,15 +335,15 @@ check(
 
 
 fixed_url_rejections = [
-    "http://api.github.com/repos/openai/codex/releases/latest",
-    "https://github.com/repos/openai/codex/releases/latest",
-    "https://user@api.github.com/repos/openai/codex/releases/latest",
-    "https://api.github.com:443/repos/openai/codex/releases/latest",
-    "https://api.github.com/repos/openai/codex/releases/latest?token=x",
-    "https://api.github.com/repos/openai/codex/releases/latest#x",
+    "http://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+    "https://github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+    "https://user@api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+    "https://api.github.com:443/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest?token=x",
+    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest#x",
     "https://api.github.com/other/openai/codex/releases/latest",
     "https://api.github.com/repos/attacker/codex/releases/latest",
-    "https://api.github.com/repos/openai/codex/%72eleases/latest",
+    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/%72eleases/latest",
     "https://api.github.com/repos/openai\\codex/releases/latest",
     "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/tags/" + "A" * 40,
     "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/tags/" + "a" * 39,
@@ -425,7 +371,7 @@ def fetch_reject(
         category,
         lambda: MODULE.fetch_json(
             Opener(item),
-            "https://api.github.com/repos/openai/codex/releases/latest",
+            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
             limit=limit,
         ),
     )
@@ -475,7 +421,7 @@ check(
     "bounded chunked transfer encoding is accepted",
     lambda: MODULE.fetch_json(
         Opener(Response(b"{}", headers={"Content-Length": [], "Transfer-Encoding": "chunked"})),
-        "https://api.github.com/repos/openai/codex/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
     )
     == {},
 )
@@ -483,7 +429,7 @@ check(
     "chunked transfer-coding token is case-insensitive",
     lambda: MODULE.fetch_json(
         Opener(Response(b"{}", headers={"Content-Length": [], "Transfer-Encoding": "ChUnKeD"})),
-        "https://api.github.com/repos/openai/codex/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
     )
     == {},
 )
@@ -495,7 +441,7 @@ check(
     "missing content length is accepted under incremental bound",
     lambda: MODULE.fetch_json(
         Opener(Response(b"{}", headers={"Content-Length": []})),
-        "https://api.github.com/repos/openai/codex/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
     )
     == {},
 )
@@ -540,8 +486,8 @@ check(
 
 
 release_rejections = [
-    (release("1.1.11", draft=True), "draft"),
-    (release("1.1.11", prerelease=True), "prerelease"),
+    (release("v1.1.11", draft=True), "draft"),
+    (release("v1.1.11", prerelease=True), "prerelease"),
     (release("1.1.11-rc.1"), "prerelease tag"),
     (release("01.1.11"), "leading zero"),
     ({"tag_name": "1.1.11", "draft": False}, "missing prerelease"),
@@ -552,30 +498,24 @@ for value, label in release_rejections:
         f"{label} release evidence is rejected",
         lambda value=value: rejects(
             "invalid stable release evidence",
-            lambda: MODULE._release(value, MODULE.POLICIES["agy"]),
+            lambda: MODULE._release(value, MODULE.POLICIES["project"]),
         ),
     )
 
 
-source_rejections = [
-    (source(ref="refs/heads/dev"), "wrong ref"),
-    (source(kind="tag"), "wrong type"),
-    (source("A" * 40), "uppercase revision"),
-    (source("a" * 39), "short revision"),
-    ({"ref": "refs/heads/main", "object": "bad"}, "nonobject target"),
-]
-for value, label in source_rejections:
+for retired in ("agy", "codex"):
     check(
-        f"{label} source evidence is rejected",
-        lambda value=value: rejects(
-            "invalid source evidence", lambda: MODULE._source_ref(value, "main")
+        f"retired {retired} policy is rejected before transport",
+        lambda retired=retired: rejects(
+            "invalid tool policy", lambda: MODULE.latest_evidence(retired, opener=Opener())
         ),
     )
+
 
 def malformed_release_tags_reject() -> bool:
     cases = [
         tag_ref(tag="v9.9.9"),
-        tag_ref(kind="tag"),
+        tag_ref(kind="tree"),
         tag_ref("A" * 40),
         tag_ref("a" * 39),
         {"ref": "refs/tags/v0.1.0", "object": "bad"},
@@ -583,7 +523,7 @@ def malformed_release_tags_reject() -> bool:
     return all(
         rejects(
             "invalid release tag evidence",
-            lambda value=value: MODULE._tag_ref(value, "v0.1.0"),
+            lambda value=value: MODULE._tag_target(value, "v0.1.0"),
         )
         for value in cases
     )

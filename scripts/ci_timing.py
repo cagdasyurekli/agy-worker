@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import os
 from pathlib import Path
@@ -31,7 +30,7 @@ _script_dir = Path(__file__).resolve().parent
 if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 
-from ci_stages import (
+from ci_stages import (  # noqa: E402 -- sibling imports follow startup isolation/path setup
     STAGES,
     canonical_bytes,
     inventory_digest,

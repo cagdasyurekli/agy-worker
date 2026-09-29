@@ -9,7 +9,6 @@ import io
 import os
 import signal
 import shutil
-import stat
 import sys
 import tempfile
 import time
@@ -308,85 +307,6 @@ def environment_policy() -> bool:
 check("ambient transport and startup controls are stripped", environment_policy)
 
 
-check(
-    "agy version parser accepts documented bare output",
-    lambda: MODULE._parse_version("agy", b"1.1.11\n") == "1.1.11",
-)
-check(
-    "agy version parser accepts documented prefix",
-    lambda: MODULE._parse_version("agy", b"agy 1.1.11\n") == "1.1.11",
-)
-check(
-    "codex version parser accepts exact documented output",
-    lambda: MODULE._parse_version("codex", b"codex-cli 0.147.0\n") == "0.147.0",
-)
-for index, raw in enumerate(
-    (
-        b"",
-        b"1.1.11",
-        b"version 1.1.11\n",
-        b"1.1.11\nextra\n",
-        b"1.1.11\x00\n",
-        b"01.1.11\n",
-        b"1.1.11-rc.1\n",
-        b"\xff\n",
-    ),
-    1,
-):
-    check(
-        f"malformed agy version form {index} is rejected",
-        lambda raw=raw: rejects(lambda: MODULE._parse_version("agy", raw)),
-    )
-for index, raw in enumerate(
-    (b"0.147.0\n", b"codex 0.147.0\n", b"codex-cli 0.147.0", b"codex-cli 0.147.0\nextra\n"),
-    1,
-):
-    check(
-        f"malformed codex version form {index} is rejected",
-        lambda raw=raw: rejects(lambda: MODULE._parse_version("codex", raw)),
-    )
-
-
-def write_tool(name: str, output: str, marker: Path) -> None:
-    path = TMP / name
-    path.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s\\n' \"$*\" > {str(marker)!r}\n"
-        f"printf '%b' {output!r}\n",
-        encoding="utf-8",
-    )
-    path.chmod(path.stat().st_mode | stat.S_IXUSR)
-
-
-def version_profile(tool: str, output: str, expected: bytes) -> bool:
-    marker = TMP / f"{tool}.argv"
-    write_tool(tool, output, marker)
-    previous = os.environ.get("PATH")
-    os.environ["PATH"] = f"{TMP}:/usr/bin:/bin"
-    try:
-        result = MODULE.capture_profile(f"{tool}-version")
-    finally:
-        if previous is None:
-            os.environ.pop("PATH", None)
-        else:
-            os.environ["PATH"] = previous
-    return result == expected and marker.read_text(encoding="utf-8") == "--version\n"
-
-
-check(
-    "agy profile invokes only exact --version and normalizes output",
-    lambda: version_profile("agy", "agy 1.1.11\n", b"1.1.11\n"),
-)
-check(
-    "codex profile invokes only exact --version and normalizes output",
-    lambda: version_profile("codex", "codex-cli 0.147.0\n", b"0.147.0\n"),
-)
-check(
-    "version profile rejects an extra caller argument",
-    lambda: rejects(lambda: MODULE.capture_profile("agy-version", "extra")),
-)
-
-
 def official_profile(profile: str, argument: Any, expected_tail: list[str], payload: bytes) -> bool:
     captured: list[Any] = []
     original = MODULE.run_bounded
@@ -410,9 +330,9 @@ def official_profile(profile: str, argument: Any, expected_tail: list[str], payl
 
 
 check(
-    "agy official profile binds the fixed helper and exact tool",
+    "project official profile binds the fixed helper and exact tool",
     lambda: official_profile(
-        "official-agy", None, ["--latest", "agy"], b"agy\t1.1.11\t" + b"a" * 40 + b"\n"
+        "official-project", None, ["--latest", "project"], b"project\tv1.1.11\t" + b"a" * 40 + b"\n"
     ),
 )
 check(
@@ -438,12 +358,23 @@ check(
     "official profile rejects multiline helper output",
     lambda: rejects(
         lambda: official_profile(
-            "official-codex",
+            "official-project",
             None,
-            ["--latest", "codex"],
-            b"codex\t0.147.0\t" + b"c" * 40 + b"\nextra\n",
+            ["--latest", "project"],
+            b"project\tv0.147.0\t" + b"c" * 40 + b"\nextra\n",
         )
     ),
+)
+
+
+for retired in ("agy-version", "codex-version", "official-agy", "official-codex"):
+    check(
+        f"retired profile {retired} cannot launch a child",
+        lambda retired=retired: rejects(lambda: MODULE.capture_profile(retired)),
+    )
+check(
+    "latest project profile rejects an extra argument",
+    lambda: rejects(lambda: MODULE.capture_profile("official-project", "extra")),
 )
 
 
@@ -455,7 +386,7 @@ def sanitized_main() -> bool:
     stderr = io.StringIO()
     try:
         with contextlib.redirect_stderr(stderr):
-            status = MODULE.main([str(MODULE_PATH), "agy-version"])
+            status = MODULE.main([str(MODULE_PATH), "official-project"])
     finally:
         MODULE.capture_profile = original
     return (
@@ -468,7 +399,7 @@ def sanitized_main() -> bool:
 check("CLI failures expose one sanitized category only", sanitized_main)
 check(
     "CLI rejects extra invocation fields",
-    lambda: MODULE.main([str(MODULE_PATH), "agy-version", "x", "y"]) == 2,
+    lambda: MODULE.main([str(MODULE_PATH), "official-project", "x", "y"]) == 2,
 )
 
 shutil.rmtree(TMP)

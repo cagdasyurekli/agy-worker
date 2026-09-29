@@ -19,7 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
-from typing import Any
+from typing import Any, NoReturn, Sequence, Iterator
 
 sys.dont_write_bytecode = True
 RUNTIME_SCRIPTS = str(Path(__file__).resolve(strict=True).parent)
@@ -29,7 +29,6 @@ if RUNTIME_SCRIPTS not in sys.path:
 from model_selection import (  # noqa: E402
     CallerError as SelectionError,
     EvidenceUnavailable,
-    ReviewRequired,
     child_environment,
     validate_child_environment_names,
     validate_selection_record,
@@ -130,7 +129,7 @@ class SignalController:
         raise SignalInterruption("receipt operation interrupted")
 
     @contextmanager
-    def blocked(self):
+    def blocked(self) -> Iterator[None]:
         previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
         try:
             yield
@@ -494,9 +493,6 @@ def selection_matches_recommendation(
     keys = [
         "user_model",
         "resolved_agy_model",
-        "matrix_sha256",
-        "matrix_agy_version",
-        "matrix_source_revision",
     ]
     if any(recommendation.get(key) != selection.get(key) for key in keys):
         return False
@@ -555,7 +551,7 @@ def validate_receipt(
             if not isinstance(selection, dict):
                 raise SelectionError("selection record must be one object")
             validate_selection_record_shape(selection)
-        except (SelectionError, ReviewRequired, EvidenceUnavailable) as exc:
+        except (SelectionError, EvidenceUnavailable) as exc:
             raise ValidationFailure("caller selection is not a valid G1 record") from exc
     recommendation = value.get("pre_dispatch_recommendation")
     if recommendation is not None:
@@ -582,8 +578,7 @@ def load_selection(path: Path) -> dict[str, Any]:
         return value
     except (
         SelectionError,
-        ReviewRequired,
-        EvidenceUnavailable,
+            EvidenceUnavailable,
         ValidationFailure,
     ) as exc:
         raise UsageFailure("selection input is not a current valid G1 record") from exc
@@ -923,7 +918,7 @@ def publish_receipt(
 
 
 class UsageParser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(64, f"verify-job: {message}\n")
 
@@ -935,7 +930,7 @@ class VerifierAction(argparse.Action):
         self,
         parser: argparse.ArgumentParser,
         namespace: argparse.Namespace,
-        values: str,
+        values: str | Sequence[Any] | None,
         option_string: str | None = None,
     ) -> None:
         del parser, option_string

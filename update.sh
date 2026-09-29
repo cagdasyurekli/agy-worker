@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Explicit updater and compatibility checker for codex-agy-worker.
+# Explicit project release updater for codex-agy-worker.
 # Optional background notification invokes check only; no automatic pull and no
 # update from a dirty checkout.
 set -euo pipefail
@@ -10,15 +10,14 @@ EXPECTED_HTTPS="https://github.com/cagdasyurekli/codex-agy-worker.git"
 EXPECTED_HTTPS_NO_SUFFIX="https://github.com/cagdasyurekli/codex-agy-worker"
 EXPECTED_SSH="git@github.com:cagdasyurekli/codex-agy-worker.git"
 EXPECTED_SSH_URL="ssh://git@github.com/cagdasyurekli/codex-agy-worker.git"
-COMPATIBILITY_REVIEW_DAYS=30
 
 usage() {
     cat >&2 <<'EOF'
 usage: update.sh check [--watch]
        update.sh apply [vMAJOR.MINOR.PATCH]
 
-check: read-only remote release and agy/Codex compatibility check.
-       Pass --watch for official-source evidence only (no installed tools needed).
+check: read-only official project release check; no installed AGY/Codex needed.
+       --watch uses the same check: unchanged 0, different commit 3, unavailable 2.
 apply: explicit fast-forward update from a verified release tag. Refuses a dirty
        checkout, validates the candidate in a disposable worktree, then reinstalls
        the Codex skill. It never runs during an agy worker job.
@@ -95,254 +94,39 @@ remote_release_commit() {
     printf '%s\n' "$revision"
 }
 
-merge_status() {
-    local current="$1" candidate="$2"
-    if (( current == 2 || candidate == 2 )); then
-        echo 2
-    elif (( current == 3 || candidate == 3 )); then
-        echo 3
-    else
-        echo 0
-    fi
-}
-
-compat_metadata() {
-    python3 "$SCRIPT_DIR/scripts/compatibility.py" metadata --kind "$1" --file "$2"
-}
-
-agy_distribution_manifest_check() {
-    local output="" status=0
-    output="$(python3 "$SCRIPT_DIR/scripts/official_distribution.py" 2>/dev/null)" || status=$?
-    case "$status" in
-        0)
-            if [[ "$output" == "  distribution manifest: unchanged ("*')' ]]; then
-                printf '%s\n' "$output"
-                return 0
-            fi
-            ;;
-        3)
-            if [[ "$output" == "  distribution manifest: drift-review ("*')' ]]; then
-                printf '%s\n' "$output"
-                return 3
-            fi
-            ;;
-        2)
-            if [[ "$output" == "  distribution manifest: evidence-unavailable ("*')' ]]; then
-                printf '%s\n' "$output"
-                return 2
-            fi
-            ;;
-    esac
-    echo "  distribution manifest: evidence-unavailable (invalid helper result)"
-    return 2
-}
-
-agy_model_matrix_check() {
-    local output="" status=0
-    output="$(python3 "$SCRIPT_DIR/scripts/compatibility.py" validate-matrix \
-        --matrix "$SCRIPT_DIR/compat/agy-model-effort-matrix.json" \
-        --schema "$SCRIPT_DIR/compat/model-effort-matrix.schema.json" \
-        --verified-version-file "$SCRIPT_DIR/compat/agy-verified-version.txt" \
-        --reviewed-revision-file "$SCRIPT_DIR/compat/agy-upstream-head.txt" \
-        --inventory-binding "$SCRIPT_DIR/compat/agy-models-inventory-binding.json" \
-        --inventory-binding-sha256 "$SCRIPT_DIR/compat/agy-models-inventory-binding.sha256" \
-        2>/dev/null)" || status=$?
-    case "$status:$output" in
-        "0:matrix: unchanged - active and version/source bound")
-            echo "  model/effort matrix: unchanged (active and version/source bound)"
-            return 0
-            ;;
-        "3:matrix: drift-or-review - resolution is disabled pending official source evidence"|\
-        "3:matrix: drift-or-review - matrix agy version differs from the verified baseline"|\
-        "3:matrix: drift-or-review - matrix source revision differs from the reviewed baseline")
-            echo "  model/effort matrix: drift-review"
-            return 3
-            ;;
-        *)
-            echo "  model/effort matrix: evidence-unavailable"
-            return 2
-            ;;
-    esac
-}
-
-tool_compatibility_check() {
-    local tool="$1" mode="$2" verified_file reviewed_file revision_file
-    local verified_version="" review_date="" reviewed_head="" installed_output="" installed_version=""
-    local latest_stable="" remote_head="" official_output="" official_tool="" extra="" rc=0 step_rc=0
-    case "$tool" in
-        agy)
-            verified_file="$SCRIPT_DIR/compat/agy-verified-version.txt"
-            reviewed_file="$SCRIPT_DIR/compat/agy-last-reviewed.txt"
-            revision_file="$SCRIPT_DIR/compat/agy-upstream-head.txt"
-            ;;
-        codex)
-            verified_file="$SCRIPT_DIR/compat/codex-verified-version.txt"
-            reviewed_file="$SCRIPT_DIR/compat/codex-last-reviewed.txt"
-            revision_file="$SCRIPT_DIR/compat/codex-upstream-head.txt"
-            ;;
-        *) return 2 ;;
-    esac
-
-    echo "$tool compatibility:"
-    verified_version="$(compat_metadata version "$verified_file" 2>/dev/null)" || {
-        echo "  baseline: evidence-unavailable (malformed verified-version metadata)"
-        rc="$(merge_status "$rc" 2)"
-    }
-    review_date="$(compat_metadata date "$reviewed_file" 2>/dev/null)" || {
-        echo "  review: evidence-unavailable (malformed last-reviewed metadata)"
-        rc="$(merge_status "$rc" 2)"
-    }
-    reviewed_head="$(compat_metadata revision "$revision_file" 2>/dev/null)" || {
-        echo "  source: evidence-unavailable (malformed reviewed revision metadata)"
-        rc="$(merge_status "$rc" 2)"
-    }
-    if [[ -n "$verified_version" ]]; then
-        echo "  verified baseline: $verified_version"
-    fi
-
-    if [[ "$mode" == "local" && "$origin_available" == 0 ]]; then
-        echo "tool update: evidence-unavailable (official project origin is unavailable)"
-        aggregate="$(merge_status "$aggregate" 2)"
-    elif [[ "$mode" == "local" ]]; then
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            echo "  installed: drift-review ($tool is not on PATH)"
-            rc="$(merge_status "$rc" 3)"
-        else
-            step_rc=0
-            installed_output="$(python3 -I -B "$SCRIPT_DIR/scripts/compatibility_probe.py" \
-                "${tool}-version" 2>/dev/null)" || step_rc=$?
-            case "$step_rc" in 129|130|143) exit "$step_rc" ;; esac
-            if (( step_rc != 0 )); then
-                echo "  installed: evidence-unavailable (--version failed)"
-                rc="$(merge_status "$rc" 2)"
-            else
-                installed_version="$installed_output"
-                if [[ -n "$installed_version" && -n "$verified_version" ]]; then
-                    if [[ "$installed_version" == "$verified_version" ]]; then
-                        echo "  installed: unchanged ($installed_version)"
-                    else
-                        echo "  installed: drift-review ($installed_version; verified $verified_version)"
-                        rc="$(merge_status "$rc" 3)"
-                    fi
-                fi
-            fi
-        fi
-    else
-        echo "  installed: not required in watch mode"
-    fi
-
-    if [[ "$tool" == "agy" ]]; then
-        step_rc=0
-        agy_model_matrix_check || step_rc=$?
-        rc="$(merge_status "$rc" "$step_rc")"
-
-        step_rc=0
-        agy_distribution_manifest_check || step_rc=$?
-        rc="$(merge_status "$rc" "$step_rc")"
-    fi
-
-    step_rc=0
-    official_output="$(python3 -I -B "$SCRIPT_DIR/scripts/compatibility_probe.py" \
-        "official-$tool" 2>/dev/null)" || step_rc=$?
-    case "$step_rc" in 129|130|143) exit "$step_rc" ;; esac
-    if (( step_rc == 0 )); then
-        IFS=$'\t' read -r official_tool latest_stable remote_head extra <<< "$official_output"
-        if [[ "$official_tool" != "$tool" || -n "$extra" \
-                || ! "$latest_stable" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ \
-                || ! "$remote_head" =~ ^[0-9a-f]{40}$ ]]; then
-            step_rc=2
-            latest_stable=""
-            remote_head=""
-        fi
-    fi
-    if (( step_rc != 0 )); then
-        echo "  stable release: evidence-unavailable"
-        rc="$(merge_status "$rc" 2)"
-    elif [[ -n "$verified_version" && "$latest_stable" == "$verified_version" ]]; then
-        echo "  stable release: unchanged ($latest_stable)"
-    else
-        echo "  stable release: drift-review (official $latest_stable; verified ${verified_version:-invalid})"
-        rc="$(merge_status "$rc" 3)"
-    fi
-
-    if (( step_rc != 0 )); then
-        echo "  source revision: evidence-unavailable"
-        rc="$(merge_status "$rc" 2)"
-    elif [[ -n "$reviewed_head" && "$remote_head" == "$reviewed_head" ]]; then
-        echo "  source revision: unchanged ($reviewed_head)"
-    else
-        echo "  source revision: drift-review"
-        rc="$(merge_status "$rc" 3)"
-    fi
-
-    if [[ -n "$review_date" ]]; then
-        step_rc=0
-        python3 "$SCRIPT_DIR/scripts/compatibility.py" review-state \
-            --reviewed "$review_date" --days "$COMPATIBILITY_REVIEW_DAYS" >/dev/null 2>&1 || step_rc=$?
-        case "$step_rc" in
-            0) echo "  documentation review: unchanged ($review_date)" ;;
-            3)
-                echo "  documentation review: drift-review (last reviewed $review_date)"
-                rc="$(merge_status "$rc" 3)" ;;
-            *)
-                echo "  documentation review: evidence-unavailable"
-                rc="$(merge_status "$rc" 2)" ;;
-        esac
-    fi
-    return "$rc"
-}
-
-compatibility_check() {
-    local mode="$1" aggregate=0 tool_rc=0
-    tool_compatibility_check agy "$mode" || tool_rc=$?
-    aggregate="$(merge_status "$aggregate" "$tool_rc")"
-    tool_rc=0
-    tool_compatibility_check codex "$mode" || tool_rc=$?
-    aggregate="$(merge_status "$aggregate" "$tool_rc")"
-    echo "compatibility result: $([[ "$aggregate" == 0 ]] && echo unchanged || { [[ "$aggregate" == 3 ]] && echo drift-review || echo evidence-unavailable; })"
-    return "$aggregate"
-}
-
 check_updates() {
-    local mode=local latest="" current_tag current_commit latest_commit release_rc=0 compat_rc=0 aggregate=0
-    if [[ $# -eq 1 && "$1" == "--watch" ]]; then
-        mode=watch
-    elif [[ $# -ne 0 ]]; then
+    local latest="" current_tag current_commit latest_commit release_rc=0
+    if [[ $# -ne 0 && ! ( $# -eq 1 && "$1" == "--watch" ) ]]; then
         usage
     fi
-    if [[ "$mode" == "local" ]]; then
-        latest="$(latest_release)" || release_rc=$?
-        case "$release_rc" in 129|130|143) exit "$release_rc" ;; esac
-        if (( release_rc != 0 )); then
-            echo "tool update: evidence-unavailable (official release query failed)"
-            aggregate="$(merge_status "$aggregate" 2)"
-        else
-            current_commit="$(git rev-parse HEAD)"
-            current_tag="$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
-            if [[ -z "$latest" ]]; then
-                echo "tool update: no stable release tags are published yet"
-            else
-                latest_commit="$(remote_release_commit "$latest")" || release_rc=$?
-                case "$release_rc" in 129|130|143) exit "$release_rc" ;; esac
-                if (( release_rc != 0 )); then
-                    echo "tool update: evidence-unavailable (official release tag is inconclusive)"
-                    aggregate="$(merge_status "$aggregate" 2)"
-                elif [[ "$current_commit" == "$latest_commit" ]]; then
-                    echo "tool update: up to date at $latest"
-                elif [[ -n "$current_tag" ]]; then
-                    echo "tool update: available $current_tag -> $latest"
-                else
-                    echo "tool update: current checkout is not release-tagged; latest is $latest"
-                fi
-            fi
-        fi
+    if [[ "$origin_available" == 0 ]]; then
+        echo "tool update: evidence-unavailable (official project origin is unavailable)"
+        return 2
     fi
-    compatibility_check "$mode" || compat_rc=$?
-    aggregate="$(merge_status "$aggregate" "$compat_rc")"
-    if (( aggregate != 0 )); then
-        echo "update: check is read-only; no files were changed" >&2
-        exit "$aggregate"
+    latest="$(latest_release)" || release_rc=$?
+    case "$release_rc" in 129|130|143) return "$release_rc" ;; esac
+    if (( release_rc != 0 )); then
+        echo "tool update: evidence-unavailable (official release query failed)"
+        return 2
     fi
+    current_commit="$(git rev-parse HEAD)"
+    current_tag="$(git describe --tags --exact-match --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+    latest_commit="$(remote_release_commit "$latest")" || release_rc=$?
+    case "$release_rc" in 129|130|143) return "$release_rc" ;; esac
+    if (( release_rc != 0 )); then
+        echo "tool update: evidence-unavailable (official release tag is inconclusive)"
+        return 2
+    fi
+    if [[ "$current_commit" == "$latest_commit" ]]; then
+        echo "tool update: up to date at $latest"
+        return 0
+    elif [[ -n "$current_tag" ]]; then
+        echo "tool update: different release commit ($current_tag; official $latest)"
+    else
+        echo "tool update: current checkout is not release-tagged; official $latest has a different commit"
+    fi
+    echo "update: check is read-only; no files were changed" >&2
+    return 3
 }
 
 apply_update() {

@@ -62,7 +62,7 @@ class PublishedReport:
         parent_fd: int,
         final_name: str,
         identity: tuple[int, int],
-        prior_mask: set[signal.Signals],
+        prior_mask: set[int | signal.Signals],
     ) -> None:
         self.parent_fd = parent_fd
         self.final_name = final_name
@@ -80,7 +80,7 @@ class PublishedReport:
 
 
 class Parser(argparse.ArgumentParser):
-    def error(self, message: str) -> None:
+    def error(self, message: str) -> NoReturn:
         del message
         self.print_usage(sys.stderr)
         self.exit(64, "evidence-report: invalid arguments\n")
@@ -271,7 +271,7 @@ def _pending_signal() -> int | None:
 
 
 def _restore_mask_preserving(
-    prior_mask: set[signal.Signals], first_signal: int | None, *, raise_after: bool = True
+    prior_mask: set[int | signal.Signals], first_signal: int | None, *, raise_after: bool = True
 ) -> None:
     pending = _pending_signal()
     if first_signal is None:
