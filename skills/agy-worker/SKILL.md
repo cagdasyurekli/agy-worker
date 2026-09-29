@@ -2,7 +2,7 @@
 name: agy-worker
 description: Use when Codex or Claude Code should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.
 license: MIT
-compatibility: "OpenAI Codex CLI; Claude Code experimental: pending live verification. Requires Bash, Python 3, git, and agy with provider network access."
+compatibility: "OpenAI Codex CLI and Claude Code. Requires Bash, Python 3, git, and agy with provider network access."
 metadata:
   author: cagdasyurekli
   version: "0.22.0"
@@ -30,13 +30,24 @@ Obtain human approval for the task, exact provider-readable content, transmissio
 isolation modes, caller-selected model and budget. One upfront approval may cover
 predictable same-scope repairs and mechanical digest refresh. New scope, content
 exposure, destination, isolation, permissions or budget needs fresh authority.
-SHA values bind that decision; refreshing a still-applicable binding is not another
-approval request. Goal and hand-authored JSON are not ordinary-use prerequisites.
+SHA values bind the documented controller inputs, not the entire human decision;
+refreshing a still-applicable binding is not another approval request. Goal and
+hand-authored JSON are not ordinary-use prerequisites.
 
 Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds reviewed read entries, their content digest, and a write subset in a fresh owner-private mode-`0700` Gitless stage.
 Whole-worktree dispatch requires `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`. Every disposable-worktree entry is provider-readable and may reach Google/Gemini; `--add-dir`, prompt denylists and gate path policies do not narrow that read boundary.
 Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode.
-Approvals bind content, kinds, permissions, symlink targets and execution mode; the controller rechecks this binding before provider start.
+The whole-worktree digest binds content, kinds, full file mode bits, symlink target hashes, the
+readable manifest, provider isolation and native grant profile. The scoped digest
+binds canonical read/write policy, readable path/kind manifest, selected bytes and
+executable bits, isolation and grant profile; scoped mode rejects symlinks and does
+not bind full POSIX permissions. The controller rechecks the approved boundary
+before provider start. Neither digest binds task text, a self-verification manifest, `--allow-scoped-repair`,
+workflow/edit mode, model/effort, budget or environment opt-ins. Show the exact task
+and selected settings separately beside the digest before approval; material changes
+to those inputs require renewed authority. Use the private prelaunch review checklist
+in [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices), including any optional self-verification
+commands, IDs and limits; keep that manifest out of the provider preview and prompt.
 Retired dispatch and workflow job formats are rejected; finish or discard them with their creating release, without migration.
 Default `--provider-isolation session` uses the existing AGY session. AGY has normal user filesystem/network authority; staging and reconciliation are not host isolation.
 Explicit `--provider-isolation native` requires supported macOS scoped containment; it never falls back to session mode. Preserve the recorded isolation mode and grant profile across repairs.
@@ -67,6 +78,29 @@ Use `workflow.sh run --preview`, approved `run`, read-only `status`, and
 action. [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md)
 owns copyable commands, Verification v2 candidate bindings and recovery.
 
+Quick path: save the reviewed scope file outside the target repository with mode
+`0600`, then run the facade with a unique job ID:
+
+```bash
+TARGET=/absolute/path/to/approved-repository
+JOB_ID=job-12345
+SCOPE=/absolute/private/provider-scope.json
+"$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" --provider-scope "$SCOPE"
+```
+
+This creates the disposable worktree and private state. Review its exact transmission
+digest, then run the facade without `--preview`, adding `--approve-transmission-sha "$TRANSMISSION_SHA"`
+and `--workflow task --task "$TASK"` after approval. A minimal owner-private
+scope file, with entries sorted by path, is:
+
+```json
+{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"src/parser.py","kind":"file"},{"path":"tests","kind":"tree"}],"write":[{"path":"tests","kind":"tree"}]}
+```
+
+Use paths that exist in the reviewed worktree and keep the scope file outside it
+with mode `0600`. The facade derives an owner-private state path for later
+`status` and `verify-finalize`; see the linked guide for the complete sequence.
+
 Run driver-selected build/test commands and Python imports in an isolated
 verification copy with `PYTHONDONTWRITEBYTECODE=1`. Inspect the bound candidate's
 actual diff and gate binding directly. Never manually edit, delete, or chmod the
@@ -93,8 +127,11 @@ Controller records are local: the runtime cannot infer prior work or approval an
 must never silently authorize direct-driver fallback after missing approval, a hard
 stop, preflight/provider failure or exhausted budget.
 
-Claude Code: keep the main session active and use Bash `run_in_background: true`
-for an approved long dispatch. Do not duplicate a job or treat a Bash timeout as provider failure.
+Claude Code: in non-interactive `claude -p` or SDK runs, dispatch in the foreground
+(up to the host's ten-minute ceiling) or keep the turn alive until it finishes;
+never end the turn while a job runs. In interactive sessions, a long dispatch may
+use Bash `run_in_background: true` while the main session remains active. Do not
+duplicate a job or treat a Bash timeout as provider failure.
 Bash permission approval is separate from transmission approval. Read
 [Claude Code host operation](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#claude-code-host-operation).
 
@@ -114,3 +151,5 @@ Deliver `verified`, `partially_verified`, `rejected` or `blocked` with the check
 actually run and remaining gaps. Offline checks do not prove live provider behavior,
 completeness, release state or general correctness. Use
 [Troubleshooting](references/TROUBLESHOOTING.md) for the failing boundary.
+When `status` offers finalization for a bound candidate, `verify-finalize` records the
+driver's result without a Git change and is the facade's required closure step.

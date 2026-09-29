@@ -1344,7 +1344,10 @@ def run(context: dict[str, object]) -> None:
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     )
                     assert preview.returncode == 20 and not preview.stdout
-                    assert b"whole-worktree content preview failed its bounded local scan" in preview.stderr
+                    assert preview.stderr == (
+                        b"agy-worker.sh: transmission preview invalid: control marker is not regular; "
+                        b"use a branch-backed linked worktree\n"
+                    )
                     continue
                 job = fixture / f"{label}-job"; job.mkdir(mode=0o700)
                 schema = fixture / f"{label}-provider.json"; provider_schema(schema)

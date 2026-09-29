@@ -9,7 +9,7 @@ or transmission of repository content through `agy` to Google/Gemini.
 ## Prerequisites
 
 The maintained entrypoints require a POSIX-compatible environment with Bash, Python
-3, git with worktree support, Codex CLI or Claude Code (experimental: pending live verification), and `agy` (Antigravity CLI) on `PATH`.
+3, git with worktree support, Codex CLI or Claude Code, and `agy` (Antigravity CLI) on `PATH`.
 Native Windows is untested; WSL or another compatible environment may work on a
 best-effort basis. Some evidence commands use fixed POSIX paths, and the optional
 daily notifier is specifically a macOS LaunchAgent.
@@ -61,12 +61,12 @@ codex plugin add agy-worker@agy-worker
 Then start a new Codex session. These commands are supported by local
 `codex plugin --help` and `codex plugin marketplace --help`; they remove the old
 installation/cache and its marketplace source before installing the new identity.
-This unreleased candidate does not establish remote availability.
+Review the selected marketplace source before changing an existing installation.
 
-### Claude Code (experimental)
+### Claude Code
 
-Claude Code is **experimental: pending live verification**. It uses the same skill
-and runtime. To review this candidate locally, from its repository root run:
+Claude Code uses the same skill and runtime; its host path was exercised with
+synthetic live jobs. To review this candidate locally, from its repository root run:
 
 ```bash
 claude plugin validate .
@@ -143,9 +143,10 @@ permission prompt is not provider-transmission approval. The same content/SHA,
 execution-mode, model, and budget approvals apply. For background dispatch, process
 lifetime, and status commands, read the packaged
 [Claude Code host operation](../skills/agy-worker/references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#claude-code-host-operation).
-Live review must establish authentication, required network destinations, state and
-socket access, and interaction with optional native containment before removing the
-experimental label. Offline resolver tests cannot establish those facts.
+In non-interactive `claude -p` or SDK runs, use a foreground dispatch within the
+host ceiling or keep the turn alive until a background job finishes. Ending the
+headless turn cancels running background work. The synthetic live runs establish the
+exercised host path, not future authentication, provider availability or task quality.
 
 The checkout `update.sh apply` flow remains Codex-only and reinstalls the default
 Codex skill. It does not migrate plugin identities or update a Claude installation;
@@ -156,6 +157,9 @@ review a new checkout and explicitly reinstall with `--host claude` for that hos
 agy starts a local language server and writes account state. New worker jobs use
 the existing AGY session by default; an outer Codex sandbox can still prevent that
 session from working. Run with the host permissions already approved for the task.
+Native containment also needs a host that permits nested Seatbelt. A Codex
+`workspace-write` host denied `sandbox_apply` in a live attempt; keep the requested
+native mode and resolve the host prerequisite instead of falling back to session.
 For CLI sessions that intentionally use `workspace-write`, the following settings
 allow the language-server socket and writes under `~/.gemini`.
 
@@ -230,7 +234,10 @@ capability checks do not certify a model catalog, authentication, backend identi
 cost, availability, or quality. No selector leaves AGY's default unchanged. See
 [model and effort selection](USAGE.md#model-and-effort-selection).
 
-Last provider-tested AGY: **1.2.11**, in a bounded session edit and same-conversation refinement; native and effective `accept-edits` semantics were not qualified. This historical observation is informational and does not gate launches or qualify later versions.
+Bounded synthetic live runs exercised AGY **1.2.12** from Codex and Claude Code,
+including a same-conversation repair and a native launch from an unsandboxed Claude
+Code host. This observation is informational; it does not gate launches or qualify
+future versions, authentication or task quality.
 
 ## agy interface cautions
 

@@ -48,6 +48,11 @@ rule also permits wildcard binds; it is not a loopback-only guarantee.
 
 Prepare one approval package for the task and its foreseeable repairs. Include the
 transmitted content, provider permissions, model, and shared retry/time budget.
+The content digest does not cover task text, self-verification manifest,
+`--allow-scoped-repair`, workflow/edit mode, model/effort, budget or environment
+opt-ins. Show the exact task and selected settings separately beside the digest
+before approval; a material change needs renewed authority. See the
+[binding details](PROJECT_WORKFLOW.md#lifecycle-at-a-glance).
 Use initial `--allow-scoped-repair` for approved multi-turn scoped work. One exact
 upfront approval may cover predictable same-scope repairs and mechanical digest/state
 refresh; provider-launch notices are status, not repeated permission requests. New scope,

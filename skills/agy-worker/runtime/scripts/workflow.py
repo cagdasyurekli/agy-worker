@@ -495,6 +495,28 @@ class WorkflowStateStore:
             self._validate_parent_path()
 
 
+def dispatch_log_root_from_workflow_state(state_path: Path, job_id: str) -> Path:
+    """Resolve an advanced control's log root from an existing bound facade job."""
+    store = WorkflowStateStore(state_path, initial=False)
+    try:
+        state = store.value
+        if state is None or state["job_id"] != job_id or not state["dispatch_job_dir"]:
+            raise WorkflowError("workflow state does not bind the requested dispatch job")
+        dispatch_dir = Path(state["dispatch_job_dir"])
+        if dispatch_dir.name != job_id:
+            raise WorkflowError("workflow dispatch directory does not bind the requested job")
+        try:
+            job = DISPATCH.canonical_job(dispatch_dir)
+            dispatch, _raw, _sha = DISPATCH.load_state(job)
+        except (OSError, DISPATCH.DispatchError) as exc:
+            raise WorkflowError("bound dispatch job is unavailable") from exc
+        if dispatch["job_id"] != job_id:
+            raise WorkflowError("dispatch state job binding is invalid")
+        return dispatch_dir.parent
+    finally:
+        store.close()
+
+
 def validate_worktree_registration(repo: Path, worktree: Path) -> None:
     try:
         proc = subprocess.run(
@@ -591,9 +613,16 @@ def canonical_transmission_preview(
             timeout=60.0,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise WorkflowError("transmission preview timed out") from exc
+    except OSError as exc:
         raise WorkflowError("transmission preview unavailable") from exc
     if proc.returncode != 0:
+        prefix = b"agy-worker.sh: transmission preview invalid: "
+        if proc.stderr.startswith(prefix) and proc.stderr.endswith(b"\n"):
+            detail = proc.stderr[len(prefix):-1]
+            if 0 < len(detail) <= 600 and all(32 <= byte <= 126 for byte in detail):
+                raise WorkflowError(f"transmission preview invalid: {detail.decode('ascii')}")
         raise WorkflowError("transmission preview unavailable")
     value = parse_strict(proc.stdout, "transmission preview")
     if not isinstance(value, dict):
@@ -697,6 +726,8 @@ def _delegation_from_dispatch(
         preflight_passed, provider_state = False, "unverified"
     elif reason == "provider_quota_exhausted":
         preflight_passed, provider_state = True, "quota_exhausted"
+    elif reason == "native_host_sandbox_unavailable":
+        preflight_passed, provider_state = True, "unverified"
     elif reason in {
         "provider_terminal_error", "provider_timeout", "agy_failed_unclassified",
         "provider_unavailable", "authentication_failed", "provider_terminal_cancelled",
@@ -741,8 +772,8 @@ def _delegation_from_dispatch(
         "user_opt_in": True, "transmission_approved": True,
         "scope_path_approved": True, "preflight_passed": preflight_passed,
         "provider_state": provider_state,
-        "hard_stop_triggered": reason == "permission_required",
-        "hard_stop_reasons": ["permission_required"] if reason == "permission_required" else [],
+        "hard_stop_triggered": reason in {"permission_required", "native_host_sandbox_unavailable"},
+        "hard_stop_reasons": [reason] if reason in {"permission_required", "native_host_sandbox_unavailable"} else [],
         "cycle_budget_exhausted": status == "failed" and attempt >= max_cycles,
         "attempt_count": attempt, "max_cycles": max_cycles,
         "prior_candidate_available": facts.get("result_available") is True,
@@ -1071,7 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--job-dir", help="Explicit dispatch job directory.")
     run_parser.add_argument("--job-state", help="Optional path to job.sh state file.")
     run_parser.add_argument("--workflow", choices=("explore", "task", "project"), default="task")
-    run_parser.add_argument("--mode", choices=("plan", "accept-edits"), default="accept-edits")
+    run_parser.add_argument("--mode", choices=("plan", "accept-edits"))
     run_parser.add_argument("--tier", action=SingleValue)
     run_parser.add_argument("--model", action=SingleValue)
     run_parser.add_argument("--effort", action=SingleValue)
@@ -1477,7 +1508,15 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
     return result
 
 
+def _resolved_mode(args: argparse.Namespace) -> str:
+    expected = "plan" if args.workflow == "explore" else "accept-edits"
+    if args.workflow != "task" and args.mode is not None and args.mode != expected:
+        raise WorkflowError(f"--workflow {args.workflow} conflicts with --mode {args.mode}")
+    return args.mode or expected
+
+
 def command_run(args: argparse.Namespace) -> int:
+    args.mode = _resolved_mode(args)
     repo = real_absolute(Path(args.repo), "repository")
     if args.provider_scope:
         args.provider_scope = str(
@@ -1517,6 +1556,15 @@ def _bound_dispatch_status(dispatch_dir: Path, job_id: str) -> dict[str, Any]:
     facts = dict(facts)
     facts["provider_execution"] = execution
     return facts
+
+
+def _next_required_workflow_action(facts: dict[str, Any] | None) -> str | None:
+    if not facts or not facts.get("result_available") or facts.get("driver_disposition") != "unreviewed":
+        return None
+    actions = facts.get("available_actions", [])
+    if any(isinstance(item, dict) and item.get("action") == "finalize" for item in actions):
+        return "verify-finalize"
+    return None
 
 
 def _workflow_status(args: argparse.Namespace) -> int:
@@ -1592,6 +1640,7 @@ def _workflow_status(args: argparse.Namespace) -> int:
             "available_actions": (
                 dispatch_facts.get("available_actions", []) if dispatch_facts else []
             ),
+            "next_required_action": _next_required_workflow_action(dispatch_facts),
             "advanced_recovery": (
                 "Use workflow verify-finalize for driver-owned verification; "
                 "use job.sh or agy-worker.sh directly only for advanced recovery."
@@ -1617,6 +1666,9 @@ def _workflow_status(args: argparse.Namespace) -> int:
             verdict = verification_facts.get("verdict", "unverified") if verification_facts else "unverified"
             assurance = dispatch_facts.get("assurance") if dispatch_facts else "none"
             line3 = f"verification: verdict={verdict} assurance={assurance or 'none'}"
+            required = status_result["next_required_action"]
+            if required:
+                line3 += f" next-required-action={required}"
             sys.stdout.write(f"{line1}\n{line2}\n{line3}\n")
             delegation = status_result["delegation_policy"]
             decision = delegation.get("decision") or {}

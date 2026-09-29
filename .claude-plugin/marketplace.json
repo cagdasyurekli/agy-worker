@@ -1,6 +1,6 @@
 {
   "name": "agy-worker",
-  "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results. Claude Code is experimental: pending live verification.",
+  "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results. Supports Claude Code; keep headless sessions active until dispatch completes.",
   "owner": {
     "name": "cagdasyurekli",
     "url": "https://github.com/cagdasyurekli"
@@ -9,7 +9,7 @@
     {
       "name": "agy-worker",
       "source": "./",
-      "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results. Claude Code is experimental: pending live verification.",
+      "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results. Supports Claude Code; keep headless sessions active until dispatch completes.",
       "version": "0.22.0"
     }
   ]

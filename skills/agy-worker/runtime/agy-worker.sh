@@ -130,7 +130,7 @@ usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
 
        agy-worker.sh start [run options] ... task prompt on stdin ...
        agy-worker.sh transmission-preview --workdir ABSOLUTE_DISPOSABLE_WORKTREE
-       agy-worker.sh status|result --job-id JOB [--format json|text]
+       agy-worker.sh status|result --job-id JOB [--state WORKFLOW_STATE] [--format json|text]
        agy-worker.sh verification-copy --job-id JOB --destination NEW_DIRECTORY_IN_0700_PARENT [--format json|text]
        agy-worker.sh self-verify --job-id JOB --approve-state-sha SHA [--format json|text]
        agy-worker.sh resume --job-id JOB --approve-state-sha SHA [--format json|text]
@@ -156,9 +156,10 @@ Exit codes: 0 ok · 2 no prompt · 3 empty output · 4 schema invalid · 5 uncla
             6 permission gate · 8 capability evidence unavailable
             9 idle timeout · 16 hard deadline · 17 provider timeout · 20 status, binding, or verification-copy runtime unavailable · 21 resume failed
             22 cancelled · 23 output oversized · 24 quota exhausted · 25 provider terminal error
-            26 selection preflight failed
+            26 selection preflight failed · 27 native host sandbox unavailable
             64 invalid usage
 
+Advanced controls accept --state WORKFLOW_STATE to resolve the bound dispatch log root.
 Resume and restart use the current state approval before any provider call:
   agy-worker.sh resume --job-id JOB --approve-state-sha STATE_SHA
   agy-worker.sh restart --job-id JOB --approve-state-sha STATE_SHA
@@ -177,6 +178,7 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
     control_by=""
     control_assurance=""
     control_destination=""
+    control_state=""
     control_use_self_verification_seen=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -186,6 +188,9 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
             --job-id)
                 [[ $# -ge 2 && $control_job_seen -eq 0 ]] || usage
                 control_job="$2"; control_job_seen=1; shift 2 ;;
+            --state)
+                [[ $# -ge 2 && -z "$control_state" && -n "$2" ]] || usage
+                control_state="$2"; shift 2 ;;
             --approve-state-sha)
                 [[ $# -ge 2 && -z "$control_state_sha" ]] || usage
                 control_state_sha="$2"; shift 2 ;;
@@ -221,6 +226,22 @@ if [[ "$dispatch_action" != "run" && "$dispatch_action" != "start" ]]; then
     if (( control_use_self_verification_seen )) && [[ "$dispatch_action" != "continue" ]]; then
         echo "agy-worker.sh: --use-self-verification is valid only with continue" >&2
         exit 64
+    fi
+    if [[ -n "$control_state" ]]; then
+        LOG_DIR="$(python3 -I -S -B - "$SCRIPT_DIR/scripts" "$control_state" "$control_job" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from workflow import WorkflowError, dispatch_log_root_from_workflow_state
+
+try:
+    print(dispatch_log_root_from_workflow_state(Path(sys.argv[2]), sys.argv[3]))
+except WorkflowError as exc:
+    print(f"agy-worker.sh: {exc}", file=sys.stderr)
+    raise SystemExit(64)
+PY
+)" || exit 64
     fi
     [[ -d "$LOG_DIR" ]] || { echo "agy-worker.sh: log root is unavailable" >&2; exit 64; }
     validate_log_root "$LOG_DIR" || {

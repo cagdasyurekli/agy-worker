@@ -122,6 +122,106 @@ def test_import_does_not_mutate_subject_modes() -> bool:
 check("import does not mutate or self-heal workflow subject modes", test_import_does_not_mutate_subject_modes)
 
 
+def test_workflow_mode_defaults_and_conflicts() -> bool:
+    parser = WORKFLOW_MODULE.build_parser()
+    for workflow, expected in (("explore", "plan"), ("task", "accept-edits"), ("project", "accept-edits")):
+        args = parser.parse_args(["run", "--repo", "/tmp/repo", "--job-id", "mode-test", "--workflow", workflow])
+        assert WORKFLOW_MODULE._resolved_mode(args) == expected
+    task_plan = parser.parse_args(["run", "--repo", "/tmp/repo", "--job-id", "mode-test", "--workflow", "task", "--mode", "plan"])
+    assert WORKFLOW_MODULE._resolved_mode(task_plan) == "plan"
+    args = parser.parse_args(["run", "--repo", "/tmp/repo", "--job-id", "mode-test", "--workflow", "explore", "--mode", "accept-edits"])
+    try:
+        WORKFLOW_MODULE._resolved_mode(args)
+    except WORKFLOW_MODULE.WorkflowError:
+        pass
+    else:
+        raise AssertionError("conflicting explicit mode accepted")
+    return True
+
+
+check("workflow mode derives from intent and rejects only explicit conflicts", test_workflow_mode_defaults_and_conflicts)
+
+
+def test_finalize_is_required_for_unreviewed_bound_candidate() -> bool:
+    actions = [{"action": "result"}, {"action": "finalize"}]
+    assert WORKFLOW_MODULE._next_required_workflow_action({
+        "result_available": True, "driver_disposition": "unreviewed", "available_actions": actions,
+    }) == "verify-finalize"
+    assert WORKFLOW_MODULE._next_required_workflow_action({
+        "result_available": False, "driver_disposition": "not_applicable", "available_actions": [],
+    }) is None
+    assert WORKFLOW_MODULE._next_required_workflow_action({
+        "result_available": True, "driver_disposition": "verified", "available_actions": actions,
+    }) is None
+    return True
+
+
+check("workflow status names verify-finalize for a pending bound candidate", test_finalize_is_required_for_unreviewed_bound_candidate)
+
+
+def test_public_workflow_status_shows_required_finalize() -> bool:
+    with tempfile.TemporaryDirectory() as directory:
+        dispatch_dir = Path(directory) / "logs" / "pending-job"
+        dispatch_dir.mkdir(parents=True)
+        state = {
+            "job_id": "pending-job", "repo_path": directory, "worktree_path": directory,
+            "branch": "test", "base": "0" * 40, "preview_manifest_sha256": "0" * 64,
+            "preview_content_sha256": "0" * 64,
+            "preview_launch_approval_sha256": "0" * 64, "native_grant_profile": "baseline",
+            "dispatch_job_dir": str(dispatch_dir), "provider_execution": None,
+            "provider_isolation": "session", "receipt_path": None,
+        }
+        facts = {
+            "job_id": "pending-job", "status": "succeeded", "reason": None,
+            "workflow": "task", "attempt": 1, "max_cycles": 2,
+            "state_sha256": "a" * 64, "phase": "awaiting-verification",
+            "controller_phase": "awaiting-verification", "result_available": True,
+            "driver_disposition": "unreviewed", "candidate_sha256": "b" * 64,
+            "available_actions": [{"action": "result"}, {"action": "finalize"}],
+            "provider_execution": {"legacy": False}, "provider_isolation": "session",
+            "assurance": None,
+        }
+        store = mock.Mock(value=state)
+        with mock.patch.object(WORKFLOW_MODULE, "WorkflowStateStore", return_value=store), \
+             mock.patch.object(WORKFLOW_MODULE, "_bound_dispatch_status", return_value=facts):
+            for output_format in ("json", "text"):
+                captured = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+                with mock.patch.object(WORKFLOW_MODULE.sys, "stdout", captured):
+                    assert WORKFLOW_MODULE._workflow_status(
+                        WORKFLOW_MODULE.argparse.Namespace(state=str(Path(directory) / "workflow.json"), format=output_format)
+                    ) == 0
+                    captured.flush()
+                output = captured.buffer.getvalue().decode("utf-8")
+                if output_format == "json":
+                    assert json.loads(output)["next_required_action"] == "verify-finalize"
+                else:
+                    assert "next-required-action=verify-finalize" in output
+    return True
+
+
+check("public workflow status JSON and text require verify-finalize", test_public_workflow_status_shows_required_finalize)
+
+
+def test_advanced_log_root_requires_bound_workflow_job() -> bool:
+    state = {"job_id": "approved", "dispatch_job_dir": "/private/tmp/step16-logs/approved"}
+    fake_store = mock.Mock()
+    fake_store.value = state
+    with mock.patch.object(WORKFLOW_MODULE, "WorkflowStateStore", return_value=fake_store), \
+         mock.patch.object(WORKFLOW_MODULE.DISPATCH, "canonical_job", side_effect=lambda path: path), \
+         mock.patch.object(WORKFLOW_MODULE.DISPATCH, "load_state", return_value=({"job_id": "approved"}, b"{}", "0" * 64)):
+        assert WORKFLOW_MODULE.dispatch_log_root_from_workflow_state(Path("/private/tmp/state"), "approved") == Path("/private/tmp/step16-logs")
+        try:
+            WORKFLOW_MODULE.dispatch_log_root_from_workflow_state(Path("/private/tmp/state"), "other")
+        except WORKFLOW_MODULE.WorkflowError:
+            pass
+        else:
+            raise AssertionError("unbound job was accepted")
+    return True
+
+
+check("advanced controls derive log root only from a bound workflow job", test_advanced_log_root_requires_bound_workflow_job)
+
+
 def test_canonical_path_hint_for_macos_var_alias() -> bool:
     alias = Path("/var/folders/example/agy-state.json")
     canonical = Path("/private/var/folders/example/agy-state.json")
@@ -232,6 +332,32 @@ def test_run_missing_args() -> bool:
         f.clean()
 
 check("run rejects missing required arguments", test_run_missing_args)
+
+
+def test_public_explore_mode_preview_and_conflict() -> bool:
+    f = RepoFixture("explore-mode")
+    try:
+        state_home = f.tmp / "xdg-state"
+        state_home.mkdir(mode=0o700)
+        env = {"XDG_STATE_HOME": str(state_home)}
+        preview = run_workflow(
+            "run", "--repo", str(f.repo), "--job-id", f.job_id,
+            "--workflow", "explore", "--preview", env=env,
+        )
+        assert preview.returncode == 0, preview.stderr
+        conflict = run_workflow(
+            "run", "--repo", str(f.repo), "--job-id", f.job_id,
+            "--workflow", "explore", "--mode", "accept-edits", "--preview",
+            env=env,
+        )
+        assert conflict.returncode == 20, conflict.stderr
+        assert b"--workflow explore conflicts with --mode accept-edits" in conflict.stderr
+        return True
+    finally:
+        f.clean()
+
+
+check("public explore preview derives plan and rejects an explicit editing conflict", test_public_explore_mode_preview_and_conflict)
 
 
 def test_literal_model_effort_forwarded_exactly() -> bool:
@@ -748,7 +874,7 @@ def test_invalid_scope_preview_rolls_back_new_facade_resources() -> bool:
         )
         assert preview.returncode == 20
         assert not preview.stdout
-        assert b"transmission preview unavailable" in preview.stderr
+        assert b"transmission preview invalid: provider scope authority is invalid" in preview.stderr
         assert b"advanced recovery" not in preview.stderr
 
         job_roots = list(state_home.glob(f"agy-worker/workflows/*/{job_id}"))
@@ -861,6 +987,60 @@ check(
     "ordinary run requires explicit whole-worktree or scoped transmission evidence",
     test_ordinary_run_requires_one_explicit_transmission_mode,
 )
+
+
+def test_preview_reports_scope_validation_errors() -> bool:
+    f = RepoFixture("scope-validation-errors")
+    try:
+        scope_path = f.tmp / "provider-scope.json"
+        for read, expected in (
+            ([{"path": "textkit/wrap.py", "kind": "file"},
+              {"path": "textkit/slug.py", "kind": "file"}],
+             "read entries must be strictly sorted"),
+            ([{"path": "textkit", "kind": "directory"}],
+             "read entry 0 kind must be 'file' or 'tree'"),
+        ):
+            scope_path.write_text(json.dumps({
+                "schema_version": 1,
+                "kind": "agy-worker-provider-scope",
+                "read": read,
+                "write": [],
+            }), encoding="utf-8")
+            scope_path.chmod(0o600)
+            try:
+                WORKFLOW_MODULE.canonical_transmission_preview(
+                    f.worktree, provider_scope=str(scope_path),
+                )
+            except WORKFLOW_MODULE.WorkflowError as exc:
+                assert expected in str(exc), str(exc)
+                assert "unavailable" not in str(exc)
+            else:
+                raise AssertionError("invalid provider scope was accepted")
+        return True
+    finally:
+        f.clean()
+
+
+check("preview reports exact sorted-read and kind validation errors", test_preview_reports_scope_validation_errors)
+
+
+def test_preview_identifies_main_checkout_marker() -> bool:
+    f = RepoFixture("main-checkout-preview")
+    try:
+        try:
+            WORKFLOW_MODULE.canonical_transmission_preview(f.repo)
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert "control marker is not regular" in str(exc), str(exc)
+            assert "linked worktree" in str(exc), str(exc)
+            assert "unavailable" not in str(exc)
+        else:
+            raise AssertionError("main checkout preview was accepted")
+        return True
+    finally:
+        f.clean()
+
+
+check("preview names the main-checkout marker requirement", test_preview_identifies_main_checkout_marker)
 
 
 def test_native_ready_profile_remains_bound_on_repreview() -> bool:
@@ -1027,6 +1207,11 @@ def test_delegation_projection_uses_bound_facts_without_assurance_inference() ->
     )
     assert permission["decision"]["reason_code"] == "hard-stop-active"
     assert permission["decision"]["direct_codex_authorized"] is False
+    native_host = WORKFLOW_MODULE._delegation_from_dispatch(
+        {**base, "reason": "native_host_sandbox_unavailable"}, approval_bound=True,
+    )
+    assert native_host["decision"]["reason_code"] == "hard-stop-active"
+    assert native_host["decision"]["direct_codex_authorized"] is False
     unapproved = WORKFLOW_MODULE._delegation_from_dispatch(
         base, approval_bound=False,
     )

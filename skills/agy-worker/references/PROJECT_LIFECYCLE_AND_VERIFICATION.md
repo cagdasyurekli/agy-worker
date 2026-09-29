@@ -12,8 +12,31 @@ lifecycle, or verifier step fails.
 ## Approval, bindings, and launch notices
 
 Human approval covers exact work and provider exposure. Preview, transmission, state,
-candidate and dispatch SHA values bind that decision; they grant no authority by
-themselves. Refresh them only for an action still covered and mechanically available.
+candidate and dispatch SHA values bind their specified controller inputs; they grant
+no authority by themselves. Refresh them only for an action still covered and
+mechanically available. Whole-worktree launch approval binds content, kinds, full
+file mode bits, symlink target hashes, readable manifest, provider isolation and
+native grant profile.
+Scoped transmission approval binds canonical read/write policy, readable path/kind
+manifest, selected bytes and executable bits, isolation and grant profile; scoped
+mode rejects symlinks and does not bind full POSIX permissions. Neither digest binds
+task text, self-verification manifest, scoped-repair setting, workflow/edit mode,
+model/effort, budget or environment opt-ins. Present those exact inputs separately
+with the digest for approval; a material change needs renewed authority.
+Before an initial provider launch, show the owner a private review packet with:
+
+- The exact task text (not the shorter public-safe launch notice), workflow/edit
+  mode, selected model/effort or unresolved default, and retry/time budget.
+- The exact scope policy and preview digest, or whole-worktree manifest and digest;
+  the provider isolation mode and native grant profile when selected.
+- Whether `--allow-scoped-repair` is enabled and, if self-verification is enabled,
+  each manifest check's exact `argv`, ID, required/optional flag, timeout and output
+  limit, plus the manifest's total time limit.
+- Each `--provider-env` and `--verify-env` name and its resulting child exposure.
+
+Keep any owner-private self-verification manifest outside the worktree and out of
+the provider preview and prompt. This checklist records human authority separately
+from the content digest; a later launch notice may summarize the task safely.
 One upfront approval may cover predictable same-scope repairs; use initial
 `--allow-scoped-repair` for multi-turn scoped work. New exposure, destination,
 isolation, permissions or budget requires authority. A normal job needs neither
@@ -56,37 +79,73 @@ Resolve the installed runtime first:
 PIPELINE="$(bash "$SKILL_ROOT/scripts/resolve-pipeline.sh")" || exit $?
 ```
 
-The driver creates and reviews the branch-backed disposable worktree. The following names
-are illustrative local variables; the actual repository and state paths remain
-caller-owned:
+For ordinary use, the facade creates the branch-backed disposable worktree and
+owner-private state on the first preview call. Choose a unique job ID and a scope
+file outside the target repository. Both `read` and `write` entries must be sorted
+by path; `write` must be covered by `read`. For example, after selecting actual paths
+that exist in the reviewed repository:
+
+```json
+{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"src/parser.py","kind":"file"},{"path":"tests","kind":"tree"}],"write":[{"path":"tests","kind":"tree"}]}
+```
+
+Create the file with `umask 077` and keep it owner-private mode `0600`. The smallest
+ordinary preview is:
 
 ```bash
 TARGET=/absolute/path/to/approved-repository
+JOB_ID=job-12345
+SCOPE=/absolute/private/provider-scope.json
+"$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" \
+  --provider-scope "$SCOPE"
+```
+
+The preview gives `transmission_sha256`; the facade derives its state path under
+`XDG_STATE_HOME` or `HOME/.local/state` as described below. Review the preview's
+content and selected settings with the user before the approved run. Repeat the same
+binding without `--preview`, supplying the exact approved digest and task:
+
+```bash
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+STATE_HOME="$(cd "$STATE_HOME" && pwd -P)" || exit $?
+REPO_KEY="$(python3 -c 'import hashlib,pathlib,sys; p=str(pathlib.Path(sys.argv[1]).resolve(strict=True)); print(hashlib.sha256(p.encode()).hexdigest()[:24])' "$TARGET")"
+STATE="$STATE_HOME/agy-worker/workflows/$REPO_KEY/$JOB_ID/workflow.json"
+TRANSMISSION_SHA='paste the exact reviewed transmission_sha256'
+TASK='paste the exact privately reviewed task text'
+ENVELOPE="$(dirname "$STATE")/envelope.json"
+test ! -e "$ENVELOPE" || { echo "envelope path already exists" >&2; exit 64; }
+( umask 077
+  "$PIPELINE/workflow.sh" run --repo "$TARGET" --job-id "$JOB_ID" \
+    --provider-scope "$SCOPE" --approve-transmission-sha "$TRANSMISSION_SHA" \
+    --workflow task --task "$TASK" > "$ENVELOPE"
+) || exit $?
+test -s "$ENVELOPE" || { echo "approved run produced no envelope" >&2; exit 1; }
+"$PIPELINE/workflow.sh" status --state "$STATE" --format json
+```
+
+This path creates the worktree; do not create one manually for ordinary use. The
+preview starts no provider process and grants no approval. Record the returned state
+path, keep it owner-private and outside the worktree, and emit the provider notice
+immediately before the approved run. Whole-worktree approval is an explicit
+exception; the advanced invocation below illustrates owner-chosen paths:
+
+```bash
 BASE="$(git -C "$TARGET" rev-parse HEAD)"
 STATE_DIR="$(mktemp -d -t agyworker-state.XXXXXX)"
 WT="$(mktemp -d -t agyworker-worktree.XXXXXX)"
+STATE_DIR="$(cd "$STATE_DIR" && pwd -P)" || exit $?
+WT="$(cd "$WT" && pwd -P)" || exit $?
 rmdir "$WT"
-JOB_ID=job-12345
 JOB_BRANCH=agy/job-12345
 git -C "$TARGET" worktree add -b "$JOB_BRANCH" "$WT" "$BASE"
-```
-
-Keep `STATE_DIR` owner-private and outside both the repository and worktree. Before
-provider approval, obtain the canonical content-free preview:
-
-```bash
 "$PIPELINE/workflow.sh" run --preview \
   --state "$STATE_DIR/workflow.json" --repo "$TARGET" --worktree "$WT" \
   --branch "$JOB_BRANCH" --base "$BASE" --job-id "$JOB_ID" \
   > "$STATE_DIR/preview.json"
 ```
 
-Review the preview, its authority summary, and its `launch_approval_sha256`. It reads
-content locally to bind the selected boundary without printing file contents or symlink
-target strings, starts no provider process, and grants no approval. After the user
-approves that exact boundary, capture the approved run's envelope in the owner-private
-state directory. Emit the required user-facing provider notice immediately before this
-attempt:
+Keep `STATE_DIR` owner-private and outside both the repository and worktree. Review
+the preview's whole-worktree manifest and `launch_approval_sha256` before this run:
 
 ```bash
 ENVELOPE="$STATE_DIR/envelope.json"
@@ -149,6 +208,10 @@ requires the legacy-shell acknowledgement.
 Use `status` first. Treat `available_actions` as the canonical mechanical action set;
 deprecated `next_action`, `next_action_command`, `phase`, and `has_prior_candidate`
 are compatibility aliases, not recommendations or acceptance facts.
+For a facade-backed advanced `restart`, pass the same `--state "$WORKFLOW_STATE"`
+alongside `--job-id "$JOB_ID"` and the current `--approve-state-sha "$STATE_SHA"`;
+the workflow state resolves the bound log root. A fresh restart still needs an
+explicit user decision and the usual provider notice.
 
 Current bound jobs expose `provider_isolation` (`session` or `native`) and
 `provider_execution` facts (`scope`, `agy_sandbox`, `native_containment`, `legacy`,
@@ -228,12 +291,17 @@ data, generated files, or other artifacts. Do not alter or clean the bound candi
 to make those outputs disappear. Inspect Git-dependent facts read-only against the
 candidate, then run those checks in a separate copy with
 `PYTHONDONTWRITEBYTECODE=1`:
+For the ordinary facade path, `$STATE` above is the saved workflow state. In the
+advanced path, replace the `WORKFLOW_STATE` assignment below with
+`WORKFLOW_STATE="$STATE_DIR/workflow.json"`. The explicit state binds the existing
+job and resolves its private log root.
 
 ```bash
+WORKFLOW_STATE="$STATE"
 VERIFY_PARENT="$(mktemp -d -t agyworker-verify.XXXXXX)" || exit $?
 VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
 VERIFY_DIR="$VERIFY_PARENT/candidate"
-"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
+"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" --state "$WORKFLOW_STATE" \
   --destination "$VERIFY_DIR" --format text
 ( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q )
 ```
@@ -353,13 +421,15 @@ does not create a second acceptance authority.
 
 ## Claude Code host operation
 
-Claude Code is experimental: pending live verification. The Bash tool has a default
-two-minute foreground timeout and a ten-minute default ceiling. Run the approved
-`workflow.sh run` command above from the main driver conversation with Bash
-`run_in_background: true`; this is a host tool parameter, not a workflow flag or shell
-`&`. Use the same reviewed arguments and private envelope redirection. Do not launch
-a second dispatch for the same job. A Bash timeout/background notification is not a
-provider failure; inspect the existing task and bound workflow status.
+Claude Code was live-tested with synthetic jobs. The Bash tool has a default
+two-minute foreground timeout and a ten-minute default ceiling. In interactive
+sessions, an approved long `workflow.sh run` may use Bash `run_in_background: true`;
+this is a host tool parameter, not a workflow flag or shell `&`. In non-interactive
+`claude -p` or SDK runs, use foreground execution within the host ceiling or keep
+the turn alive and monitor the background task until it exits. Never end a turn while
+a job runs: headless session exit cancels background work. Do not launch a second
+dispatch for the same job. A Bash timeout/background notification is not a provider
+failure; inspect the existing task and bound workflow status.
 
 Bash variables do not persist between Claude tool calls. In every call, repeat the
 reviewed path/value assignments from the example or replace them with the reviewed

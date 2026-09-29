@@ -294,6 +294,7 @@ REASONS = {
     "output_oversized", "interrupted", "provider_quota_exhausted",
     "provider_terminal_error", "provider_terminal_cancelled",
     "selection_preflight_failed", "resolve_undo_present",
+    "native_host_sandbox_unavailable",
 }
 EXIT_BY_REASON = {
     "empty_output": 3,
@@ -312,6 +313,7 @@ EXIT_BY_REASON = {
     "provider_quota_exhausted": 24,
     "provider_terminal_error": 25,
     "selection_preflight_failed": 26,
+    "native_host_sandbox_unavailable": 27,
     "provider_terminal_cancelled": 22,
     "interrupted": 143,
 }
@@ -2245,6 +2247,12 @@ def _public_next_action(actions: list[dict[str, Any]]) -> tuple[str, str | None]
     return str(first["action"]), first.get("command") if isinstance(first.get("command"), str) else None
 
 
+def _cycle_budget_explanation(value: Mapping[str, Any]) -> str | None:
+    if value["status"] == "cancelled" and value["reason"] == "interrupted" and not value["candidate_recognized"]:
+        return "The interrupted attempt consumed one cycle even though it produced no candidate; a fresh restart consumes another cycle."
+    return None
+
+
 def _provider_execution_from_bound_command(command: dict[str, Any]) -> dict[str, Any]:
     """Describe the current bound launch mechanics."""
 
@@ -2387,6 +2395,7 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         "limit_kind": value["limit_kind"],
         "max_seconds": value["max_seconds"],
         "max_cycles": value["max_cycles"],
+        "cycle_budget_explanation": _cycle_budget_explanation(value),
         "notice_count": value["notice_count"],
         "progress_count": value["progress_count"],
         "provider_isolation": public_provider_isolation,
@@ -2489,8 +2498,10 @@ def print_text_status(value: Mapping[str, Any], sha: str, *, job: Path | None = 
         and value["attempt"] >= value["max_cycles"]
     )
     lines = (
-        f"Provider attempt: {value['status']}; reason: {reason}; failure stage: {failure_stage}; bound result available: {'yes' if public['result_available'] else 'no'}; driver disposition: {value['driver_disposition']}.",
-        f"Driver evidence: {counts['passed']} passed, {counts['failed']} failed, {counts['advisory']} advisory, {counts['missing']} missing; cycle: {public['cycle']}/{public['max_cycles']}.",
+        f"Provider attempt: {value['status']}; reason: {reason}; failure stage: {failure_stage}; bound result available: {'yes' if public['result_available'] else 'no'}; driver disposition: {value['driver_disposition']}."
+        + (" macOS denied native sandbox_apply; this can occur when the driver host is already sandboxed. Use a compatible driver host with the same approved native mode." if reason == "native_host_sandbox_unavailable" else ""),
+        f"Driver evidence: {counts['passed']} passed, {counts['failed']} failed, {counts['advisory']} advisory, {counts['missing']} missing; cycle: {public['cycle']}/{public['max_cycles']}."
+        + (f" {public['cycle_budget_explanation']}" if public['cycle_budget_explanation'] else ""),
         (
             (
                 f"Next safe action: retrieve current bound result JSON with {result_command}; review it and run driver checks, then the driver may finalize after review. No provider-launching same-job recovery is available."
@@ -3952,6 +3963,7 @@ def _has_reviewed_provider_timeout(
 
 def _classify_stderr(
     path: Path, version: str, returncode: int, provider_timeout_seconds: object = None,
+    *, native: bool = False,
 ) -> str:
     try:
         raw = path.read_bytes()
@@ -3990,6 +4002,13 @@ def _classify_stderr(
     # 3. rc0 returns empty_output
     if returncode == 0:
         return "empty_output"
+
+    native_host_denials = {
+        b"sandbox_apply: Operation not permitted",
+        b"sandbox-exec: sandbox_apply: Operation not permitted",
+    }
+    if native and any(line.strip() in native_host_denials for line in raw_lines):
+        return "native_host_sandbox_unavailable"
 
     # Preserve the existing nonzero headless-permission restriction.
     if any(b"permission that headless mode cannot prompt for" in line for line in raw_lines):
@@ -5172,6 +5191,7 @@ def _observe_controller_terminal(
                         binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
                         execution.returncode,
                         binding.command["max_seconds"],
+                        native=binding.command["provider_isolation"] == "native",
                     )
                 )
         elif outcome.reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:

@@ -869,6 +869,16 @@ def _manifest_digest(manifest: Any) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _preview_validation_error(exc: ReadableManifestError | DispatchError) -> None:
+    """Expose bounded validation reasons without emitting control bytes or file contents."""
+    reason = str(exc).encode("unicode_escape").decode("ascii")
+    if len(reason) > 512:
+        reason = "validation detail is too long"
+    if reason == "control marker is not regular":
+        reason += "; use a branch-backed linked worktree"
+    print(f"agy-worker.sh: transmission preview invalid: {reason}", file=sys.stderr)
+
+
 def _preview_main(argv: list[str]) -> int:
     workdir: str | None = None
     scope_path: str | None = None
@@ -1006,14 +1016,8 @@ def _preview_main(argv: list[str]) -> int:
         else:
             summary["content_manifest_sha256"] = result["content_manifest_sha256"]
         result["authority_summary"] = summary
-    except ReadableManifestError:
-        if scope_path is None:
-            print(
-                "agy-worker.sh: whole-worktree content preview failed its bounded local scan; use --provider-scope for selected content",
-                file=sys.stderr,
-            )
-        else:
-            print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
+    except (ReadableManifestError, DispatchError) as exc:
+        _preview_validation_error(exc)
         return 20
     except (OSError, UnicodeError, ValueError, OverflowError, RecursionError):
         print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)

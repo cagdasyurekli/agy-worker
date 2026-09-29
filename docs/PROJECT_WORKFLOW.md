@@ -11,14 +11,16 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
 
 ## Lifecycle at a glance
 
-1. Capture an immutable base commit and create an isolated worktree.
+1. Bind an immutable base commit; the ordinary facade creates an isolated worktree.
 2. Choose the transmission mode explicitly. The primary facade requires either
    `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`, acknowledging that every worktree entry
-   may be provider-readable and transmissible and binding its current contents, kinds,
-   permissions, symlink targets, and execution mode, or
+   may be provider-readable and transmissible and binding content, kinds, full file mode bits,
+   symlink target hashes, readable manifest, isolation and native grant profile, or
    `--provider-scope FILE --approve-transmission-sha SHA256`, which binds exact
-   reviewed read/write entries and a selected-content digest, then stages only selected
+   reviewed read/write entries, readable path/kind manifest, selected bytes and
+   executable bits, isolation and grant profile, then stages only selected
    entries in a fresh owner-private mode-`0700` Gitless provider cwd.
+   Scoped mode rejects symlinks; its digest does not bind full POSIX permissions.
 3. Dispatch only the approved task. In default mode, requested paths constrain writes
    and candidate acceptance, not provider reads. Scoped staging copies selected
    task inputs, but the controller still locally enumerates and validates worktree paths;
@@ -43,6 +45,13 @@ For the public synthetic gate contract, read [QA gate conformance v1](CONFORMANC
    allow silent direct-Codex fallback after provider failure or exhausted budget.
 7. Preserve accepted work on its branch. Cleanup is available only for narrowly
    rejected or explicitly discarded candidates and requires current exact approvals.
+
+Neither approval digest binds task text, self-verification manifest,
+`--allow-scoped-repair`, workflow/edit mode, model/effort, budget or environment
+opt-ins. Present the exact task and selected settings alongside the digest before
+approval; material changes need renewed authority. A driver that reuses a digest for
+different work or settings can exceed the human decision even when the controller
+accepts the unchanged content binding.
 
 Assurance labels are deliberately practical. `verified` is available only when the
 strict workflow policy is satisfied; `partially_verified` records useful work with
@@ -220,6 +229,10 @@ symbolic launcher `"$PIPELINE/agy-worker.sh"`; export `PIPELINE` before copying 
 It is not a provider-success or acceptance claim. `extend` and `cancel` require the
 current state SHA. Eligible `resume` preserves the exact stored conversation;
 `restart` starts a fresh attempt. Neither happens automatically.
+For a facade-backed advanced restart, pass the saved workflow state as
+`--state "$WORKFLOW_STATE"` with `--job-id "$JOB_ID"` and the current
+`--approve-state-sha "$STATE_SHA"`. It resolves the bound private log root; a
+restart still requires an explicit user decision and provider notice.
 
 The current lifecycle state uses these controller phases (see `CURRENT_STATE_SCHEMA`
 in `skills/agy-worker/runtime/scripts/agy_dispatch.py`):
@@ -299,13 +312,16 @@ regenerate artifacts in the candidate to make its snapshot match again: tracked,
 untracked, deleted, and ignored paths are all bound candidate bytes. First inspect
 the candidate read-only, then create a new directory under a private parent and run
 build or test commands in that copy. The copy deliberately omits `.git`, so
-Git-dependent checks stay read-only against the original candidate:
+Git-dependent checks stay read-only against the original candidate. For facade-backed
+jobs, set `WORKFLOW_STATE` to the exact derived or explicit workflow state path;
+the advanced copy command binds the existing job and resolves its private log root:
 
 ```bash
+WORKFLOW_STATE=/absolute/private/workflow.json
 VERIFY_PARENT="$(mktemp -d -t agyworker-verify.XXXXXX)" || exit $?
 VERIFY_PARENT="$(CDPATH= cd -- "$VERIFY_PARENT" && pwd -P)" || exit $?
 VERIFY_DIR="$VERIFY_PARENT/candidate"
-"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" \
+"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" --state "$WORKFLOW_STATE" \
   --destination "$VERIFY_DIR" --format text
 ( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q )
 ```

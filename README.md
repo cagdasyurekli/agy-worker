@@ -11,8 +11,9 @@ Git-scope checks and driver-owned verification.**
 [![Offline test workflow](https://github.com/cagdasyurekli/codex-agy-worker/actions/workflows/test.yml/badge.svg)](https://github.com/cagdasyurekli/codex-agy-worker/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-Use **Codex CLI** to delegate repository exploration, features, and project-scale
-coding to **Antigravity CLI (`agy`)**. Claude Code is experimental: pending live verification.
+Use **Codex CLI or Claude Code** to delegate repository exploration, features, and project-scale
+coding to **Antigravity CLI (`agy`)**. Claude Code host operation was live-tested on synthetic tasks;
+in headless `claude -p` or SDK runs, keep the turn alive until dispatch finishes.
 The driver reviews the diff, runs checks, and decides whether the result is verified,
 partial, or blocked. The worker report is never acceptance evidence.
 
@@ -32,7 +33,7 @@ codex plugin add agy-worker@agy-worker
 
 Existing users: follow the [identity migration](docs/INSTALLATION.md#codex-plugin-identity-migration).
 
-### Claude Code — experimental: pending live verification
+### Claude Code
 
 For a reviewed source containing the Claude manifests, use:
 
@@ -42,7 +43,7 @@ For a reviewed source containing the Claude manifests, use:
 ```
 
 The plugin skill is `/agy-worker:agy-worker`. For checkout-based testing, use the
-[local installation instructions](docs/INSTALLATION.md#claude-code-experimental).
+[local installation instructions](docs/INSTALLATION.md#claude-code).
 
 ### GitHub fallback
 
@@ -52,7 +53,7 @@ Review and install directly from GitHub (the repository name is unchanged):
 git clone https://github.com/cagdasyurekli/codex-agy-worker.git
 cd codex-agy-worker
 ./install.sh
-# Claude Code, from a checkout containing its experimental host support:
+# Claude Code:
 ./install.sh --host claude
 ```
 

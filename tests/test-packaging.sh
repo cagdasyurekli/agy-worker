@@ -1318,7 +1318,7 @@ assert manifest["interface"]["termsOfServiceURL"].startswith("https://")
 assert not ({"apps", "mcpServers", "hooks"} & manifest.keys())
 assert 'license: MIT' in skill
 assert f'  version: "{manifest["version"]}"' in skill
-assert 'OpenAI Codex CLI; Claude Code experimental: pending live verification.' in skill
+assert 'OpenAI Codex CLI and Claude Code.' in skill
 assert 'Requires Bash, Python 3, git, and agy with provider network access.' in skill
 assert re.search(r"^description: (.+)$", skill, re.M).group(1) == 'Use when Codex or Claude Code should delegate repository exploration or implementation to Google Antigravity CLI (agy), then review, verify, repair, and deliver the result.'
 assert len(skill.splitlines()) <= 180
@@ -1375,8 +1375,16 @@ for required_fragment in (
     '> "$ENVELOPE"', '--receipt "$RECEIPT"', '--envelope "$ENVELOPE"',
     'test ! -e "$RECEIPT"',
 ):
+    if required_fragment == '> "$ENVELOPE"':
+        start = lifecycle_text.index('ENVELOPE="$STATE_DIR/envelope.json"')
+        end = lifecycle_text.index('This facade invocation explicitly approves whole-worktree dispatch;', start)
+    else:
+        start = lifecycle_text.index('RECEIPT="$STATE_DIR/evidence-receipt.json"')
+        end = lifecycle_text.index('\n```\n', start)
+    index = lifecycle_text.find(required_fragment, start, end)
+    assert index >= 0, required_fragment
     assert lifecycle_invocation_contract(
-        lifecycle_text.replace(required_fragment, '', 1)
+        lifecycle_text[:index] + lifecycle_text[index + len(required_fragment):]
     ) is False, required_fragment
 workflow_source = (
     root / "skills/agy-worker/runtime/scripts/workflow.py"
@@ -1413,7 +1421,7 @@ for required_case in (
 ):
     assert required_case in scope_recovery_tests, required_case
 reference_text = security_reference.read_text(encoding="utf-8")
-assert 'experimental: pending live verification' in reference_text
+assert 'Codex CLI and\nClaude Code are supported driver hosts' in reference_text
 assert '`verify-job.sh --verify-env NAME`' in reference_text
 assert 'dispatch-time `agy` version, help, and model-selection' in reference_text
 assert 'including diagnostics, are not provider dispatch' in reference_text
@@ -1437,6 +1445,12 @@ assert '`./scripts/ci-offline.sh` once on the final bytes.' in agents_flat
 assert 'No author is the sole acceptor of material work.' in agents_flat
 PY
 then ok "dual-host skill metadata matches the plugin version and public legal links"; else bad "dual-host skill metadata matches the plugin version and public legal links"; fi
+
+if python3 -B "$ROOT/tests/test-doc-claims.py" "$ROOT"; then
+    ok "public host, approval, and lifecycle claims match their documented limits"
+else
+    bad "public host, approval, and lifecycle claims match their documented limits"
+fi
 
 if python3 - "$ROOT" "$TMP/marketplace-contract" <<'PY'
 import json
@@ -1493,7 +1507,7 @@ def validate(root: Path) -> None:
     assert set(claude) == {"name", "version", "description", "author", "homepage", "repository", "license"}
     assert claude["name"] == catalog["name"] == manifest["name"] == "agy-worker"
     assert claude["version"] == manifest["version"]
-    assert "experimental: pending live verification" in claude["description"]
+    assert "Supports Claude Code; keep headless sessions active until dispatch completes." in claude["description"]
     assert claude["repository"] == manifest["repository"]
     assert claude["homepage"] == manifest["homepage"]
     assert claude["license"] == "MIT"
@@ -2813,7 +2827,11 @@ provider_read_scope_clauses=(
     'Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds reviewed read entries, their content digest, and a write subset in a fresh owner-private mode-`0700` Gitless stage.'
     'Whole-worktree dispatch requires `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`. Every disposable-worktree entry is provider-readable and may reach Google/Gemini; `--add-dir`, prompt denylists and gate path policies do not narrow that read boundary.'
     'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode.'
-    'Approvals bind content, kinds, permissions, symlink targets and execution mode; the controller rechecks this binding before provider start.'
+    'The whole-worktree digest binds content, kinds, full file mode bits, symlink target hashes, the'
+    'readable manifest, provider isolation and native grant profile. The scoped digest'
+    'binds canonical read/write policy, readable path/kind manifest, selected bytes and'
+    'executable bits, isolation and grant profile; scoped mode rejects symlinks and does'
+    'not bind full POSIX permissions. The controller rechecks the approved boundary'
     'Retired dispatch and workflow job formats are rejected; finish or discard them with their creating release, without migration.'
     'Default `--provider-isolation session` uses the existing AGY session. AGY has normal user filesystem/network authority; staging and reconciliation are not host isolation.'
     'Explicit `--provider-isolation native` requires supported macOS scoped containment; it never falls back to session mode. Preserve the recorded isolation mode and grant profile across repairs.'
@@ -2870,7 +2888,7 @@ fi
 provider_read_scope_weakening_mutants_rejected=1
 provider_read_scope_weakening_mutant_index=0
 provider_read_scope_weakening_replacements=(
-    'the controller rechecks this binding before provider start::the controller may skip rechecking this binding before provider start'
+    'The controller rechecks the approved boundary::The controller may skip rechecking the approved boundary'
     'Retired dispatch and workflow job formats are rejected::Retired dispatch and workflow job formats acquire current authority automatically'
     'do not narrow that read boundary::narrow that read boundary'
     'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch::Both `workflow.sh run` and the advanced `agy-worker.sh` initial dispatch'

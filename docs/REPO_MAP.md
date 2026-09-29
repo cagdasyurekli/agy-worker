@@ -34,7 +34,7 @@ These paths are relative to the repository root.
 | Component and paths | Responsibility | Owning checks |
 |---|---|---|
 | Package: `install.sh`, `skills/agy-worker/README.md`, `SKILL.md`, `references/`, `agents/openai.yaml`, `scripts/resolve-pipeline.sh` (last five under the skill) | Portable core and progressive instructions; checkout, plugin and folder-only resolution. | `bash tests/test-packaging.sh` |
-| Host manifests: `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json`, `.claude-plugin/` | One skill identity; Claude support remains experimental until live verified. | `bash tests/test-packaging.sh` |
+| Host manifests: `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json`, `.claude-plugin/` | One skill identity across Codex and Claude Code; host operation has bounded live evidence. | `bash tests/test-packaging.sh` |
 | Updates: `update.sh`, `scripts/official_github.py`, `scripts/compatibility_probe.py` | Project-release observation, bounded official transport and explicit authenticated apply. | `bash tests/test-update.sh`; `python3 -B tests/test-official-github.py`; `python3 -B tests/test-compatibility-probe.py` |
 | Notifier: `update-notifier.sh`, `scripts/update_notifier.py`, `scripts/update_notifier_child.py` | Opt-in local scheduled observation, snapshot binding and authenticated lifecycle; no update apply. | `python3 -B tests/test-update-notifier.py` |
 | Starter proof: `proof-demo.sh`, `conformance/v1/` | Provider-free synthetic demonstration of maintained gate outcomes. | `bash tests/test-proof-demo.sh` |

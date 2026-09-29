@@ -391,7 +391,7 @@ invalid_scope_run = subprocess.run(
     env=environment, check=False,
 )
 assert invalid_scope_run.returncode == 20 and not invalid_scope_run.stdout
-assert invalid_scope_run.stderr == b"agy-worker.sh: transmission preview unavailable\n"
+assert invalid_scope_run.stderr == b"agy-worker.sh: transmission preview invalid: provider scope authority is invalid\n"
 assert b"Traceback" not in invalid_scope_run.stderr
 scope_path.chmod(0o600)
 
@@ -424,10 +424,7 @@ outside.write_text("outside")
 (worktree / "outward-alias").symlink_to(outside)
 failed, _ = preview()
 assert failed.returncode == 20 and not failed.stdout
-assert failed.stderr == (
-    b"agy-worker.sh: whole-worktree content preview failed its bounded local scan; "
-    b"use --provider-scope for selected content\n"
-)
+assert failed.stderr == b"agy-worker.sh: transmission preview invalid: symlink boundary violation\n"
 (worktree / "outward-alias").unlink()
 
 nested = worktree / "nested-marker"
@@ -458,10 +455,8 @@ fake_failure = subprocess.run(
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert fake_failure.returncode == 20 and not fake_failure.stdout
-assert fake_failure.stderr == (
-    b"agy-worker.sh: whole-worktree content preview failed its bounded local scan; "
-    b"use --provider-scope for selected content\n"
-)
+assert fake_failure.stderr.startswith(b"agy-worker.sh: transmission preview invalid: ")
+assert b"Traceback" not in fake_failure.stderr
 
 alias = temp / "preview-root-alias"
 alias.symlink_to(worktree, target_is_directory=True)
@@ -3978,6 +3973,58 @@ else
     bad "worker exit-zero empty-output classification"
 fi
 
+bound_state="$(CDPATH= cd -- "$TMP" && pwd -P)/workflow-bound-state.json"
+python3 - "$ROOT" "$TMP/logs/empty-success" "$bound_state" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1]).resolve()
+dispatch = Path(sys.argv[2]).resolve()
+path = Path(sys.argv[3])
+st = repo.stat()
+ident = {"dev": st.st_dev, "ino": st.st_ino, "mode": st.st_mode, "uid": st.st_uid, "gid": st.st_gid}
+value = {
+    "schema_version": 5, "kind": "agy-worker-workflow-state", "job_id": "empty-success",
+    "repo_path": str(repo), "repo_identity": ident,
+    "worktree_path": str(repo), "worktree_identity": ident,
+    "branch": "test", "branch_ref": "refs/heads/test", "base": "0" * 40,
+    "provider_isolation": "session", "provider_execution": None,
+    "preview_manifest_sha256": "0" * 64, "preview_content_sha256": "0" * 64,
+    "preview_launch_approval_sha256": "0" * 64, "native_grant_profile": "baseline",
+    "dispatch_job_dir": str(dispatch), "job_state_path": None, "receipt_path": None,
+}
+path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+path.chmod(0o600)
+PY
+"$WORKER" status --job-id empty-success --state "$bound_state" --format json \
+    > "$TMP/advanced-state.out" 2> "$TMP/advanced-state.err"
+bound_status=$?
+"$WORKER" status --job-id wrong-job --state "$bound_state" --format json \
+    > "$TMP/advanced-state-wrong.out" 2> "$TMP/advanced-state-wrong.err"
+wrong_status=$?
+if [[ "$bound_status" == 0 && "$wrong_status" != 0 ]] \
+    && [[ "$(status_field "$TMP/advanced-state.out" job_id)" == empty-success ]]; then
+    ok "advanced controls resolve only a job-bound workflow log root without environment"
+else
+    bad "advanced control workflow state log-root binding"
+fi
+"$WORKER" verification-copy --job-id empty-success --state "$bound_state" \
+    --destination "$TMP/candidate-copy" --format json \
+    > "$TMP/advanced-copy.out" 2> "$TMP/advanced-copy.err"
+copy_status=$?
+"$WORKER" restart --job-id empty-success --state "$bound_state" \
+    --approve-state-sha "$(printf '%064d' 0)" --format text \
+    > "$TMP/advanced-restart.out" 2> "$TMP/advanced-restart.err"
+restart_status=$?
+if [[ "$copy_status" != 0 && "$restart_status" != 0 ]] \
+    && ! grep -Eq 'log root is unavailable|invalid usage' "$TMP/advanced-copy.err" "$TMP/advanced-restart.err"; then
+    ok "verification-copy and restart accept bound --state before eligibility checks"
+else
+    bad "verification-copy and restart state-derived log root"
+fi
+
 printf 'benign print-mode diagnostics\n' | \
     FAKE_WARNING_LINE='permission that headless mode cannot prompt for; file write reported failure after content was already written' \
     FAKE_UTF8_SUMMARY=1 run_worker benign-print-diagnostics \
@@ -4020,6 +4067,29 @@ for classified_case in authentication_text provider_text unknown_text; do
         bad "closed error classification for $classified_case"
     fi
 done
+
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" "$TMP" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location("dispatch_step16", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+stderr = Path(sys.argv[2]) / "native-host.err"
+for line in ("sandbox_apply: Operation not permitted", "sandbox-exec: sandbox_apply: Operation not permitted"):
+    stderr.write_text(line + "\n", encoding="utf-8")
+    assert module._classify_stderr(stderr, "1.2.12", 1, native=True) == "native_host_sandbox_unavailable"
+    assert module._classify_stderr(stderr, "1.2.12", 1, native=False) == "agy_failed_unclassified"
+assert "native_host_sandbox_unavailable" in module.REASONS
+assert module._cycle_budget_explanation({"status": "cancelled", "reason": "interrupted", "candidate_recognized": False, "attempt": 1, "max_cycles": 2})
+PY
+if [[ $? -eq 0 ]]; then
+    ok "native nested-sandbox denial is actionable and interrupted candidate-free budget is explained"
+else
+    bad "native host and interrupted budget status explanations"
+fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
         "$TMP/logs/tier/dispatch-command.json" "$TMP/diagnostic-command" <<'PY'

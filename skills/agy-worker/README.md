@@ -13,7 +13,7 @@ output is correct.
 
 ## Requirements
 
-- OpenAI Codex CLI, or Claude Code (experimental: pending live verification)
+- OpenAI Codex CLI or Claude Code
 - Bash, Python 3, and Git
 - `agy` on `PATH` with provider access for live dispatch
 - A branch-backed disposable Git worktree whose complete provider-readable content
@@ -30,8 +30,9 @@ concrete. For example:
 > edits only under tests, verify with the existing parser test suite, and preserve
 > useful partial work if a check fails.
 
-Before a live dispatch, the driver must show the public-safe task and caller-owned model
-selection, obtain any missing provider-transmission approval, and ensure secrets,
+Before a live dispatch, the driver must show the owner the exact task and selected
+settings beside the content digest; a later provider notice may use a public-safe
+summary. Obtain any missing provider-transmission approval, and ensure secrets,
 denied paths, and unrelated private files are absent from the disposable worktree.
 Installation alone grants none of those permissions.
 

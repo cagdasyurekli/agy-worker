@@ -56,7 +56,7 @@ Codex state; marketplace add/list, plugin install/remove, resolver discovery, an
 source-installed skill parity passed. This does not prove future snapshots, provider
 behavior, task quality, or general correctness.
 
-## Claude Code catalog (experimental)
+## Claude Code catalog
 
 `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` both name
 `agy-worker`, with versions synchronized to the Codex manifest and skill metadata.
@@ -64,11 +64,10 @@ The Claude marketplace entry uses `source: "./"`, so the repository root supplie
 the same `skills/agy-worker/` bundle. No hooks, MCP servers, commands, or agent
 components are declared. Claude discovers the skill as `/agy-worker:agy-worker`.
 
-Claude Code is **experimental: pending live verification**. Packaging tests validate
-JSON shape and resolver layouts offline; they do not prove installation or live
-provider success. The reviewer must run `claude plugin validate .` and the local
-installation/live checks in [Installation](INSTALLATION.md#claude-code-experimental).
+Claude Code host operation was live-tested with synthetic jobs. Packaging tests
+validate JSON shape and resolver layouts offline; they do not prove a future install
+or provider result. Use `claude plugin validate .` and the local steps in
+[Installation](INSTALLATION.md#claude-code) for the selected source.
 The [Claude marketplace reference](https://code.claude.com/docs/en/plugin-marketplaces)
 describes root-relative sources and validation. No catalog submission is part of a
-repository edit. The new Codex identity also needs fresh installation verification;
-earlier immutable-snapshot Codex evidence above covers the old identity only.
+repository edit. Review the selected source and installed bytes for each new snapshot.

@@ -34,7 +34,7 @@ the driver retains acceptance authority. [Usage](USAGE.md) and
   [security reference](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md).
 - Capability acceptance cannot establish authentication, model availability or task
   quality. Provider help and live behavior are separate evidence.
-- Claude Code remains experimental pending live verification. Native Windows is
+- Claude Code host operation has bounded synthetic live evidence. Native Windows is
   untested. [Installation](INSTALLATION.md) owns compatibility observations.
 - Old dispatch formats are not migrated; finish or discard them with their creating
   release. Useful candidates survive failed checks or exhausted repair budgets.

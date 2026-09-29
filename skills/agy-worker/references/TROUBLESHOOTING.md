@@ -94,6 +94,9 @@ cancellation as unverified unless independently established.
 Explicit `--provider-isolation native` requires supported macOS scoped containment.
 New jobs use the existing AGY session by default. A general
 `doctor` readiness result does not qualify that native launch or authentication.
+An outer host sandbox can prohibit nested Seatbelt: Codex `workspace-write` produced
+`sandbox_apply: Operation not permitted` in a live native attempt. Treat that as a
+host containment prerequisite failure, not as an unclassified provider failure.
 If launch reports `status_unavailable`, inspect the host and bound executable/profile
 before changing the task. Do not retry a provider call or silently switch execution
 or transmission modes: that changes the exposure approved by the user. Keep the

@@ -1,8 +1,8 @@
 # Security and compatibility
 
-The portable skill requires Bash, Python 3, Git and Antigravity CLI. Codex is the
-primary host; Claude Code is experimental: pending live verification. A provider
-model named `claude` does not establish Claude host support.
+The portable skill requires Bash, Python 3, Git and Antigravity CLI. Codex CLI and
+Claude Code are supported driver hosts. The Claude Code host path was exercised with
+synthetic live jobs; a provider model named `claude` alone says nothing about host support.
 
 Use [Project lifecycle and verification](PROJECT_LIFECYCLE_AND_VERIFICATION.md) for
 commands and [Troubleshooting](TROUBLESHOOTING.md) for failures.
@@ -68,6 +68,10 @@ cannot prevent or exhaustively observe host access.
 Explicit native mode requires supported macOS scoped containment; failure never falls
 back to session. Preserve the selected mode and grant profile throughout repairs.
 Whole-worktree mode does not acquire native containment.
+Native macOS Seatbelt containment cannot start when the driver host is already inside
+a sandbox that prohibits nested `sandbox_apply` (observed with Codex `workspace-write`).
+The same native path worked from an unsandboxed Claude Code host. Keep the selected
+mode and resolve the host prerequisite; do not silently fall back to session mode.
 
 Native permits the selected stage, private persistent provider HOME, per-attempt TMP,
 exact AGY executable, read-only result schema and reviewed system runtime/tool paths.
