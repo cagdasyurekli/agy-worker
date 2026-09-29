@@ -29,7 +29,7 @@ These never relax without an explicit owner decision.
   use the hardened invocation: no repository hooks, fsmonitor, content filters, or
   caller `GIT_*` variables.
 - **Provider transmission needs exact approval.**
-  - Prefer scoped mode: `--provider-scope` plus `transmission_sha256`.
+  - Prefer scoped mode: `--provider-scope` plus full `launch_approval_sha256`.
   - Whole-worktree mode needs `launch_approval_sha256`. Without provider scope,
     everything in the worktree is agy-readable and may reach Google/Gemini;
     `--add-dir` does not narrow that.

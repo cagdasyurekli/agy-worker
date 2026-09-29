@@ -39,6 +39,30 @@ sys.path.insert(0, str(RUNTIME / "scripts"))
 import candidate_state as CANDIDATE  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import workflow as WORKFLOW_MODULE  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
+
+
+def preview_args() -> Any:
+    args = WORKFLOW_MODULE.build_parser().parse_args(["run", "--repo", "/tmp/repo", "--job-id", "fixture", "--task", "bounded task"])
+    args.mode = "accept-edits"
+    return args
+
+
+def fixture_authority() -> dict[str, Any]:
+    launch = WORKFLOW_MODULE.LAUNCH_AUTHORITY
+    return launch.build_authority(
+        content={"manifest_sha256": "0" * 64, "policy_sha256": None,
+                 "selected_content_sha256": None, "content_manifest_sha256": "1" * 64,
+                 "provider_isolation": "session", "native_grant_profile": "baseline"},
+        task=b"bounded task", prompt=b"fixture prompt", workflow="task", mode="accept-edits",
+        max_cycles=2, idle_seconds=600, hard_seconds=7200, max_seconds=43200, notice_seconds=1800,
+        tier=None, model=None, effort=None, allow_scoped_repair=False,
+        self_verification_manifest_sha256=None, provider_env_names=[], allow_slash_commands=False,
+        add_dirs=["."], provider_schema_sha256="3" * 64, base_commit="4" * 40, workdir="/private/tmp/fixture")
+
+
+FIXTURE_AUTHORITY = fixture_authority()
+FIXTURE_APPROVAL = WORKFLOW_MODULE.LAUNCH_AUTHORITY.approval_sha256(FIXTURE_AUTHORITY)
+
 passed = 0
 failed = 0
 
@@ -88,6 +112,8 @@ def run_workflow(
     input_bytes: bytes | None = None,
     env: dict[str, str | None] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
+    if argv and argv[0] == "run" and "--task" not in argv and input_bytes is None:
+        input_bytes = b"bounded task"
     return run_cmd(
         sys.executable, "-I", "-S", "-B", str(SCRIPT), *argv,
         cwd=cwd, input_bytes=input_bytes, env=env
@@ -167,7 +193,7 @@ def test_public_workflow_status_shows_required_finalize() -> bool:
             "job_id": "pending-job", "repo_path": directory, "worktree_path": directory,
             "branch": "test", "base": "0" * 40, "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "0" * 64,
-            "preview_launch_approval_sha256": "0" * 64, "native_grant_profile": "baseline",
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY, "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir), "provider_execution": None,
             "provider_isolation": "session", "receipt_path": None,
         }
@@ -367,9 +393,11 @@ def test_literal_model_effort_forwarded_exactly() -> bool:
         args = parser.parse_args(["run", "--repo", str(f.repo), "--job-id", f.job_id,
                                   "--model", "Caller.Future/model", "--effort", "maximum", "--task", "bounded task"])
         args.provider_isolation = "session"
+        args.task_input = b"bounded task"
+        args.mode = "accept-edits"
         with mock.patch.object(WORKFLOW_MODULE.subprocess, "run", return_value=subprocess.CompletedProcess([], 17)) as child:
             assert WORKFLOW_MODULE._dispatch_run(args, worktree=f.worktree,
-                dispatch_job_dir=f.state_dir / "literal-job", approved_whole_worktree="b" * 64) == 17
+                dispatch_job_dir=f.state_dir / "literal-job", approved_whole_worktree="b" * 64, approval_record=f.state_file) == 17
         command = child.call_args.args[0]
         assert command[command.index("--model") + 1] == "Caller.Future/model"
         assert command[command.index("--effort") + 1] == "maximum"
@@ -465,6 +493,7 @@ def test_run_preview_and_approval_enforcement() -> bool:
         direct = run_cmd(
             str(RUNTIME / "agy-worker.sh"),
             "transmission-preview", "--workdir", str(f.worktree),
+            "--workflow", "task", "--add-dir", str(f.worktree), "--task", "bounded task",
         )
         assert direct.returncode == 0
         assert res.stdout == direct.stdout
@@ -539,7 +568,7 @@ exit 0
             "--worktree", str(f.worktree), "--branch", f.branch,
             "--base", f.base, "--job-id", f.job_id,
             "--approve-whole-worktree", launch_approval_sha,
-            "--task", "Test prompt",
+            "--task", "bounded task",
             env={"PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
         )
         assert f.state_file.exists()
@@ -579,6 +608,7 @@ def test_preview_timeout_covers_bounded_path_and_content_scans() -> bool:
         direct = run_cmd(
             str(RUNTIME / "agy-worker.sh"), "transmission-preview",
             "--workdir", str(f.worktree), "--provider-isolation", "session",
+            "--workflow", "task", "--add-dir", str(f.worktree), "--task", "bounded task",
         )
         assert direct.returncode == 0, direct.stderr
         observed: list[float] = []
@@ -588,7 +618,7 @@ def test_preview_timeout_covers_bounded_path_and_content_scans() -> bool:
             return subprocess.CompletedProcess(command, 0, direct.stdout, b"")
 
         with mock.patch.object(WORKFLOW_MODULE.subprocess, "run", side_effect=completed):
-            raw, preview = WORKFLOW_MODULE.canonical_transmission_preview(f.worktree)
+            raw, preview = WORKFLOW_MODULE.canonical_transmission_preview(f.worktree, launch_args=preview_args(), task=b"bounded task")
         assert raw == direct.stdout
         assert preview["content_manifest_sha256"]
         assert observed == [60.0]
@@ -622,7 +652,7 @@ def test_run_drift_rejection() -> bool:
             "--approve-whole-worktree", launch_approval_sha
         )
         assert res.returncode != 0
-        assert b"stale or mismatched" in res.stderr
+        assert b"launch authority changed: content." in res.stderr
         return True
     finally:
         f.clean()
@@ -656,7 +686,8 @@ def test_whole_preview_binds_bytes_mode_and_link_target() -> bool:
                 alias = f.worktree / "alias.txt"
                 alias.unlink()
                 alias.symlink_to("NOTICE.md")
-            current = run_workflow(*argv, "--preview")
+            current = run_cmd(str(RUNTIME / "agy-worker.sh"), "transmission-preview", "--workdir", str(f.worktree),
+                              "--workflow", "task", "--add-dir", str(f.worktree), "--task", "bounded task")
             assert current.returncode == 0, current.stderr
             latest = json.loads(current.stdout)
             assert latest["manifest_sha256"] == prior["manifest_sha256"]
@@ -666,8 +697,8 @@ def test_whole_preview_binds_bytes_mode_and_link_target() -> bool:
                 *argv, "--approve-whole-worktree", prior["launch_approval_sha256"],
             )
             assert rejected.returncode != 0
-            assert b"stale or mismatched" in rejected.stderr
-            assert not f.state_file.exists()
+            assert b"launch authority changed: content." in rejected.stderr
+            assert f.state_file.exists()
         finally:
             f.clean()
     return True
@@ -688,6 +719,7 @@ def test_run_pre_dispatch_failure_rolls_back_exact_state() -> bool:
         manifest_sha = json.loads(preview.stdout.decode("utf-8"))["manifest_sha256"]
         launch_approval_sha = json.loads(preview.stdout.decode("utf-8"))["launch_approval_sha256"]
         dispatch_dir = f.state_dir / "logs" / f.job_id
+        f.state_file.unlink()
 
         def rejected_preflight() -> subprocess.CompletedProcess[bytes]:
             return run_workflow(
@@ -699,16 +731,16 @@ def test_run_pre_dispatch_failure_rolls_back_exact_state() -> bool:
             )
 
         first = rejected_preflight()
-        assert first.returncode == 64
-        assert b"unsafe --provider-env name" in first.stderr
+        assert first.returncode == 20
+        assert b"provider environment names are invalid" in first.stderr
         assert not f.state_file.exists()
         assert not dispatch_dir.exists()
 
         # The identical provider-free preflight remains retryable instead of
         # failing on a stranded facade state.
         retry = rejected_preflight()
-        assert retry.returncode == 64
-        assert b"unsafe --provider-env name" in retry.stderr
+        assert retry.returncode == 20
+        assert b"provider environment names are invalid" in retry.stderr
         assert not f.state_file.exists()
         assert not dispatch_dir.exists()
 
@@ -728,6 +760,7 @@ def test_run_pre_dispatch_failure_rolls_back_exact_state() -> bool:
             "preview_manifest_sha256": manifest_sha,
             "preview_content_sha256": "1" * 64,
             "preview_launch_approval_sha256": launch_approval_sha,
+            "preview_launch_authority": json.loads(preview.stdout)["launch_authority"],
             "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir),
             "job_state_path": None,
@@ -827,8 +860,8 @@ def test_ordinary_run_owns_private_initialization_and_reuses_preview() -> bool:
             "--approve-whole-worktree", launch_approval_sha,
             "--provider-env", "BASH_ENV", "--task", "bounded task", env=env,
         )
-        assert approved.returncode == 64
-        assert b"unsafe --provider-env name" in approved.stderr
+        assert approved.returncode == 20
+        assert b"provider environment names are invalid" in approved.stderr
         # These resources came from the prior preview invocation, so this later
         # preflight failure must retain them for explicit recovery.
         assert workflow_state.read_bytes() == before_workflow
@@ -941,7 +974,7 @@ def test_ordinary_run_requires_one_explicit_transmission_mode() -> bool:
         )
         assert missing.returncode == 20
         assert b"explicit provider-transmission mode required" in missing.stderr
-        assert transmission_sha.encode("ascii") in missing.stderr
+        assert preview_value["launch_approval_sha256"].encode("ascii") in missing.stderr
 
         conflicting = run_workflow(
             "run", "--repo", str(f.repo), "--job-id", job_id,
@@ -958,8 +991,8 @@ def test_ordinary_run_requires_one_explicit_transmission_mode() -> bool:
             "--approve-transmission-sha", transmission_sha,
             "--provider-env", "BASH_ENV", "--task", "bounded task", env=env,
         )
-        assert passed_to_raw_boundary.returncode == 64
-        assert b"unsafe --provider-env name" in passed_to_raw_boundary.stderr
+        assert passed_to_raw_boundary.returncode == 20
+        assert b"provider environment names are invalid" in passed_to_raw_boundary.stderr
         assert b"conflicts with --add-dir" not in passed_to_raw_boundary.stderr
 
         workflow_state, job_state, worktree = _derived_files(state_home, job_id)
@@ -967,7 +1000,7 @@ def test_ordinary_run_requires_one_explicit_transmission_mode() -> bool:
         bound = json.loads(workflow_state.read_bytes())
         assert bound["schema_version"] == WORKFLOW_MODULE.BOUND_FACADE_SCHEMA_VERSION
         assert bound["preview_content_sha256"] == preview_value["selected_content_sha256"]
-        assert bound["preview_launch_approval_sha256"] == transmission_sha
+        assert bound["preview_launch_approval_sha256"] == preview_value["launch_approval_sha256"]
         assert bound["native_grant_profile"] == "baseline"
         (worktree / "README.md").write_text("scoped content drift\n", encoding="utf-8")
         stale = run_workflow(
@@ -977,7 +1010,7 @@ def test_ordinary_run_requires_one_explicit_transmission_mode() -> bool:
             "--task", "bounded task", env=env,
         )
         assert stale.returncode == 20
-        assert b"facade workflow binding or preview changed" in stale.stderr
+        assert b"launch authority changed: content." in stale.stderr
         return True
     finally:
         f.clean()
@@ -1009,7 +1042,7 @@ def test_preview_reports_scope_validation_errors() -> bool:
             scope_path.chmod(0o600)
             try:
                 WORKFLOW_MODULE.canonical_transmission_preview(
-                    f.worktree, provider_scope=str(scope_path),
+                    f.worktree, provider_scope=str(scope_path), launch_args=preview_args(), task=b"bounded task",
                 )
             except WORKFLOW_MODULE.WorkflowError as exc:
                 assert expected in str(exc), str(exc)
@@ -1028,7 +1061,7 @@ def test_preview_identifies_main_checkout_marker() -> bool:
     f = RepoFixture("main-checkout-preview")
     try:
         try:
-            WORKFLOW_MODULE.canonical_transmission_preview(f.repo)
+            WORKFLOW_MODULE.canonical_transmission_preview(f.repo, launch_args=preview_args(), task=b"bounded task")
         except WORKFLOW_MODULE.WorkflowError as exc:
             assert "control marker is not regular" in str(exc), str(exc)
             assert "linked worktree" in str(exc), str(exc)
@@ -1162,8 +1195,8 @@ def test_ordinary_same_invocation_predispatch_failure_rolls_back_lifecycle() -> 
             "--approve-whole-worktree", launch_approval_sha,
             "--provider-env", "BASH_ENV", "--task", "bounded task", env=env,
         )
-        assert failed.returncode == 64, (failed.returncode, failed.stdout, failed.stderr)
-        assert b"unsafe --provider-env name" in failed.stderr
+        assert failed.returncode == 20, (failed.returncode, failed.stdout, failed.stderr)
+        assert b"provider environment names are invalid" in failed.stderr
         assert not workflow_state.exists()
         assert not job_state.exists()
         assert not worktree.exists()
@@ -1252,7 +1285,7 @@ def test_status_read_only_and_sanitized() -> bool:
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "1" * 64,
-            "preview_launch_approval_sha256": "2" * 64,
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY,
             "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
@@ -1442,7 +1475,7 @@ def test_verify_finalize_structured_argv() -> bool:
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "1" * 64,
-            "preview_launch_approval_sha256": "2" * 64,
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY,
             "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
@@ -1514,7 +1547,7 @@ def test_verify_finalize_shell_acknowledgements() -> bool:
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "1" * 64,
-            "preview_launch_approval_sha256": "2" * 64,
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY,
             "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
@@ -1575,7 +1608,7 @@ def test_verify_finalize_candidate_binding() -> bool:
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "1" * 64,
-            "preview_launch_approval_sha256": "2" * 64,
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY,
             "native_grant_profile": "baseline",
             "dispatch_job_dir": None,
             "job_state_path": None,
@@ -1670,7 +1703,7 @@ def test_verify_finalize_propagates_finalize_failure() -> bool:
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "1" * 64,
-            "preview_launch_approval_sha256": "2" * 64,
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY,
             "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir),
             "job_state_path": None,
@@ -1821,7 +1854,7 @@ def test_verify_finalize_gate_and_dispatch_approval_boundaries() -> bool:
             "provider_execution": None,
             "preview_manifest_sha256": "0" * 64,
             "preview_content_sha256": "1" * 64,
-            "preview_launch_approval_sha256": "2" * 64,
+            "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY,
             "native_grant_profile": "baseline",
             "dispatch_job_dir": str(dispatch_dir),
             "job_state_path": None,
@@ -2032,13 +2065,13 @@ def _rejection_without_effects(root: Path, argv: list[str], expected: str, *, co
 
 def _explicit_state(f: RepoFixture) -> dict[str, Any]:
     return {
-        "schema_version": 5, "kind": "agy-worker-workflow-state", "job_id": f.job_id,
+        "schema_version": WORKFLOW_MODULE.BOUND_SCHEMA_VERSION, "kind": "agy-worker-workflow-state", "job_id": f.job_id,
         "repo_path": str(f.repo), "repo_identity": WORKFLOW_MODULE.identity(f.repo.lstat()),
         "worktree_path": str(f.worktree), "worktree_identity": WORKFLOW_MODULE.identity(f.worktree.lstat()),
         "branch": f.branch, "branch_ref": f"refs/heads/{f.branch}", "base": f.base,
         "provider_isolation": "session", "provider_execution": None,
         "preview_manifest_sha256": "0" * 64, "preview_content_sha256": "1" * 64,
-        "preview_launch_approval_sha256": "2" * 64, "native_grant_profile": "baseline",
+        "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY, "native_grant_profile": "baseline",
         "dispatch_job_dir": None, "job_state_path": None, "receipt_path": None,
     }
 
@@ -2048,7 +2081,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
     try:
         current = _explicit_state(f)
         assert WORKFLOW_MODULE.validate_workflow_state(current) == current
-        for version in (1, 2, 3, 4, None, True, False, "untrusted-version-marker", "5", 5.5, 0, -1, 999999):
+        for version in (1, 2, 3, 4, 5, 6, None, True, False, "untrusted-version-marker", "5", 5.5, 0, -1, 999999):
             state = dict(current)
             if version is None:
                 del state["schema_version"]
@@ -2060,7 +2093,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
             try:
                 WORKFLOW_MODULE.WorkflowStateStore(f.state_file)
             except WORKFLOW_MODULE.UnsupportedWorkflowSchemaError as exc:
-                assert "supported: v5 or v6" in str(exc)
+                assert "supported: v7 or v8" in str(exc)
                 assert "Finish or discard the job" in str(exc)
                 assert "untrusted-version-marker" not in str(exc)
             else:
@@ -2078,7 +2111,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
             for argv in commands:
                 _rejection_without_effects(f.tmp, argv, "workflow state schema")
         schema = json.loads(SCHEMA_PATH.read_bytes())
-        assert schema["properties"]["schema_version"]["enum"] == [5, 6]
+        assert schema["properties"]["schema_version"]["enum"] == [7, 8]
         return True
     finally:
         f.clean()

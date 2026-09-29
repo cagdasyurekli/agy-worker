@@ -19,10 +19,25 @@ file mode bits, symlink target hashes, readable manifest, provider isolation and
 native grant profile.
 Scoped transmission approval binds canonical read/write policy, readable path/kind
 manifest, selected bytes and executable bits, isolation and grant profile; scoped
-mode rejects symlinks and does not bind full POSIX permissions. Neither digest binds
-task text, self-verification manifest, scoped-repair setting, workflow/edit mode,
-model/effort, budget or environment opt-ins. Present those exact inputs separately
-with the digest for approval; a material change needs renewed authority.
+mode rejects symlinks and does not bind full POSIX permissions. These content
+subdigests are inputs to the single human-approved `launch_approval_sha256`.
+Its canonical `launch_authority` also binds the destination and Git base, normalized
+task, constructed prompt and fixed transport templates, workflow/edit mode, model/effort,
+cycle/time budgets, scoped repair, private self-verification manifest digest,
+provider-env names, slash policy, additional directories and provider schema digest.
+The preview displays the full task and every bound field. UTF-8 task input rejects
+NUL and removes trailing LF only; stdin and `--task` use the same rule.
+The controller recomputes actual initial authority before provider start; a stale
+record names the changed field. The facade saves that record in private workflow
+state. Advanced raw launches require the saved mode-0600 preview JSON through
+`--approval-record`, alongside the human-approved digest.
+
+The constructed task prompt and transport-template hashes bind fixed instructions.
+The controller adds the validated attempt root and bounded current change hint;
+these dynamic annotations are checked with the final provider `--print` bytes at
+spawn, including native containment. Same-conversation repair feedback stays outside
+the initial task hash and uses the existing approved repair lineage. Environment
+values and private manifest contents are excluded from approval metadata.
 Before an initial provider launch, show the owner a private review packet with:
 
 - The exact task text (not the shorter public-safe launch notice), workflow/edit
@@ -35,8 +50,8 @@ Before an initial provider launch, show the owner a private review packet with:
 - Each `--provider-env` and `--verify-env` name and its resulting child exposure.
 
 Keep any owner-private self-verification manifest outside the worktree and out of
-the provider preview and prompt. This checklist records human authority separately
-from the content digest; a later launch notice may summarize the task safely.
+the provider preview and prompt. The manifest's digest binds the reviewed private
+commands; a later launch notice may summarize the task safely.
 One upfront approval may cover predictable same-scope repairs; use initial
 `--allow-scoped-repair` for multi-turn scoped work. New exposure, destination,
 isolation, permissions or budget requires authority. A normal job needs neither
@@ -96,11 +111,12 @@ ordinary preview is:
 TARGET=/absolute/path/to/approved-repository
 JOB_ID=job-12345
 SCOPE=/absolute/private/provider-scope.json
+TASK='the exact approved bounded task'
 "$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" \
-  --provider-scope "$SCOPE"
+  --provider-scope "$SCOPE" --task "$TASK"
 ```
 
-The preview gives `transmission_sha256`; the facade derives its state path under
+The preview gives `launch_approval_sha256`; the facade derives its state path under
 `XDG_STATE_HOME` or `HOME/.local/state` as described below. Review the preview's
 content and selected settings with the user before the approved run. Repeat the same
 binding without `--preview`, supplying the exact approved digest and task:
@@ -110,7 +126,7 @@ STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 STATE_HOME="$(cd "$STATE_HOME" && pwd -P)" || exit $?
 REPO_KEY="$(python3 -c 'import hashlib,pathlib,sys; p=str(pathlib.Path(sys.argv[1]).resolve(strict=True)); print(hashlib.sha256(p.encode()).hexdigest()[:24])' "$TARGET")"
 STATE="$STATE_HOME/agy-worker/workflows/$REPO_KEY/$JOB_ID/workflow.json"
-TRANSMISSION_SHA='paste the exact reviewed transmission_sha256'
+TRANSMISSION_SHA='paste the exact reviewed launch_approval_sha256'
 TASK='paste the exact privately reviewed task text'
 ENVELOPE="$(dirname "$STATE")/envelope.json"
 test ! -e "$ENVELOPE" || { echo "envelope path already exists" >&2; exit 64; }
@@ -141,6 +157,7 @@ git -C "$TARGET" worktree add -b "$JOB_BRANCH" "$WT" "$BASE"
 "$PIPELINE/workflow.sh" run --preview \
   --state "$STATE_DIR/workflow.json" --repo "$TARGET" --worktree "$WT" \
   --branch "$JOB_BRANCH" --base "$BASE" --job-id "$JOB_ID" \
+  --workflow task --task "$TASK" \
   > "$STATE_DIR/preview.json"
 ```
 

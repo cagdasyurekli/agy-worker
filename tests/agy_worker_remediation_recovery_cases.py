@@ -269,17 +269,22 @@ def run(context: dict[str, object]) -> None:
             }
             scope_raw = json.dumps(scope, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
             scope_path.write_bytes(scope_raw); scope_path.chmod(0o600)
+            schema = fixture / "provider.json"; provider_schema(schema)
             preview = subprocess.run(
                 [str(ROOT / "agy-worker.sh"), "transmission-preview", "--workdir", str(linked),
-                 "--provider-scope", str(scope_path), "--provider-isolation", "session"],
+                 "--provider-scope", str(scope_path), "--provider-isolation", "session",
+                 "--workflow", "task", "--max-cycles", "2", "--task", "task",
+                 "--idle-timeout", "2s", "--hard-timeout", "3s", "--max-runtime", "20s",
+                 "--notice-interval", "3s", "--provider-schema", str(schema)],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-            approved = json.loads(preview.stdout)["transmission_sha256"]
-            schema = fixture / "provider.json"; provider_schema(schema)
+            preview_value = json.loads(preview.stdout)
+            approved = preview_value["launch_approval_sha256"]
             scope_info = scope_path.stat()
             command = current_command_fixture({
                 "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": "linked-preview-v11",
-                "workdir": str(linked), "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+                "workdir": str(linked), "argv": ["agy", "--disable-slash-commands", "--json-schema", str(schema), "--print", "task"],
+                "base_commit": preview_value["launch_authority"]["base_commit"],
                 "agy_version": "1.1.22", "agy_version_observed": True,
                 "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
@@ -297,19 +302,16 @@ def run(context: dict[str, object]) -> None:
                 schema_bindings=MODULE._schema_bindings(command),
             )
             assert command["approved_transmission_sha256"] == approved
-            assert state["transmission_sha256"] == approved
+            assert state["transmission_sha256"] == preview_value["transmission_sha256"]
             rebound_command, rebound_state = MODULE._bound_lifecycle_inputs(job, state, command)
             assert rebound_command is command and rebound_state is state
 
             mismatched = dict(command); mismatched["approved_transmission_sha256"] = "0" * 64
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, mismatched)
             try:
-                MODULE.initial_state(
-                    mismatched, "initial", 1, command_sha="0" * 64,
-                    command_identity=(1, 2, 3, 4, 5), stage_sha=None, stage_identity=None,
-                    schema_bindings=MODULE._schema_bindings(mismatched),
-                )
+                MODULE.load_command(job)
             except MODULE.DispatchError as exc:
-                assert str(exc) == "approved transmission SHA does not match current worktree scope"
+                assert str(exc) == "dispatch launch approval binding changed"
             else:
                 raise AssertionError("V11 initial state accepted a mismatched preview approval")
             drifted = dict(state); drifted["transmission_sha256"] = "0" * 64
@@ -1362,7 +1364,7 @@ def run(context: dict[str, object]) -> None:
                 MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
                 state, _state_sha = MODULE.create_state(job, "initial", resume=False)
                 persisted = json.loads((job / MODULE.STATE_NAME).read_text(encoding="utf-8"))
-                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16, label
+                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 17, label
                 assert state["worktree_snapshot_algorithm"] == MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM, label
                 assert state["worktree_baseline"] is not None, label
                 assert state["worktree_root_identity"] is not None, label
@@ -2161,7 +2163,7 @@ def run(context: dict[str, object]) -> None:
         job, state, _sha, _envelope = current_candidate_fixture(
             "current-inside-worktree", inside_worktree=True,
         )
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 17
         state["continue_available"] = True
         before, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
         state, loaded_raw, loaded_sha = MODULE.load_state(job)
@@ -2634,12 +2636,14 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
         log_dir = root / "fifo-race-logs"; log_dir.mkdir(mode=0o700)
         worker = ROOT / "skills/agy-worker/runtime/agy-worker.sh"
         preview = subprocess.run(
-            [str(worker), "transmission-preview", "--workdir", str(repo)],
+            [str(worker), "transmission-preview", "--workdir", str(repo), "--task", "this task must not be consumed"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         launch_approval_sha = json.loads(preview.stdout)["launch_approval_sha256"]
+        approval_record = root / "fifo-race-approval.json"
+        approval_record.write_bytes(preview.stdout); approval_record.chmod(0o600)
         env = dict(os.environ)
         env.update({
             "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
@@ -2655,6 +2659,7 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
             [
                 str(worker), "--workdir", str(repo),
                 "--approve-whole-worktree", launch_approval_sha,
+                "--approval-record", str(approval_record),
                 "--model", "gemini-3.6-flash", "--effort", "high",
             ],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -3518,7 +3523,7 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
     def current_sanitized_outer_terminal_disposition_contracts() -> None:
         """Sanitized outer terminal disposition on the current complete state."""
         job, state, state_sha, _envelope = current_candidate_fixture("current-terminal-disposition")
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 16
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 17
         assert state["provider_terminal_status"] == "unknown"
 
         # 1. State validation bounds on provider_terminal_status enum

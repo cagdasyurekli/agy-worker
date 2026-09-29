@@ -306,8 +306,8 @@ assert not any(token in offline_text for token in ("curl ", "wget ", "git fetch"
 sys.path.insert(0, str(stages_file.parent))
 import ci_stages
 
-assert len(ci_stages.STAGES) == 22
-assert len({s.id for s in ci_stages.STAGES}) == 22
+assert len(ci_stages.STAGES) == 23
+assert len({s.id for s in ci_stages.STAGES}) == 23
 assert set(ci_stages.SHARDS) == {"dispatcher", "dispatcher-remediation", "other-a", "other-b"}
 
 required_stage_ids = (
@@ -315,7 +315,7 @@ required_stage_ids = (
     "evidence-report", "job-lifecycle",
     "dispatcher", "dispatcher-remediation", "provider-containment", "self-verification", "self-verification-lifecycle",
     "updater", "update-notifier",
-    "delegation-policy", "workflow", "workflow-integration", "packaging",
+    "delegation-policy", "workflow", "workflow-integration", "launch-authority", "packaging",
     "doctor", "conformance", "proof-demo", "bytecode-hygiene",
 )
 assert tuple(s.id for s in ci_stages.STAGES) == required_stage_ids
@@ -1849,6 +1849,7 @@ required_runtime_dependencies=(
     scripts/agy_dispatch_worktree.py
     scripts/agy_dispatch_containment.py
     scripts/agy_dispatch_verification.py
+    scripts/launch_authority.py
     scripts/job_lifecycle.py
     scripts/delegation_policy.py
     schemas/workflow-state.schema.json
@@ -2004,6 +2005,7 @@ for specification in \
     'scripts/agy_dispatch_worktree.py:data' \
     'scripts/agy_dispatch_containment.py:data' \
     'scripts/agy_dispatch_verification.py:data' \
+    'scripts/launch_authority.py:data' \
     'scripts/job_lifecycle.py:executable' \
     'scripts/model_selection.py:executable' \
     'scripts/delegation_policy.py:executable' \
@@ -2985,7 +2987,7 @@ required = {
         "Whole-worktree dispatch remains an explicit manifest-bound exception",
     ),
     "AGENTS.md": (
-        "Prefer scoped mode: `--provider-scope` plus `transmission_sha256`.",
+        "Prefer scoped mode: `--provider-scope` plus full `launch_approval_sha256`.",
         "Whole-worktree mode needs `launch_approval_sha256`.",
         "everything in the worktree is agy-readable and may reach Google/Gemini",
     ),
@@ -3092,7 +3094,7 @@ suite_commands = [
 ]
 
 valid = (
-    len(suite_commands) == len(set(suite_commands)) == 18
+    len(suite_commands) == len(set(suite_commands)) == 19
     and "/usr/bin/python3 -I -S -B scripts/ci_stages.py --list" in contributing
     and {command for command in suite_commands if command in contributing}
     == {"/usr/bin/python3 -I -S -B tests/test-agy-worker-remediation.py"}

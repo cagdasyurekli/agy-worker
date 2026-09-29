@@ -22,10 +22,10 @@ checks = {
         "full file mode bits, symlink target hashes" in skill
         and "scoped mode rejects symlinks and does" in skill
         and "not bind full POSIX permissions" in skill
-        and "Neither digest binds task text" in skill
+        and "The human approves one `launch_approval_sha256` over canonical" in skill
         and "SHA values bind that decision" not in skill
-        and "Neither approval digest binds task text" in project
-        and "Show the exact task" in skill
+        and "One `launch_approval_sha256` binds the full launch authority" in project
+        and "Preview the\nexact task and all launch options" in skill
     ),
     "headless Claude dispatch lifetime": (
         "in non-interactive `claude -p` or SDK runs, dispatch in the foreground" in skill

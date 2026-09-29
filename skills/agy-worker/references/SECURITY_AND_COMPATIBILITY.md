@@ -57,7 +57,10 @@ the root `.git`, and emits digests rather than file contents or symlink targets.
 Whole-worktree approval binds a double no-follow scan of paths, kinds, permissions,
 bytes and literal symlink targets. Limits are 100,000 entries, 512 MiB, depth 128 and 30 seconds;
 bounds or drift reject without path-only fallback. Provider scope binds policy,
-readable manifest, selected content and unified `transmission_sha256`.
+readable manifest and selected content through the `transmission_sha256` subdigest.
+Human approval uses the full `launch_approval_sha256`, also binding the exact task,
+destination and launch settings described in the lifecycle guide. Preview shows the
+full task and bound fields, while private manifest contents and environment values stay private.
 
 The write list must be a subset of the read list. Copies reject aliases, hardlinks,
 special nodes and path collisions; source drift rejects reconciliation. New launches

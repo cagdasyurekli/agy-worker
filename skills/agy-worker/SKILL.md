@@ -42,10 +42,15 @@ readable manifest, provider isolation and native grant profile. The scoped diges
 binds canonical read/write policy, readable path/kind manifest, selected bytes and
 executable bits, isolation and grant profile; scoped mode rejects symlinks and does
 not bind full POSIX permissions. The controller rechecks the approved boundary
-before provider start. Neither digest binds task text, a self-verification manifest, `--allow-scoped-repair`,
-workflow/edit mode, model/effort, budget or environment opt-ins. Show the exact task
-and selected settings separately beside the digest before approval; material changes
-to those inputs require renewed authority. Use the private prelaunch review checklist
+before provider start. The human approves one `launch_approval_sha256` over canonical
+`launch_authority`: those content inputs, destination and Git base, exact normalized
+task and constructed prompt, fixed transport templates, workflow/edit mode, model/effort,
+cycles and time budgets, scoped repair, self-verification manifest digest, provider-env
+names, slash policy, additional directories and provider schema digest. Preview the
+exact task and all launch options; reuse them unchanged for the approved run. Only
+trailing LF bytes are removed from UTF-8 task input; spaces and CRLF are preserved.
+Environment values and private verification commands are never serialized into the
+approval payload. Use the private prelaunch review checklist
 in [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices), including any optional self-verification
 commands, IDs and limits; keep that manifest out of the provider preview and prompt.
 Retired dispatch and workflow job formats are rejected; finish or discard them with their creating release, without migration.
@@ -85,12 +90,13 @@ Quick path: save the reviewed scope file outside the target repository with mode
 TARGET=/absolute/path/to/approved-repository
 JOB_ID=job-12345
 SCOPE=/absolute/private/provider-scope.json
-"$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" --provider-scope "$SCOPE"
+TASK='the exact approved bounded task'
+"$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" --provider-scope "$SCOPE" --task "$TASK"
 ```
 
-This creates the disposable worktree and private state. Review its exact transmission
-digest, then run the facade without `--preview`, adding `--approve-transmission-sha "$TRANSMISSION_SHA"`
-and `--workflow task --task "$TASK"` after approval. A minimal owner-private
+This creates the disposable worktree and private state. Review `launch_approval_sha256`,
+then repeat the same command without `--preview`, adding
+`--approve-transmission-sha "$LAUNCH_SHA"`. A minimal owner-private
 scope file, with entries sorted by path, is:
 
 ```json

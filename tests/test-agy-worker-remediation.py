@@ -36,6 +36,19 @@ assert spec.loader is not None
 sys.modules[spec.name] = MODULE
 spec.loader.exec_module(MODULE)
 
+sys.path.insert(0, str(ROOT / "tests"))
+from launch_fixture import bind_command, retain_prompt  # noqa: E402 -- explicit isolated test helper path
+
+_original_write_atomic = MODULE.write_atomic
+
+def fixture_write_atomic(job, name, value):
+    if name == MODULE.COMMAND_NAME:
+        retain_prompt(job, value)
+    return _original_write_atomic(job, name, value)
+
+MODULE.write_atomic = fixture_write_atomic
+
+
 def worktree_function_source(name: str) -> str:
     """Return exactly one owner function for source-level security assertions."""
     source = WORKTREE_SOURCE.read_text(encoding="utf-8")
@@ -165,9 +178,12 @@ def current_command_fixture(values: dict, *, bind_launch: bool = True) -> dict:
                 whole_worktree_content_sha256=content["manifest_sha256"],
                 readable_manifest_sha256=MODULE._manifest_digest(manifest),
             )
+        bind_command(MODULE, command)
         if command["allow_scoped_repair"]:
             command["repair_authority_sha256"] = MODULE._repair_authority_for_command(command)
         assert set(command) == MODULE.CURRENT_COMMAND_FIELDS
+    elif "argv" in command:
+        bind_command(MODULE, command, bind_content=False)
     return command
 
 

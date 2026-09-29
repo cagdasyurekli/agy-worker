@@ -35,7 +35,7 @@ chmod 0600 "$project_scoped_delete_scope"
 project_scoped_delete_workdir="$(cd "$TMP/project-worktree" && pwd -P)"
 project_scoped_delete_transmission="$(
     "$WORKER" transmission-preview --workdir "$project_scoped_delete_workdir" \
-        --provider-scope "$project_scoped_delete_scope" --format json \
+        --provider-scope "$project_scoped_delete_scope" --format json --task 'delete the scoped file' \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
 project_scoped_delete_home="$TMP/project-scoped-delete-provider-home"

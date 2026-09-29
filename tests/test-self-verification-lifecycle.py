@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
 SOURCE = ROOT / "skills/agy-worker/runtime/scripts/agy_dispatch.py"
 SPEC = importlib.util.spec_from_file_location("dispatch_self_verify_lifecycle", SOURCE)
 assert SPEC is not None and SPEC.loader is not None
@@ -100,6 +101,9 @@ class SelfVerificationLifecycle(unittest.TestCase):
                 command, DISPATCH._canonical_digest(DISPATCH._parse_provider_scope(scope_raw)),
                 readable_digest, DISPATCH._selected_content_digest(selected),
             )
+        from launch_fixture import bind_command, retain_prompt
+        bind_command(DISPATCH, command)
+        retain_prompt(job, command)
         assert set(command) == DISPATCH.CURRENT_COMMAND_FIELDS
         DISPATCH.write_atomic(job, DISPATCH.COMMAND_NAME, command)
         state, _sha = DISPATCH.create_state(job, "initial", resume=False)
@@ -159,7 +163,7 @@ class SelfVerificationLifecycle(unittest.TestCase):
                         0,
                     )
                     state, _raw, _sha = DISPATCH.load_state(job)
-                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (16, 1))
+                    self.assertEqual((state["schema_version"], state["self_verification_run"]), (17, 1))
 
     def test_denial_deadline_stays_nonreusable_after_verification_and_recovery(self):
         # The controller collision test establishes this persisted reason from

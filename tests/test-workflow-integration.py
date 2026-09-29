@@ -231,7 +231,8 @@ print(json.dumps({{
 
     def launch(self) -> tuple[RunObservation, Path, Path]:
         preview = self.run_cli(
-            "run", "--repo", str(self.repo), "--job-id", self.job_id, "--preview"
+            "run", "--repo", str(self.repo), "--job-id", self.job_id, "--preview",
+            "--model", MODEL, "--effort", EFFORT, "--task", "Create candidate.txt with the synthetic fixture content."
         )
         if preview.returncode != 0:
             raise AssertionError(preview.stderr.decode("utf-8", "replace"))
@@ -265,7 +266,7 @@ print(json.dumps({{
             raise AssertionError(f"expected one installed workflow state, got {workflow_states}")
         workflow_state = workflow_states[0]
         state = json.loads(workflow_state.read_bytes())
-        assert state["schema_version"] == 6
+        assert state["schema_version"] == 8
         assert state["preview_content_sha256"] == preview_data["content_manifest_sha256"]
         assert state["preview_launch_approval_sha256"] == launch_approval_sha
         assert state["native_grant_profile"] == "baseline"
@@ -531,9 +532,12 @@ class InstalledWorkflowIntegrationTests(unittest.TestCase):
             with self.subTest(behavior=behavior):
                 fixture = InstalledWorkflowFixture(behavior)
                 try:
+                    timeout_args = (("--idle-timeout", "1s", "--hard-timeout", "3s", "--max-runtime", "4s") if behavior == "idle" else ())
                     preview = fixture.run_cli(
                         "run", "--repo", str(fixture.repo),
-                        "--job-id", fixture.job_id, "--preview",
+                        "--job-id", fixture.job_id, "--preview", "--model", MODEL, "--effort", EFFORT,
+                        "--max-cycles", "2" if behavior == "permission" else "1",
+                        "--task", "Write candidate.txt", *timeout_args,
                     )
                     self.assertEqual(preview.returncode, 0, preview.stderr)
                     self.assertIn(b'"state":"awaiting-approval"', preview.stderr)

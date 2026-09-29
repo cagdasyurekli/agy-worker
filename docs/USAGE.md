@@ -142,7 +142,7 @@ state directory, the ordinary controller path is the portable `workflow.sh` faca
    preview.
 2. Repeat the same binding with exactly one explicit mode:
    `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`, or `--provider-scope FILE` plus
-   `--approve-transmission-sha TRANSMISSION_SHA256`.
+   `--approve-transmission-sha LAUNCH_APPROVAL_SHA256`.
 3. Use `workflow.sh status ...` for read-only, sanitized progress facts.
 4. Use `workflow.sh verify-finalize ...` with repeatable structured
    `--verify-argv JSON_ARRAY` checks, `--approve-dispatch-sha` set to the exact
@@ -205,19 +205,21 @@ digest, and unified transmission digest without starting a provider:
 
 ```bash
 "$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" \
-  --provider-scope "$SCOPE"
+  --provider-scope "$SCOPE" --workflow task --task "$TASK"
 "$PIPELINE/workflow.sh" run --repo "$TARGET" --job-id "$JOB_ID" \
   --provider-scope "$SCOPE" --approve-transmission-sha "$TRANSMISSION_SHA" \
   --workflow task --task "$TASK"
 
 # Advanced direct-dispatch compatibility surface:
 "$PIPELINE/agy-worker.sh" transmission-preview --workdir "$WT" \
-  --provider-scope "$SCOPE" --format json > "$STATE_DIR/scoped-preview.json"
+  --provider-scope "$SCOPE" --workflow task --mode accept-edits --task "$TASK" \
+  --format json > "$STATE_DIR/scoped-preview.json"
 
-# After reviewing and obtaining approval for the exact transmission_sha256:
+# After reviewing and obtaining approval for the exact launch_approval_sha256:
 printf '%s\n' "$TASK" | "$PIPELINE/agy-worker.sh" \
   --workflow task --mode accept-edits --workdir "$WT" \
   --provider-scope "$SCOPE" --approve-transmission-sha "$TRANSMISSION_SHA" \
+  --approval-record "$STATE_DIR/scoped-preview.json" \
   > "$ENVELOPE"
 ```
 
@@ -246,19 +248,22 @@ JOB_ID=parser-tests-12345
 BASE="$(git -C "$TARGET" rev-parse HEAD)"
 
 git -C "$TARGET" worktree add -b "$JOB_BRANCH" "$WT" "$BASE"
-WHOLE_WORKTREE_SHA="$(
-  "$PIPELINE/agy-worker.sh" transmission-preview --workdir "$WT" |
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["launch_approval_sha256"])'
-)"
-
-if ! echo "Add error-path tests for $WT/src/parser.py.
+TASK="Add error-path tests for $WT/src/parser.py.
 Edit ONLY files under $WT/tests/. Use file tools on absolute paths.
 Use file tools against the exact workspace; leave shell commands to the driver.
-The driver runs every command. Return commands_run and tests_run as empty arrays." |
-  AGY_WORKER_JOB_ID="$JOB_ID" "$PIPELINE/agy-worker.sh" \
+The driver runs every command. Return commands_run and tests_run as empty arrays."
+APPROVAL_RECORD=/absolute/private/parser-launch-preview.json
+( umask 077
+  "$PIPELINE/agy-worker.sh" transmission-preview --workdir "$WT" \
+    --workflow task --mode accept-edits --tier bulk --add-dir "$WT" --task "$TASK" \
+    > "$APPROVAL_RECORD"
+)
+WHOLE_WORKTREE_SHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["launch_approval_sha256"])' "$APPROVAL_RECORD")"
+
+if ! printf '%s\n' "$TASK" | AGY_WORKER_JOB_ID="$JOB_ID" "$PIPELINE/agy-worker.sh" \
     --workflow task --mode accept-edits --tier bulk \
     --workdir "$WT" --add-dir "$WT" \
-    --approve-whole-worktree "$WHOLE_WORKTREE_SHA" > "$ENVELOPE"; then
+    --approve-whole-worktree "$WHOLE_WORKTREE_SHA" --approval-record "$APPROVAL_RECORD" > "$ENVELOPE"; then
   echo "Dispatch failed; inspect the sanitized terminal state/result. Resume only a candidate-free failure; handle an ERROR candidate with Verification v2, and preserve/finalize or freshly restart a CANCELED candidate." >&2
   exit 1
 fi
@@ -356,8 +361,9 @@ prove the worker's architecture prose or completeness.
 | `--add-dir DIR` | — | Repeatable file-tool root for explicit whole-worktree dispatch; it does not narrow provider reads and conflicts with scoped mode. |
 | `--provider-scope FILE` | — | Recommended closed read/write policy for bounded jobs; stages selected content only and requires `--approve-transmission-sha`. |
 | `--provider-isolation session|native` | — | Default `session` uses existing account/session and normal host access; explicit `native` requires scoped mode on supported macOS. Bound for the job's lifetime. |
-| `--approve-transmission-sha SHA256` | — | Exact scoped policy/path/content and execution-mode binding; grants no downstream authority. |
-| `--approve-whole-worktree SHA256` | — | Broad-mode approval bound to current contents, kinds, permissions, symlink targets, and execution mode; use the preview's `launch_approval_sha256`. |
+| `--approve-transmission-sha SHA256` | — | Full scoped launch authority; use `launch_approval_sha256`, not the content subdigest. Grants no downstream authority. |
+| `--approve-whole-worktree SHA256` | — | Full whole-worktree launch authority; use the preview's `launch_approval_sha256`. |
+| `--approval-record FILE` | — | Raw initial launches require the reviewed preview JSON, canonical absolute path and private mode `0600`; the facade retains its own record. |
 | `--provider-env NAME` | — | Repeatable exact-name opt-in for an additional caller variable passed to local `agy` probes and provider launches. |
 | `--allow-slash-commands` | — | Expert-only opt-in for a fully caller-controlled prompt; disables the normal embedded slash-command protection. |
 | `--idle-timeout DURATION` | `AGY_WORKER_IDLE_TIMEOUT` | No valid progress deadline; default `10m`. |
@@ -454,7 +460,7 @@ For the underlying acceptance model, read
 Stop before dispatch, continuation, or external action when:
 
 - default whole-worktree approval is absent, or scoped mode lacks the exact reviewed
-  policy and matching `transmission_sha256`;
+  policy and matching `launch_approval_sha256`;
 - a credential, secret, private key, unrelated private file, or user-denied path is
   present in the default worktree transmission or any entry selected for scoped staging;
 - a requested write path leaves the approved worktree, enters `.git`, follows a
