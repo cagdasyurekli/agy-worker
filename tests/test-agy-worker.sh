@@ -4308,13 +4308,15 @@ else
     bad "fast controller ownership handoff race"
 fi
 
+# Budgets are wide on purpose: this case proves extend gating and arithmetic, and the
+# job ends at the barrier release. Deadline expiry is covered by the max-runtime case.
 extend_after_first_ready="$TMP/extend-active.after-first-ready"
 extend_after_first_release="$TMP/extend-active.after-first-release"
 printf 'extend active deadline\n' | FAKE_DISPATCH_MODE=heartbeat-success \
     FAKE_HEARTBEAT_COUNT=2 FAKE_HEARTBEAT_DELAY=1.00 \
     FAKE_HEARTBEAT_AFTER_FIRST_READY="$extend_after_first_ready" \
     FAKE_HEARTBEAT_AFTER_FIRST_RELEASE="$extend_after_first_release" \
-    start_worker extend-active --idle-timeout 2s --hard-timeout 3s --max-runtime 5s \
+    start_worker extend-active --idle-timeout 20s --hard-timeout 30s --max-runtime 60s \
     > "$TMP/extend-active.start" 2> "$TMP/extend-active.start.err"
 extend_ready=0
 for (( extend_index=0; extend_index<200; extend_index++ )); do
@@ -4331,7 +4333,7 @@ extend_sha="$(status_sha "$TMP/extend-active.status")"
 control_worker extend extend-active --approve-state-sha "$(printf '0%.0s' {1..64})" --by 1s \
     > "$TMP/extend-active.stale" 2>&1
 stale_extend_rc=$?
-control_worker extend extend-active --approve-state-sha "$extend_sha" --by 3s \
+control_worker extend extend-active --approve-state-sha "$extend_sha" --by 31s \
     > "$TMP/extend-active.over-max" 2>&1
 over_max_rc=$?
 control_worker extend extend-active --approve-state-sha "$extend_sha" --by 1s \
@@ -4352,8 +4354,8 @@ import json
 import sys
 extended = json.load(open(sys.argv[1], encoding="utf-8"))
 result = json.load(open(sys.argv[2], encoding="utf-8"))
-assert extended["hard_seconds"] == 4.0
-assert extended["max_seconds"] == 5.0
+assert extended["hard_seconds"] == 31.0
+assert extended["max_seconds"] == 60.0
 assert result["status"] == "completed"
 PY
 then
