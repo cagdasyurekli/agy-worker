@@ -56,7 +56,6 @@ _bounded_git_read = WORKTREE._bounded_git_read
 _build_selected_content_manifest = WORKTREE._build_selected_content_manifest
 _canonical_digest = WORKTREE._canonical_digest
 _cleanup_stage = WORKTREE._cleanup_stage
-_compute_provider_launch_approval_sha256 = WORKTREE._compute_provider_launch_approval_sha256
 _compute_transmission_sha256 = WORKTREE._compute_transmission_sha256
 _compute_v11_launch_approval_sha256 = WORKTREE._compute_v11_launch_approval_sha256
 _confirm_safe_git_executable = WORKTREE._confirm_safe_git_executable

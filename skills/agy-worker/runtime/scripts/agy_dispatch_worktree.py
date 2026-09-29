@@ -933,13 +933,6 @@ def _preview_main(argv: list[str]) -> int:
             result["contents_read"] = True
             result["content_manifest"] = content["manifest"]
             result["content_manifest_sha256"] = content["manifest_sha256"]
-            result["launch_approval_sha256"] = _compute_v11_launch_approval_sha256(
-                provider_isolation, native_grant_profile,
-                whole_worktree_content_sha256=result["content_manifest_sha256"],
-                readable_manifest_sha256=result["manifest_sha256"],
-            )
-        else:
-            result["launch_approval_sha256"] = result["transmission_sha256"]
         task_raw = (args.task.encode("utf-8") if args.task is not None else
                     sys.stdin.buffer.read(LAUNCH_AUTHORITY.MAX_TASK_BYTES + 1))
         authority, task_text = LAUNCH_AUTHORITY.preview_authority(result, args, task_raw)
@@ -3359,30 +3352,6 @@ def _compute_transmission_sha256(
     }
     raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii") + b"\n"
     return hashlib.sha256(raw).hexdigest()
-
-
-def _compute_provider_launch_approval_sha256(
-    provider_isolation: str, readable_manifest_sha256: str,
-    transmission_sha256: str | None = None,
-) -> str:
-    """Bind a preview approval to the selected provider execution authority."""
-
-    if provider_isolation not in {"session", "native"}:
-        raise ValueError("provider isolation is invalid")
-    if not isinstance(readable_manifest_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", readable_manifest_sha256) is None:
-        raise ValueError("readable manifest digest is invalid")
-    if transmission_sha256 is not None and (
-        not isinstance(transmission_sha256, str)
-        or re.fullmatch(r"[0-9a-f]{64}", transmission_sha256) is None
-    ):
-        raise ValueError("transmission digest is invalid")
-    payload = {
-        "kind": "agy-worker-provider-launch-approval-v1",
-        "provider_isolation": provider_isolation,
-        "readable_manifest_sha256": readable_manifest_sha256,
-        "transmission_sha256": transmission_sha256,
-    }
-    return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
 def _compute_v11_launch_approval_sha256(
