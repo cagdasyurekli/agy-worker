@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Explicit project release updater for codex-agy-worker.
+# Explicit project release updater for agy-worker.
 # Optional background notification invokes check only; no automatic pull and no
 # update from a dirty checkout.
 set -euo pipefail

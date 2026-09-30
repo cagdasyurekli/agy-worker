@@ -3064,7 +3064,7 @@ else
     bad "standalone resolver rejects a relative pipeline marker"
 fi
 
-printf '/definitely/missing/codex-agy-worker\n' > "$TMP/reject-relative/agy-worker/.pipeline-root"
+printf '/definitely/missing/agy-worker\n' > "$TMP/reject-relative/agy-worker/.pipeline-root"
 bash "$TMP/reject-relative/agy-worker/scripts/resolve-pipeline.sh" \
     > "$TMP/missing.out" 2> "$TMP/missing.err"
 rc=$?

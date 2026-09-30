@@ -439,7 +439,7 @@ class NotificationTests(Fixture):
             self.assertEqual(notifier._run_notification(self.paths, "maintenance-required"), 0)
         argv = popen.call_args.args[0]
         self.assertEqual(argv[-3], "--notify")
-        self.assertEqual(argv[-2], "codex-agy-worker notifier maintenance")
+        self.assertEqual(argv[-2], "agy-worker notifier maintenance")
         self.assertEqual(argv[-1], "Monitoring paused after the bound source changed; run update-notifier.sh refresh.")
         self.assertNotIn(str(self.source), " ".join(argv[-2:]))
 

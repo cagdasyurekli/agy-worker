@@ -152,7 +152,7 @@ def fetch_json(
         url,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "codex-agy-worker/compat",
+            "User-Agent": "agy-worker/compat",
             "X-GitHub-Api-Version": "2022-11-28",
         },
         method="GET",
