@@ -411,6 +411,33 @@ with patch("subprocess.run", side_effect=counted_run):
                                 env=self.environment, capture_output=True, text=True)
         self.assert_code(0, result)
 
+    def test_candidate_digest_stays_within_git_process_budget(self):
+        # Deterministic speed guard: the snapshot runs several times per gate, so
+        # each extra Git process multiplies. Raise the ceiling only with a reason.
+        scripts = ROOT / "skills/agy-worker/runtime/scripts"
+        (self.repo / "tracked.txt").write_text("candidate\n")
+        command = """
+import subprocess
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+git_processes = []
+class CountingPopen(subprocess.Popen):
+    def __init__(self, args, *rest, **kwargs):
+        if args and str(args[0]).endswith("/git"):
+            git_processes.append(args)
+        super().__init__(args, *rest, **kwargs)
+subprocess.Popen = CountingPopen
+from candidate_state import candidate_state_digest
+candidate_state_digest(Path(sys.argv[2]), sys.argv[3])
+print(len(git_processes))
+"""
+        result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", command,
+                                 str(scripts), str(self.repo), self.base],
+                                env=self.environment, capture_output=True, text=True)
+        self.assert_code(0, result)
+        self.assertLessEqual(int(result.stdout.strip()), 10, result.stdout)
+
     def test_base_preflight_rejects_extra_git_action(self):
         helper = ROOT / "skills/agy-worker/runtime/scripts/candidate_state.py"
         result = subprocess.run([
