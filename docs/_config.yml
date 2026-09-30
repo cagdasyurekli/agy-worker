@@ -1,5 +1,5 @@
-title: "codex-agy-worker"
-description: "A Codex agent skill for Antigravity CLI (agy) delegation with Git-scope review and driver-owned verification before acceptance."
+title: "agy-worker"
+description: "An agent skill for Codex and Claude Code for Antigravity CLI (agy) delegation with Git-scope review and driver-owned verification before acceptance."
 url: "https://cagdasyurekli.github.io"
 baseurl: "/codex-agy-worker"
 canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/"
