@@ -23,7 +23,7 @@ SEMVER_PATTERN = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 SEMVER_RE = re.compile(SEMVER_PATTERN)
 REVISION_RE = re.compile(r"[0-9a-f]{40}")
 FIXED_PATH_RE = re.compile(
-    rf"/repos/cagdasyurekli/codex-agy-worker/"
+    rf"/repos/cagdasyurekli/agy-worker/"
     rf"(?:releases/latest|git/ref/tags/v{SEMVER_PATTERN}|git/tags/[0-9a-f]{{40}})"
 )
 
@@ -38,7 +38,7 @@ class ToolPolicy:
 POLICIES = {
     "project": ToolPolicy(
         owner="cagdasyurekli",
-        repository="codex-agy-worker",
+        repository="agy-worker",
         tag_pattern=re.compile(rf"v({SEMVER_PATTERN})"),
     ),
 }

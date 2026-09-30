@@ -172,8 +172,8 @@ def project_release_path_is_bounded() -> bool:
         result == ("project", "v0.1.0", "b" * 40)
         and [call[0] for call in opener.calls]
         == [
-            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
-            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/ref/tags/v0.1.0",
+            "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
+            "https://api.github.com/repos/cagdasyurekli/agy-worker/git/ref/tags/v0.1.0",
         ]
         and rejects(
             "response too large",
@@ -214,9 +214,9 @@ def project_annotated_tag_resolution_is_bounded() -> bool:
         MODULE.latest_evidence("project", opener=opener) == ("project", tag, "e" * 40)
         and [call[0] for call in opener.calls]
         == [
-            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
-            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/ref/tags/" + tag,
-            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/tags/" + tag_revision,
+            "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
+            "https://api.github.com/repos/cagdasyurekli/agy-worker/git/ref/tags/" + tag,
+            "https://api.github.com/repos/cagdasyurekli/agy-worker/git/tags/" + tag_revision,
         ]
     )
 
@@ -273,7 +273,7 @@ def request_policy() -> bool:
     return (
         result[0] == "project"
         and first_url
-        == "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest"
+        == "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest"
         and timeout == MODULE.FETCH_TIMEOUT_SECONDS
         and headers.get("Accept") == "application/vnd.github+json"
         and headers.get("X-github-api-version") == "2022-11-28"
@@ -291,7 +291,7 @@ check(
                 headers={"Content-Type": "application/vnd.github+json; charset=utf-8"},
             )
         ),
-        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
     )
     == {"ok": True},
 )
@@ -299,7 +299,7 @@ check(
     "identity content encoding is accepted",
     lambda: MODULE.fetch_json(
         Opener(response({"ok": True}, headers={"Content-Encoding": "identity"})),
-        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
     )
     == {"ok": True},
 )
@@ -307,7 +307,7 @@ check(
     "chunked bounded response without Content-Length is accepted",
     lambda: MODULE.fetch_json(
         Opener(response({"ok": True}, headers={"Content-Length": []})),
-        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
     )
     == {"ok": True},
 )
@@ -335,18 +335,19 @@ check(
 
 
 fixed_url_rejections = [
-    "http://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
-    "https://github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
-    "https://user@api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
-    "https://api.github.com:443/repos/cagdasyurekli/codex-agy-worker/releases/latest",
-    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest?token=x",
-    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest#x",
+    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+    "http://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
+    "https://github.com/repos/cagdasyurekli/agy-worker/releases/latest",
+    "https://user@api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
+    "https://api.github.com:443/repos/cagdasyurekli/agy-worker/releases/latest",
+    "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest?token=x",
+    "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest#x",
     "https://api.github.com/other/openai/codex/releases/latest",
     "https://api.github.com/repos/attacker/codex/releases/latest",
-    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/%72eleases/latest",
+    "https://api.github.com/repos/cagdasyurekli/agy-worker/%72eleases/latest",
     "https://api.github.com/repos/openai\\codex/releases/latest",
-    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/tags/" + "A" * 40,
-    "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/git/tags/" + "a" * 39,
+    "https://api.github.com/repos/cagdasyurekli/agy-worker/git/tags/" + "A" * 40,
+    "https://api.github.com/repos/cagdasyurekli/agy-worker/git/tags/" + "a" * 39,
 ]
 for index, url in enumerate(fixed_url_rejections, 1):
     check(
@@ -371,7 +372,7 @@ def fetch_reject(
         category,
         lambda: MODULE.fetch_json(
             Opener(item),
-            "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+            "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
             limit=limit,
         ),
     )
@@ -421,7 +422,7 @@ check(
     "bounded chunked transfer encoding is accepted",
     lambda: MODULE.fetch_json(
         Opener(Response(b"{}", headers={"Content-Length": [], "Transfer-Encoding": "chunked"})),
-        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
     )
     == {},
 )
@@ -429,7 +430,7 @@ check(
     "chunked transfer-coding token is case-insensitive",
     lambda: MODULE.fetch_json(
         Opener(Response(b"{}", headers={"Content-Length": [], "Transfer-Encoding": "ChUnKeD"})),
-        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
     )
     == {},
 )
@@ -441,7 +442,7 @@ check(
     "missing content length is accepted under incremental bound",
     lambda: MODULE.fetch_json(
         Opener(Response(b"{}", headers={"Content-Length": []})),
-        "https://api.github.com/repos/cagdasyurekli/codex-agy-worker/releases/latest",
+        "https://api.github.com/repos/cagdasyurekli/agy-worker/releases/latest",
     )
     == {},
 )

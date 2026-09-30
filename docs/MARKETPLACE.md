@@ -23,7 +23,7 @@ After the new identity is published, review the repository source, add its Git-b
 Codex marketplace, and install the plugin with:
 
 ```bash
-codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin marketplace add cagdasyurekli/agy-worker
 codex plugin add agy-worker@agy-worker
 ```
 

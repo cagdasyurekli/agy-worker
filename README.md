@@ -3,12 +3,12 @@
   <img src="docs/assets/brand/logo-light.svg" alt="" width="132" height="132">
 </picture>
 
-# codex-agy-worker
+# agy-worker
 
 **An Agent Skill for bounded Antigravity CLI delegation with independent
 Git-scope checks and driver-owned verification.**
 
-[![Offline test workflow](https://github.com/cagdasyurekli/codex-agy-worker/actions/workflows/test.yml/badge.svg)](https://github.com/cagdasyurekli/codex-agy-worker/actions/workflows/test.yml)
+[![Offline test workflow](https://github.com/cagdasyurekli/agy-worker/actions/workflows/test.yml/badge.svg)](https://github.com/cagdasyurekli/agy-worker/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 Use **Codex CLI or Claude Code** to delegate repository exploration, features, and project-scale
@@ -27,7 +27,7 @@ Requires a POSIX-compatible environment with Bash, Python 3, git, a driver host,
 Confirm the reviewed marketplace source contains the `agy-worker` manifests before installing:
 
 ```bash
-codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin marketplace add cagdasyurekli/agy-worker
 codex plugin add agy-worker@agy-worker
 ```
 
@@ -38,7 +38,7 @@ Existing users: follow the [identity migration](docs/INSTALLATION.md#codex-plugi
 For a reviewed source containing the Claude manifests, use:
 
 ```text
-/plugin marketplace add cagdasyurekli/codex-agy-worker
+/plugin marketplace add cagdasyurekli/agy-worker
 /plugin install agy-worker@agy-worker
 ```
 
@@ -47,11 +47,11 @@ The plugin skill is `/agy-worker:agy-worker`. For checkout-based testing, use th
 
 ### GitHub fallback
 
-Review and install directly from GitHub (the repository name is unchanged):
+Review and install directly from the canonical GitHub repository:
 
 ```bash
-git clone https://github.com/cagdasyurekli/codex-agy-worker.git
-cd codex-agy-worker
+git clone https://github.com/cagdasyurekli/agy-worker.git
+cd agy-worker
 ./install.sh
 # Claude Code:
 ./install.sh --host claude

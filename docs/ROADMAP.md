@@ -2,8 +2,8 @@
 
 Package metadata declares **0.23.0**. This page describes the checked-out product;
 a version string does not prove publication or installation.
-Release history lives in [git tags](https://github.com/cagdasyurekli/codex-agy-worker/tags)
-and [GitHub releases](https://github.com/cagdasyurekli/codex-agy-worker/releases).
+Release history lives in [git tags](https://github.com/cagdasyurekli/agy-worker/tags)
+and [GitHub releases](https://github.com/cagdasyurekli/agy-worker/releases).
 
 ## Direction
 

@@ -1,6 +1,6 @@
 # Support
 
-Use [GitHub Issues](https://github.com/cagdasyurekli/codex-agy-worker/issues) for
+Use [GitHub Issues](https://github.com/cagdasyurekli/agy-worker/issues) for
 sanitized bug reports, compatibility reports, installation questions, and bounded
 improvement proposals. Search existing issues first and use the repository's issue forms.
 

@@ -6,8 +6,8 @@
     "name": "cagdasyurekli",
     "url": "https://github.com/cagdasyurekli"
   },
-  "homepage": "https://cagdasyurekli.github.io/codex-agy-worker/",
-  "repository": "https://github.com/cagdasyurekli/codex-agy-worker",
+  "homepage": "https://cagdasyurekli.github.io/agy-worker/",
+  "repository": "https://github.com/cagdasyurekli/agy-worker",
   "license": "MIT",
   "keywords": [
     "agent-skills",
@@ -27,9 +27,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://cagdasyurekli.github.io/codex-agy-worker/",
-    "privacyPolicyURL": "https://github.com/cagdasyurekli/codex-agy-worker/blob/main/PRIVACY.md",
-    "termsOfServiceURL": "https://github.com/cagdasyurekli/codex-agy-worker/blob/main/TERMS.md",
+    "websiteURL": "https://cagdasyurekli.github.io/agy-worker/",
+    "privacyPolicyURL": "https://github.com/cagdasyurekli/agy-worker/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/cagdasyurekli/agy-worker/blob/main/TERMS.md",
     "defaultPrompt": [
       "Build this app across the project with agy; have the driver run relevant checks and repair failures in the same conversation.",
       "Use agy to implement this feature end to end, discovering the files and test commands as needed.",

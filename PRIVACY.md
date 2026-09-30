@@ -1,7 +1,7 @@
 # Privacy disclosure
 
 This document describes the data behavior of the open-source
-`codex-agy-worker` project and its packaged Agent Skill. It is a project policy,
+`agy-worker` project and its packaged Agent Skill. It is a project policy,
 not a claim about every version or configuration of the third-party tools it calls.
 
 ## What the project itself does

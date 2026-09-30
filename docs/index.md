@@ -2,7 +2,7 @@
 layout: default
 title: "agy-worker — Codex and Claude Code skill for Antigravity CLI"
 description: "An agent skill for Codex and Claude Code that delegates repository exploration and coding to Antigravity CLI (agy). The driver reviews the Git diff and runs independent checks before accepting the result."
-canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/"
+canonical_url: "https://cagdasyurekli.github.io/agy-worker/"
 ---
 
 <section class="hero" id="overview">
@@ -11,7 +11,7 @@ canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/"
     <h1>Delegate coding work. Verify before you trust it.</h1>
     <p class="hero-lead">agy-worker lets Codex and Claude Code hand bounded repository work to Antigravity CLI, then independently review the resulting Git scope and run driver-owned checks before accepting the candidate.</p>
     <div class="hero-actions">
-      <a class="button button-primary" href="https://github.com/cagdasyurekli/codex-agy-worker">View on GitHub</a>
+      <a class="button button-primary" href="https://github.com/cagdasyurekli/agy-worker">View on GitHub</a>
       <a class="button button-secondary" href="{{ '/VERIFYING_AGENT_OUTPUT.html' | relative_url }}">See how verification works</a>
     </div>
     <ul class="trust-list" aria-label="Core safeguards">
@@ -31,7 +31,7 @@ canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/"
 checks one passing edit
 rejects one scope mismatch
 runs no provider</code></pre>
-    <p>The repository includes a fixed synthetic <a href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/proof-demo.sh"><code>proof-demo.sh</code></a> so the verification boundary can be inspected without provider access. Its output is starter evidence for fixed cases—not human review, candidate acceptance, or general correctness.</p>
+    <p>The repository includes a fixed synthetic <a href="https://github.com/cagdasyurekli/agy-worker/blob/main/proof-demo.sh"><code>proof-demo.sh</code></a> so the verification boundary can be inspected without provider access. Its output is starter evidence for fixed cases—not human review, candidate acceptance, or general correctness.</p>
   </aside>
 </section>
 
@@ -140,16 +140,16 @@ runs no provider</code></pre>
     <h2>Install from the repository source of truth.</h2>
     <p>Use the GitHub repository as the source of truth. Install the reviewed marketplace source, follow the installation guide, and review the trust and privacy boundaries before your first provider-backed dispatch.</p>
     <div class="hero-actions">
-      <a class="button button-primary" href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/docs/INSTALLATION.md">Installation</a>
-      <a class="button button-secondary" href="https://github.com/cagdasyurekli/codex-agy-worker/releases">Releases</a>
+      <a class="button button-primary" href="https://github.com/cagdasyurekli/agy-worker/blob/main/docs/INSTALLATION.md">Installation</a>
+      <a class="button button-secondary" href="https://github.com/cagdasyurekli/agy-worker/releases">Releases</a>
     </div>
   </div>
   <pre class="install-command"><code># Codex
-codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin marketplace add cagdasyurekli/agy-worker
 codex plugin add agy-worker@agy-worker
 
 # Claude Code
-claude plugin marketplace add cagdasyurekli/codex-agy-worker
+claude plugin marketplace add cagdasyurekli/agy-worker
 claude plugin install agy-worker@agy-worker</code></pre>
 </section>
 <aside class="callout" aria-labelledby="privacy-title">
@@ -158,7 +158,7 @@ claude plugin install agy-worker@agy-worker</code></pre>
     <h2 id="privacy-title">Know what leaves your machine.</h2>
   </div>
   <p>Provider-backed work can transmit approved repository content through agy to Google/Gemini. Keep credentials and private paths out of that scope, and review the project’s privacy guidance before dispatch.</p>
-  <a href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/PRIVACY.md">Read the privacy guidance <span aria-hidden="true">→</span></a>
+  <a href="https://github.com/cagdasyurekli/agy-worker/blob/main/PRIVACY.md">Read the privacy guidance <span aria-hidden="true">→</span></a>
 </aside>
 
 <section class="section" id="docs">
@@ -171,15 +171,15 @@ claude plugin install agy-worker@agy-worker</code></pre>
       <span>Verification tutorial</span>
       <small>Understand why worker output is not acceptance evidence.</small>
     </a>
-    <a class="doc-link" href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/docs/USAGE.md">
+    <a class="doc-link" href="https://github.com/cagdasyurekli/agy-worker/blob/main/docs/USAGE.md">
       <span>Usage guide</span>
       <small>Choose workflows and understand their delivery semantics.</small>
     </a>
-    <a class="doc-link" href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/PRIVACY.md">
+    <a class="doc-link" href="https://github.com/cagdasyurekli/agy-worker/blob/main/PRIVACY.md">
       <span>Privacy guide</span>
       <small>Review provider transmission and local boundary considerations.</small>
     </a>
-    <a class="doc-link" href="https://github.com/cagdasyurekli/codex-agy-worker">
+    <a class="doc-link" href="https://github.com/cagdasyurekli/agy-worker">
       <span>Source and tests</span>
       <small>Inspect the implementation, checks, release notes, and open issues.</small>
     </a>
