@@ -1307,7 +1307,7 @@ security_reference = package_root / "references/SECURITY_AND_COMPATIBILITY.md"
 lifecycle_reference = package_root / "references/PROJECT_LIFECYCLE_AND_VERIFICATION.md"
 troubleshooting_reference = package_root / "references/TROUBLESHOOTING.md"
 assert manifest["name"] == "agy-worker"
-assert manifest["version"] == "0.22.0"
+assert manifest["version"] == "0.23.0"
 assert manifest["skills"] == "./skills/"
 assert manifest["license"] == "MIT"
 prompts = manifest["interface"]["defaultPrompt"]
@@ -3011,8 +3011,8 @@ required = {
     ),
     "docs/index.md": (
         "No initial launch path has an implicit provider-read mode.",
-        "<code>--approve-whole-worktree</code> binds current content, file kinds, permissions, symlink targets, and execution mode",
-        "The recommended bounded-job path is <code>--provider-scope</code> plus the exact transmission digest",
+        "<code>--approve-whole-worktree</code> binds current content, file kinds, permissions, symlink targets, and isolation",
+        "The recommended bounded-job path is <code>--provider-scope</code> plus the full <code>launch_approval_sha256</code>",
         "session mode uses the existing AGY session; explicit native mode requires supported macOS containment",
     ),
     "docs/PROJECT_WORKFLOW.md": (

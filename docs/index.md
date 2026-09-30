@@ -1,15 +1,15 @@
 ---
 layout: default
-title: "codex-agy-worker — Codex skill for Antigravity CLI"
-description: "A Codex agent skill that delegates repository exploration and coding to Antigravity CLI (agy). Codex reviews the Git diff and runs independent checks before accepting the result."
+title: "agy-worker — Codex and Claude Code skill for Antigravity CLI"
+description: "An agent skill for Codex and Claude Code that delegates repository exploration and coding to Antigravity CLI (agy). The driver reviews the Git diff and runs independent checks before accepting the result."
 canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/"
 ---
 
 <section class="hero" id="overview">
   <div class="hero-copy">
-    <p class="eyebrow">Open-source Codex agent skill</p>
+    <p class="eyebrow">Open-source skill for Codex and Claude Code</p>
     <h1>Delegate coding work. Verify before you trust it.</h1>
-    <p class="hero-lead">codex-agy-worker lets Codex hand bounded repository work to Antigravity CLI, then independently review the resulting Git scope and run driver-owned checks before accepting the candidate.</p>
+    <p class="hero-lead">agy-worker lets Codex and Claude Code hand bounded repository work to Antigravity CLI, then independently review the resulting Git scope and run driver-owned checks before accepting the candidate.</p>
     <div class="hero-actions">
       <a class="button button-primary" href="https://github.com/cagdasyurekli/codex-agy-worker">View on GitHub</a>
       <a class="button button-secondary" href="{{ '/VERIFYING_AGENT_OUTPUT.html' | relative_url }}">See how verification works</a>
@@ -49,7 +49,7 @@ runs no provider</code></pre>
     <article class="card">
       <span class="card-number">02</span>
       <h3>Review the actual candidate</h3>
-      <p>Codex inspects the Git diff and derives scope from repository state instead of trusting a worker summary.</p>
+      <p>The driver inspects the Git diff and derives scope from repository state instead of trusting a worker summary.</p>
     </article>
     <article class="card">
       <span class="card-number">03</span>
@@ -68,7 +68,7 @@ runs no provider</code></pre>
     <article class="card">
       <p class="card-number">Explore</p>
       <h3>Understand unfamiliar repositories</h3>
-      <p>Request broad, read-only exploration while Codex spot-checks material claims and labels coverage limits.</p>
+      <p>Request broad, read-only exploration while the driver spot-checks material claims and labels coverage limits.</p>
     </article>
     <article class="card">
       <p class="card-number">Task</p>
@@ -104,7 +104,7 @@ runs no provider</code></pre>
     </article>
     <article class="evidence-item">
       <h3>Checks belong to the driver</h3>
-      <p>Codex runs the relevant commands itself and reports the assurance level reached.</p>
+      <p>The driver runs the relevant commands itself and reports the assurance level reached.</p>
     </article>
     <article class="evidence-item">
       <h3>Publication stays human-owned</h3>
@@ -121,15 +121,15 @@ runs no provider</code></pre>
   <div class="evidence-grid">
     <article class="evidence-item">
       <h3>Whole-worktree approval</h3>
-      <p>No initial launch path has an implicit provider-read mode. <code>--approve-whole-worktree</code> binds current content, file kinds, permissions, symlink targets, and execution mode and acknowledges that the disposable worktree is potentially readable and transmissible.</p>
+      <p>No initial launch path has an implicit provider-read mode. <code>--approve-whole-worktree</code> binds current content, file kinds, permissions, symlink targets, and isolation and acknowledges that the disposable worktree is potentially readable and transmissible.</p>
     </article>
     <article class="evidence-item">
       <h3>Selected-content approval</h3>
-      <p>The recommended bounded-job path is <code>--provider-scope</code> plus the exact transmission digest. It binds reviewed read/write entries and stages only the selected content in a private, Gitless provider directory.</p>
+      <p>The recommended bounded-job path is <code>--provider-scope</code> plus the full <code>launch_approval_sha256</code>. It binds reviewed read/write entries and stages only the selected content in a private, Gitless provider directory. The digest also binds the task, model/effort, mode, budgets, repair, self-verification, and provider environment names.</p>
     </article>
     <article class="evidence-item">
       <h3>Authority remains separate</h3>
-      <p>This means session mode uses the existing AGY session; explicit native mode requires supported macOS containment. Scope approval alone grants no provider execution, Git, acceptance, or publication authority.</p>
+      <p>This means session mode uses the existing AGY session; explicit native mode requires supported macOS containment and cannot run under a sandboxed driver host. Scope approval alone grants no provider execution, Git, acceptance, or publication authority.</p>
     </article>
   </div>
 </section>
@@ -138,21 +138,26 @@ runs no provider</code></pre>
   <div>
     <p class="eyebrow">Get started</p>
     <h2>Install from the repository source of truth.</h2>
-    <p>Use the GitHub repository as the source of truth. Clone it, follow the installation guide, and review the trust and privacy boundaries before your first provider-backed dispatch.</p>
+    <p>Use the GitHub repository as the source of truth. Install the reviewed marketplace source, follow the installation guide, and review the trust and privacy boundaries before your first provider-backed dispatch.</p>
     <div class="hero-actions">
       <a class="button button-primary" href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/docs/INSTALLATION.md">Installation</a>
       <a class="button button-secondary" href="https://github.com/cagdasyurekli/codex-agy-worker/releases">Releases</a>
     </div>
   </div>
-  <pre class="install-command"><code>git clone https://github.com/cagdasyurekli/codex-agy-worker.git
-cd codex-agy-worker</code></pre>
+  <pre class="install-command"><code># Codex
+codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin add agy-worker@agy-worker
+
+# Claude Code
+claude plugin marketplace add cagdasyurekli/codex-agy-worker
+claude plugin install agy-worker@agy-worker</code></pre>
 </section>
 <aside class="callout" aria-labelledby="privacy-title">
   <div>
     <p class="eyebrow">Provider boundary</p>
     <h2 id="privacy-title">Know what leaves your machine.</h2>
   </div>
-  <p>Provider-backed work can transmit repository content in the approved scope. Keep credentials and private paths out of that scope, and review the project’s privacy guidance before dispatch.</p>
+  <p>Provider-backed work can transmit approved repository content through agy to Google/Gemini. Keep credentials and private paths out of that scope, and review the project’s privacy guidance before dispatch.</p>
   <a href="https://github.com/cagdasyurekli/codex-agy-worker/blob/main/PRIVACY.md">Read the privacy guidance <span aria-hidden="true">→</span></a>
 </aside>
 
