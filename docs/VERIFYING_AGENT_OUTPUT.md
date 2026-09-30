@@ -2,7 +2,7 @@
 layout: default
 title: "How to verify AI coding-agent changes without trusting the worker report"
 description: "A practical, source-backed workflow for checking Git scope and running driver-owned verification before accepting an AI coding-agent candidate."
-canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/VERIFYING_AGENT_OUTPUT.html"
+canonical_url: "https://cagdasyurekli.github.io/agy-worker/VERIFYING_AGENT_OUTPUT.html"
 ---
 
 # How to verify AI coding-agent changes without trusting the worker report
@@ -12,7 +12,7 @@ right tests. That report is useful context, but it is not acceptance evidence. T
 repository—not the report—must answer what changed, and the driver must choose and
 run the checks that decide whether the candidate is acceptable.
 
-This guide shows the evidence boundary implemented by **codex-agy-worker**. It is a
+This guide shows the evidence boundary implemented by **agy-worker**. It is a
 bounded engineering workflow, not a security certification or a claim that every
 semantic defect can be detected automatically.
 
@@ -108,7 +108,7 @@ The useful distinction is simple:
 ## 5. Preserve honest outcomes
 
 A failed check is normally a bounded repair signal, not permission to erase a useful
-candidate or start an unbounded retry loop. codex-agy-worker reports `verified` only
+candidate or start an unbounded retry loop. agy-worker reports `verified` only
 after its strict evidence policy passes; otherwise it preserves distinctions such as
 `partially_verified`, `rejected`, or `blocked`.
 
@@ -125,6 +125,6 @@ and one rejected scope mismatch, and then removes both. It invokes no provider o
 network and changes neither the checkout nor credentials. These two fixtures are a
 fast introduction, not proof about a real coding task.
 
-Continue with the [project README](https://github.com/cagdasyurekli/codex-agy-worker#readme),
+Continue with the [project README](https://github.com/cagdasyurekli/agy-worker#readme),
 the [bounded gate contract](CONFORMANCE.md), or the
-[privacy disclosure](https://github.com/cagdasyurekli/codex-agy-worker/blob/main/PRIVACY.md).
+[privacy disclosure](https://github.com/cagdasyurekli/agy-worker/blob/main/PRIVACY.md).

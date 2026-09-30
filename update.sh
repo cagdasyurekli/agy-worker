@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Explicit project release updater for codex-agy-worker.
+# Explicit project release updater for agy-worker.
 # Optional background notification invokes check only; no automatic pull and no
 # update from a dirty checkout.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_REMOTE="origin"
-EXPECTED_HTTPS="https://github.com/cagdasyurekli/codex-agy-worker.git"
-EXPECTED_HTTPS_NO_SUFFIX="https://github.com/cagdasyurekli/codex-agy-worker"
-EXPECTED_SSH="git@github.com:cagdasyurekli/codex-agy-worker.git"
-EXPECTED_SSH_URL="ssh://git@github.com/cagdasyurekli/codex-agy-worker.git"
+EXPECTED_HTTPS="https://github.com/cagdasyurekli/agy-worker.git"
+EXPECTED_HTTPS_NO_SUFFIX="https://github.com/cagdasyurekli/agy-worker"
+EXPECTED_SSH="git@github.com:cagdasyurekli/agy-worker.git"
+EXPECTED_SSH_URL="ssh://git@github.com/cagdasyurekli/agy-worker.git"
 
 usage() {
     cat >&2 <<'EOF'
@@ -46,7 +46,7 @@ if [[ -n "$remote_url" ]]; then
         *)
             # Do not echo an unexpected URL: Git remotes sometimes contain credentials.
             echo "update: refusing unexpected origin URL" >&2
-            echo "update: expected the official cagdasyurekli/codex-agy-worker repository" >&2
+            echo "update: expected the official cagdasyurekli/agy-worker repository" >&2
             origin_available=0 ;;
     esac
 fi

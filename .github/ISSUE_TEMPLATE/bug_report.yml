@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve codex-agy-worker. Do not paste prompts, source
+        Thanks for helping improve agy-worker. Do not paste prompts, source
         code, envelopes, credentials, absolute paths, or raw logs. Use sanitized
         excerpts and synthetic reproductions only.
   - type: dropdown
@@ -51,7 +51,7 @@ body:
     id: versions
     attributes:
       label: Sanitized versions
-      description: codex-agy-worker tag/commit, agy version, OS name and architecture only.
+      description: agy-worker tag/commit, agy version, OS name and architecture only.
       placeholder: "tool v1.2.3; agy 1.1.9; macOS arm64"
     validations:
       required: true

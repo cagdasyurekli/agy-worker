@@ -47,14 +47,14 @@ After installation, start a new Codex session so the skill is rediscovered.
 
 ### Codex plugin identity migration
 
-The new plugin and marketplace identity is `agy-worker`; the repository stays
-`cagdasyurekli/codex-agy-worker`. The old installed identity will not migrate itself.
+The plugin and marketplace identity is `agy-worker`; the canonical repository is
+`cagdasyurekli/agy-worker`. The old installed identity will not migrate itself.
 Only after the new identity is published and available, run:
 
 ```bash
 codex plugin remove codex-agy-worker@codex-agy-worker
 codex plugin marketplace remove codex-agy-worker
-codex plugin marketplace add cagdasyurekli/codex-agy-worker
+codex plugin marketplace add cagdasyurekli/agy-worker
 codex plugin add agy-worker@agy-worker
 ```
 
@@ -62,6 +62,21 @@ Then start a new Codex session. These commands are supported by local
 `codex plugin --help` and `codex plugin marketplace --help`; they remove the old
 installation/cache and its marketplace source before installing the new identity.
 Review the selected marketplace source before changing an existing installation.
+
+### Repository URL migration
+
+Existing clones can point at the canonical repository without renaming their local
+directory:
+
+```bash
+git remote set-url origin https://github.com/cagdasyurekli/agy-worker.git
+```
+
+GitHub redirects the old repository URL, but project update checks deliberately
+reject HTTP redirects. Checkouts from before the rename still pin the old API path;
+use a reviewed current-source clone for update observation. Published tags retain
+their original bytes. The Pages site is
+<https://cagdasyurekli.github.io/agy-worker/>.
 
 ### Claude Code
 
@@ -90,8 +105,8 @@ Do not install both forms unless you intend to expose both skill names.
 Review the selected source commit, then install the canonical skill bundle:
 
 ```bash
-git clone https://github.com/cagdasyurekli/codex-agy-worker.git
-cd codex-agy-worker
+git clone https://github.com/cagdasyurekli/agy-worker.git
+cd agy-worker
 ./install.sh
 ```
 
@@ -103,7 +118,7 @@ current bundle files without pruning extra files already present at the destinat
 an updated installation may retain tools from an older bundle.
 
 For a released snapshot, check out the exact reviewed `vMAJOR.MINOR.PATCH` tag from
-the [GitHub Releases page](https://github.com/cagdasyurekli/codex-agy-worker/releases)
+the [GitHub Releases page](https://github.com/cagdasyurekli/agy-worker/releases)
 before running `./install.sh`; do not substitute an unverified tag.
 
 ### Folder-only or third-party copy
@@ -120,7 +135,7 @@ Resolve the installed core runtime as documented in
 The bundle may also be copied with the third-party skills CLI:
 
 ```bash
-DO_NOT_TRACK=1 npx skills add cagdasyurekli/codex-agy-worker \
+DO_NOT_TRACK=1 npx skills add cagdasyurekli/agy-worker \
   --skill agy-worker --copy
 ```
 

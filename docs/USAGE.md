@@ -239,7 +239,7 @@ Confirm that the worktree contains no secrets, user-denied paths, or unrelated p
 files. Keep the pipeline checkout and target explicit.
 
 ```bash
-PIPELINE=/absolute/path/to/codex-agy-worker
+PIPELINE=/absolute/path/to/agy-worker
 TARGET=/absolute/path/to/your-project
 WT=/tmp/agy-job-12345
 JOB_BRANCH=agy/tests-parser-errors-12345

@@ -25,9 +25,9 @@ ONBOARDING_MARKERS = (
     ("positioning", "An Agent Skill for bounded Antigravity CLI delegation"),
     (
         "workflow badge",
-        "[![Offline test workflow](https://github.com/cagdasyurekli/codex-agy-worker/"
+        "[![Offline test workflow](https://github.com/cagdasyurekli/agy-worker/"
         "actions/workflows/test.yml/badge.svg)](https://github.com/cagdasyurekli/"
-        "codex-agy-worker/actions/workflows/test.yml)",
+        "agy-worker/actions/workflows/test.yml)",
     ),
     (
         "license badge",
@@ -35,9 +35,9 @@ ONBOARDING_MARKERS = (
     ),
     ("quick-start heading", "## Quick start"),
     ("prerequisites", "Requires a POSIX-compatible environment"),
-    ("marketplace add", "codex plugin marketplace add cagdasyurekli/codex-agy-worker"),
+    ("marketplace add", "codex plugin marketplace add cagdasyurekli/agy-worker"),
     ("plugin add", "codex plugin add agy-worker@agy-worker"),
-    ("GitHub fallback", "git clone https://github.com/cagdasyurekli/codex-agy-worker.git"),
+    ("GitHub fallback", "git clone https://github.com/cagdasyurekli/agy-worker.git"),
     (
         "installation authorization boundary",
         "does not authorize a provider dispatch or repository transmission",
@@ -70,7 +70,7 @@ HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", flags=re.DOTALL)
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd", ".mkdn"}
 FORBIDDEN_DOC_TOKENS = {"campaign", "draft", "drafts", "private", "report", "reports"}
 DATED_PATH_RE = re.compile(r"(?:^|[^0-9])20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:[^0-9]|$)")
-PAGES_BASE = "https://cagdasyurekli.github.io/codex-agy-worker/"
+PAGES_BASE = "https://cagdasyurekli.github.io/agy-worker/"
 
 
 def validate_onboarding(readme: str, max_lines: int) -> list[str]:

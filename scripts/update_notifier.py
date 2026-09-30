@@ -952,11 +952,11 @@ def run(paths: Layout) -> None:
 def _run_notification(paths: Layout, status_name: str) -> int:
     messages = {
         "drift-review": (
-            "codex-agy-worker update review",
+            "agy-worker update review",
             "A different official project release is available; run update.sh check.",
         ),
         "maintenance-required": (
-            "codex-agy-worker notifier maintenance",
+            "agy-worker notifier maintenance",
             "Monitoring paused after the bound source changed; run update-notifier.sh refresh.",
         ),
     }

@@ -1,6 +1,6 @@
 # Project usage terms
 
-These terms describe the policy for using the open-source `codex-agy-worker` project
+These terms describe the policy for using the open-source `agy-worker` project
 and its packaged Agent Skill. They are provided for project clarity and are not legal advice.
 
 ## License and external services

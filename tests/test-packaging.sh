@@ -3064,7 +3064,7 @@ else
     bad "standalone resolver rejects a relative pipeline marker"
 fi
 
-printf '/definitely/missing/codex-agy-worker\n' > "$TMP/reject-relative/agy-worker/.pipeline-root"
+printf '/definitely/missing/agy-worker\n' > "$TMP/reject-relative/agy-worker/.pipeline-root"
 bash "$TMP/reject-relative/agy-worker/scripts/resolve-pipeline.sh" \
     > "$TMP/missing.out" 2> "$TMP/missing.err"
 rc=$?
@@ -3203,8 +3203,8 @@ python3 "$ROOT/scripts/validate-brand-assets.py" "$ROOT/docs/assets/brand" \
 brand_valid_rc=$?
 if [[ "$brand_valid_rc" == "0" ]] \
         && grep -Fq '4 SVG, 7 PNG' "$TMP/brand-valid.out" \
-        && grep -Fq 'https://cagdasyurekli.github.io/codex-agy-worker/' "$ROOT/docs/_config.yml" \
-        && grep -Fq 'https://cagdasyurekli.github.io/codex-agy-worker/assets/brand/social-preview-1280x640.png' "$ROOT/docs/_config.yml" \
+        && grep -Fq 'https://cagdasyurekli.github.io/agy-worker/' "$ROOT/docs/_config.yml" \
+        && grep -Fq 'https://cagdasyurekli.github.io/agy-worker/assets/brand/social-preview-1280x640.png' "$ROOT/docs/_config.yml" \
         && grep -Fq '{% assign resolved_canonical_url = page.canonical_url %}' "$ROOT/docs/_layouts/default.html" \
         && grep -Fq '{% assign resolved_canonical_url = page.url | absolute_url %}' "$ROOT/docs/_layouts/default.html" \
         && grep -Fq '<link rel="canonical" href="{{ resolved_canonical_url | escape }}">' "$ROOT/docs/_layouts/default.html" \
@@ -3221,24 +3221,24 @@ if [[ "$brand_valid_rc" == "0" ]] \
         && grep -Fq '{% if page.url == "/" %}' "$ROOT/docs/_layouts/default.html" \
         && grep -Fq 'type="application/ld+json"' "$ROOT/docs/_layouts/default.html" \
         && grep -Fq '"@type": "SoftwareSourceCode"' "$ROOT/docs/_layouts/default.html" \
-        && grep -Fq '"codeRepository": "https://github.com/cagdasyurekli/codex-agy-worker"' "$ROOT/docs/_layouts/default.html" \
+        && grep -Fq '"codeRepository": "https://github.com/cagdasyurekli/agy-worker"' "$ROOT/docs/_layouts/default.html" \
         && [[ "$(grep -Fc '<h1>' "$ROOT/docs/index.md")" == "1" ]] \
         && grep -Fq 'Delegate coding work. Verify before you trust it.' "$ROOT/docs/index.md" \
-        && grep -Fq 'href="https://github.com/cagdasyurekli/codex-agy-worker">View on GitHub</a>' "$ROOT/docs/index.md" \
+        && grep -Fq 'href="https://github.com/cagdasyurekli/agy-worker">View on GitHub</a>' "$ROOT/docs/index.md" \
         && grep -Fq 'must not create body-level horizontal overflow at a 390-pixel mobile' "$ROOT/docs/DOCUMENTATION_POLICY.md" \
-        && grep -Fq '<loc>https://cagdasyurekli.github.io/codex-agy-worker/</loc>' "$ROOT/docs/sitemap.xml" \
-        && grep -Fq '<loc>https://cagdasyurekli.github.io/codex-agy-worker/VERIFYING_AGENT_OUTPUT.html</loc>' "$ROOT/docs/sitemap.xml" \
+        && grep -Fq '<loc>https://cagdasyurekli.github.io/agy-worker/</loc>' "$ROOT/docs/sitemap.xml" \
+        && grep -Fq '<loc>https://cagdasyurekli.github.io/agy-worker/VERIFYING_AGENT_OUTPUT.html</loc>' "$ROOT/docs/sitemap.xml" \
         && [[ "$(grep -Fc '<url>' "$ROOT/docs/sitemap.xml")" == "2" ]] \
         && grep -Fq 'GitHub repository as the source of truth' "$ROOT/docs/index.md" \
         && grep -Fq 'VERIFYING_AGENT_OUTPUT.html' "$ROOT/docs/index.md" \
         && grep -Fq 'blob/main/docs/INSTALLATION.md' "$ROOT/docs/index.md" \
         && grep -Fq 'blob/main/docs/USAGE.md' "$ROOT/docs/index.md" \
-        && grep -Fq 'canonical_url: "https://cagdasyurekli.github.io/codex-agy-worker/VERIFYING_AGENT_OUTPUT.html"' "$ROOT/docs/VERIFYING_AGENT_OUTPUT.md" \
+        && grep -Fq 'canonical_url: "https://cagdasyurekli.github.io/agy-worker/VERIFYING_AGENT_OUTPUT.html"' "$ROOT/docs/VERIFYING_AGENT_OUTPUT.md" \
         && grep -Fq 'An Agent Skill for bounded Antigravity CLI delegation' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq '## Quick start' < <(sed -n '1,120p' "$ROOT/README.md") \
-        && grep -Fq 'codex plugin marketplace add cagdasyurekli/codex-agy-worker' < <(sed -n '1,120p' "$ROOT/README.md") \
+        && grep -Fq 'codex plugin marketplace add cagdasyurekli/agy-worker' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq 'codex plugin add agy-worker@agy-worker' < <(sed -n '1,120p' "$ROOT/README.md") \
-        && grep -Fq 'git clone https://github.com/cagdasyurekli/codex-agy-worker.git' < <(sed -n '1,120p' "$ROOT/README.md") \
+        && grep -Fq 'git clone https://github.com/cagdasyurekli/agy-worker.git' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq 'does not authorize a provider dispatch or repository transmission' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq './proof-demo.sh' < <(sed -n '1,120p' "$ROOT/README.md") \
         && grep -Fq 'Read [PRIVACY.md](PRIVACY.md).' < <(sed -n '1,120p' "$ROOT/README.md") \
@@ -3267,7 +3267,7 @@ assert len(matches) == 1
 payload = json.loads(matches[0])
 assert payload["@context"] == "https://schema.org"
 assert payload["@type"] == "SoftwareSourceCode"
-assert payload["codeRepository"] == "https://github.com/cagdasyurekli/codex-agy-worker"
+assert payload["codeRepository"] == "https://github.com/cagdasyurekli/agy-worker"
 assert payload["programmingLanguage"] == ["Python", "Shell"]
 assert payload["license"].endswith("/blob/main/LICENSE")
 assert '{% if page.url == "/" %}' in layout
