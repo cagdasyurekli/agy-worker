@@ -67,7 +67,6 @@ STATE_FIELDS = {
     "worktree_identity", "branch", "branch_ref", "base", "receipt",
     "dispatch", "cleanup_step", "last_result", "failure",
 }
-LEGACY_STATE_FIELDS = STATE_FIELDS - {"dispatch"}
 FACADE_STATE_FIELDS = STATE_FIELDS | {"origin", "dispatch_job_dir"}
 FACADE_ORIGIN = "workflow-facade"
 PHASES = {
@@ -99,6 +98,10 @@ UNSAFE_GIT_CONFIG_RE = re.compile(
 
 class JobError(ValueError):
     pass
+
+
+class UnsupportedJobSchemaError(JobError):
+    """Retired lifecycle records require their creating release."""
 
 
 class GitError(OSError):
@@ -372,8 +375,7 @@ class DispatchBinding(TypedDict):
 
 
 class LifecycleStateFields(TypedDict):
-    # Version selection uses equality, so 1.0, 2.0 and True retain their old acceptance.
-    schema_version: int | float
+    schema_version: int
     kind: str
     sequence: int
     previous_state_sha256: str | None
@@ -577,10 +579,10 @@ def validate_state(value: Any) -> LifecycleState:
         raise JobError("state fields are invalid")
     version = value.get("schema_version")
     fields = set(value)
-    if version == 1:
-        if fields != STATE_FIELDS and fields != LEGACY_STATE_FIELDS:
+    if type(version) is int and version == 3:
+        if fields != STATE_FIELDS:
             raise JobError("state fields are invalid")
-    elif version == 2:
+    elif type(version) is int and version == 4:
         if fields != FACADE_STATE_FIELDS or value.get("origin") != FACADE_ORIGIN:
             raise JobError("state fields are invalid")
         dispatch_job_dir = value.get("dispatch_job_dir")
@@ -593,7 +595,7 @@ def validate_state(value: Any) -> LifecycleState:
         ):
             raise JobError("state dispatch job directory is invalid")
     else:
-        raise JobError("state version is invalid")
+        raise UnsupportedJobSchemaError("state format is retired or unsupported; finish or discard the job with the release that created it")
     _validate_fields(value, {
         "kind": lambda item: _invalid_if(item != 'agy-worker-local-job-state', 'state version is invalid'),
         "sequence": lambda item: _invalid_if(type(item) is not int or item < 1, 'state sequence is invalid'),
@@ -1202,7 +1204,7 @@ def initial_state(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
     if contains(repo, state_path) or contains(worktree, state_path):
         raise JobError("state must be outside repository and worktree")
     state = {
-        "schema_version": 1,
+        "schema_version": 3,
         "kind": "agy-worker-local-job-state",
         "sequence": 1,
         "previous_state_sha256": None,
@@ -1232,7 +1234,7 @@ def initial_state(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
         )
         if contains(repo, dispatch_job_dir) or contains(worktree, dispatch_job_dir):
             raise JobError("dispatch job directory must be outside repository and worktree")
-        state["schema_version"] = 2
+        state["schema_version"] = 4
         state["origin"] = FACADE_ORIGIN
         state["dispatch_job_dir"] = str(dispatch_job_dir)
     elif args.dispatch_job_dir is not None:
@@ -1380,8 +1382,6 @@ def command_verify(args: argparse.Namespace) -> int:
             command += ["--verify-credential-env", value]
         if args.selection:
             command += ["--selection", args.selection]
-        if args.pre_recommendation:
-            command += ["--pre-recommendation", args.pre_recommendation]
         try:
             rc = run_process(command)
         except JobSignal as exc:
@@ -1695,7 +1695,7 @@ def command_rollback_ready(args: argparse.Namespace) -> int:
         state = store.value
         assert state is not None and store.sha256 is not None
         if (
-            state["schema_version"] != 2
+            state["schema_version"] != 4
             or state.get("origin") != FACADE_ORIGIN
             or state["phase"] != "ready"
             or state["receipt"] is not None
@@ -2138,7 +2138,6 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--verify-env", action="append", default=[])
     verify.add_argument("--verify-credential-env", action="append", default=[])
     verify.add_argument("--selection", action=Once)
-    verify.add_argument("--pre-recommendation", action=Once)
     preserve = commands.add_parser("preserve-instructions")
     preserve.add_argument("--state", action=Once, required=True)
     cleanup = commands.add_parser("cleanup")
@@ -2196,6 +2195,9 @@ def main(argv: list[str] | None = None) -> int:
     except JobSignal as exc:
         print("job: interrupted", file=sys.stderr)
         return 128 + exc.number
+    except UnsupportedJobSchemaError:
+        print("job: state format is retired or unsupported; finish or discard the job with the release that created it", file=sys.stderr)
+        return 64
     except JobError:
         print("job: local lifecycle validation failed", file=sys.stderr)
         return 64

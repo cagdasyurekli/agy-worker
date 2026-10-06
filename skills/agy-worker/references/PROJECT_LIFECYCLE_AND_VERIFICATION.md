@@ -65,7 +65,7 @@ Report caller-supplied effort when present; otherwise say effort is unresolved, 
 The notice must precede every dispatch attempt and remain accurate afterward.
 If preflight fails before provider launch, explicitly state that the task was not sent to AGY.
 If provider reach is genuinely uncertain, state that it is unverified rather than claiming success.
-Direct model and effort selection remain caller-owned; recommendations are advisory.
+Direct model and effort selection remain caller-owned.
 
 The notice is status, not another approval request. Covered repairs do not authorize
 Git actions, acceptance, publication, installation, account actions or provider work

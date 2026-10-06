@@ -132,8 +132,7 @@ commands or values. A green gate never replaces independent diff review.
 
 ## Model and interface compatibility
 
-Model and effort are caller-owned; recommendations cannot change selection, permissions,
-authentication, scope or human-required outcomes. Default model/effort remain unresolved;
+Model and effort are caller-owned. Default model/effort remain unresolved;
 literal values pass through without catalog substitution.
 
 Each launch, including recovery, uses bounded local version/help capability checks

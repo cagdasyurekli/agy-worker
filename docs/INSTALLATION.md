@@ -230,7 +230,8 @@ mutation and scope checks; paths elsewhere remain invalid.
 ## AGY capability requirements
 
 Every provider launch runs a bounded local `agy --version` and `agy --help` probe,
-including default/tier selection and resumed, continued, or restarted jobs. The version
+including default, explicit model/effort selection, and resumed, continued, or
+restarted jobs. The version
 is diagnostic text; no exact-version registry, model inventory, or help-SHA approval
 gates launch. The controller rechecks the probed executable's identity and contents
 immediately before starting that same executable. Missing, malformed, oversized, or
@@ -249,10 +250,10 @@ capability checks do not certify a model catalog, authentication, backend identi
 cost, availability, or quality. No selector leaves AGY's default unchanged. See
 [model and effort selection](USAGE.md#model-and-effort-selection).
 
-Bounded synthetic live runs exercised AGY **1.2.12** from Codex and Claude Code,
-including a same-conversation repair and a native launch from an unsandboxed Claude
-Code host. This observation is informational; it does not gate launches or qualify
-future versions, authentication or task quality.
+Bounded synthetic live runs exercised AGY **1.3.0** from Claude Code, including a
+headless denial, print timeout, and rejected model/effort combination. The latest
+Codex-host live run exercised AGY **1.2.12**. These observations are informational;
+they do not gate launches or qualify future versions, authentication or task quality.
 
 ## agy interface cautions
 

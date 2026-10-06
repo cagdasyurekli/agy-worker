@@ -86,7 +86,9 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         self.logs = self.root / "logs"
         self.logs.mkdir(mode=0o700)
         self.environment = {name: value for name, value in os.environ.items() if not name.startswith("AGY_WORKER_")}
-        self.environment.update(PATH=f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+        state_home = self.root / "state-home"
+        state_home.mkdir(mode=0o700)
+        self.environment.update(XDG_STATE_HOME=str(state_home), PATH=f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
             AGY_WORKER_LOG_DIR=str(self.logs), AUTHORITY_CALL_FILE=str(self.called),
             AUTHORITY_PRIVATE_VALUE="environment-value-must-never-appear")
         self.common = ["--workdir", str(self.worktree), "--workflow", "task", "--max-cycles", "2",
@@ -128,6 +130,63 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
             del arguments[index:index + 2]
         return subprocess.run([str(WORKER), *arguments], input=task, env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def test_retired_inputs_reject_all_launch_routes_before_provider(self) -> None:
+        routes = [
+            [str(WORKER), *self.common],
+            [str(WORKER), "transmission-preview", *self.common],
+            [str(ROOT / "workflow.sh"), "run", "--repo", str(self.root / "owner"),
+             "--job-id", "retired", "--preview", "--task", "synthetic"],
+        ]
+        for route in routes:
+            with self.subTest(route=route[:2]):
+                removed = subprocess.run([*route, "--tier", "hard"], input=b"synthetic",
+                    env=self.environment, capture_output=True)
+                self.assertEqual(removed.returncode, 64, removed.stderr)
+                self.assertRegex(removed.stderr, b"invalid usage|unknown|unrecognized")
+                for extra in ([], ["--model", "literal"]):
+                    rejected = subprocess.run([*route, *extra], input=b"synthetic",
+                        env=dict(self.environment, AGY_WORKER_TIER="hard"), capture_output=True)
+                    self.assertEqual(rejected.returncode, 64, rejected.stderr)
+                    self.assertIn(b"--model / AGY_WORKER_MODEL", rejected.stderr)
+                self.assertFalse(self.called.exists())
+        self.environment["AGY_WORKER_TIER"] = ""
+        raw, preview = self.preview()
+        accepted = self.launch(raw, preview["launch_approval_sha256"])
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        facade = subprocess.run(routes[-1], env=self.environment, capture_output=True)
+        self.assertEqual(facade.returncode, 0, facade.stderr)
+
+    def test_old_valid_tier_approval_cannot_launch_removed_cli(self) -> None:
+        _raw, preview = self.preview()
+        old = dict(preview["launch_authority"], kind="agy-worker-launch-authority-v1",
+                   tier="hard", model="gemini-3.1-pro-high")
+        digest = hashlib.sha256(json.dumps(old, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":")).encode("ascii") + b"\n").hexdigest()
+        carrier = dict(preview, launch_authority=old, launch_approval_sha256=digest)
+        rejected = self.launch(json.dumps(carrier).encode(), digest, extra=["--tier", "hard"])
+        self.assertEqual(rejected.returncode, 64, rejected.stderr)
+        self.assertFalse(self.called.exists())
+
+    def test_retired_and_extra_authority_fields_reject_recomputed_approval(self) -> None:
+        raw, preview = self.preview()
+        # Baseline v1 differs only by its kind and required nullable tier field.
+        old = dict(preview["launch_authority"], kind="agy-worker-launch-authority-v1", tier=None)
+        cases = [old, dict(preview["launch_authority"], effort="high"),
+                 *[dict(preview["launch_authority"], **{field: value})
+                       for field, value in (("tier", None), ("pre_dispatch_recommendation", None),
+                                            ("untrusted", False))]]
+        self.assertEqual(self.launch(raw, preview["launch_approval_sha256"]).returncode, 0)
+        self.called.unlink()
+        for authority in cases:
+            self.called.unlink(missing_ok=True)
+            with self.subTest(fields=set(authority), kind=authority["kind"]):
+                digest = hashlib.sha256(json.dumps(authority, ensure_ascii=True, sort_keys=True,
+                    separators=(",", ":")).encode("ascii") + b"\n").hexdigest()
+                altered = dict(preview, launch_authority=authority, launch_approval_sha256=digest)
+                rejected = self.launch(json.dumps(altered).encode(), digest)
+                self.assertEqual(rejected.returncode, 64, rejected.stderr)
+                self.assertFalse(self.called.exists())
 
     def test_different_task_changes_digest(self) -> None:
         _raw, initial = self.preview()

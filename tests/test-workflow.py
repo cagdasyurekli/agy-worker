@@ -55,7 +55,7 @@ def fixture_authority() -> dict[str, Any]:
                  "provider_isolation": "session", "native_grant_profile": "baseline"},
         task=b"bounded task", prompt=b"fixture prompt", workflow="task", mode="accept-edits",
         max_cycles=2, idle_seconds=600, hard_seconds=7200, max_seconds=43200, notice_seconds=1800,
-        tier=None, model=None, effort=None, allow_scoped_repair=False,
+        model=None, effort=None, allow_scoped_repair=False,
         self_verification_manifest_sha256=None, provider_env_names=[], allow_slash_commands=False,
         add_dirs=["."], provider_schema_sha256="3" * 64, base_commit="4" * 40, workdir="/private/tmp/fixture")
 
@@ -417,11 +417,11 @@ def test_removed_approval_flags_reject_before_effects() -> bool:
         for extra in (["--compatibility-disposition", "proceed"], ["--approve-help-sha", "a" * 64],
                       ["--compatibility-disposition", "proceed", "--approve-help-sha", "a" * 64]):
             failed = run_workflow(*(base + extra))
-            assert failed.returncode == 2 and b"unrecognized arguments" in failed.stderr
+            assert failed.returncode == 64 and b"unrecognized arguments" in failed.stderr
             assert (sorted(str(path) for path in f.state_dir.rglob("*")) if f.state_dir.exists() else []) == before
-        for extra in (["--model", "second"], ["--effort", "low", "--effort", "high"], ["--tier", "bulk", "--tier", "default"]):
+        for extra in (["--model", "second"], ["--effort", "low", "--effort", "high"]):
             failed = run_workflow(*(base + extra))
-            assert failed.returncode == 2 and b"repeated --" in failed.stderr
+            assert failed.returncode == 64 and b"repeated --" in failed.stderr
         return True
     finally:
         f.clean()
@@ -830,7 +830,7 @@ def test_ordinary_run_owns_private_initialization_and_reuses_preview() -> bool:
         assert workflow_value["origin"] == "workflow-facade"
         assert workflow_value["provider_isolation"] == "session"
         assert workflow_value["provider_execution"] is None
-        assert job_value["schema_version"] == 2
+        assert job_value["schema_version"] == 4
         assert job_value["origin"] == "workflow-facade"
         assert workflow_value["base"] == f.base == job_value["base"]
         assert worktree.joinpath("README.md").read_text(encoding="utf-8") == "# Initial Repo\n"
@@ -2081,7 +2081,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
     try:
         current = _explicit_state(f)
         assert WORKFLOW_MODULE.validate_workflow_state(current) == current
-        for version in (1, 2, 3, 4, 5, 6, None, True, False, "untrusted-version-marker", "5", 5.5, 0, -1, 999999):
+        for version in (1, 2, 3, 4, 5, 6, 7, 8, None, True, False, "untrusted-version-marker", "5", 5.5, 0, -1, 999999):
             state = dict(current)
             if version is None:
                 del state["schema_version"]
@@ -2093,7 +2093,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
             try:
                 WORKFLOW_MODULE.WorkflowStateStore(f.state_file)
             except WORKFLOW_MODULE.UnsupportedWorkflowSchemaError as exc:
-                assert "supported: v7 or v8" in str(exc)
+                assert "supported: v9 or v10" in str(exc)
                 assert "Finish or discard the job" in str(exc)
                 assert "untrusted-version-marker" not in str(exc)
             else:
@@ -2111,7 +2111,7 @@ def test_workflow_versions_reject_before_effects() -> bool:
             for argv in commands:
                 _rejection_without_effects(f.tmp, argv, "workflow state schema")
         schema = json.loads(SCHEMA_PATH.read_bytes())
-        assert schema["properties"]["schema_version"]["enum"] == [7, 8]
+        assert schema["properties"]["schema_version"]["enum"] == [9, 10]
         return True
     finally:
         f.clean()

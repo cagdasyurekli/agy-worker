@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Offline adversarial suite for Evidence Receipt v1: no agy, network, or provider.
+# Offline adversarial suite for Evidence Receipt v2: no agy, network, or provider.
 set -uo pipefail
 
 HERE="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -70,14 +70,13 @@ path, expected_exit, expected_outcome, expected_verdict, base = sys.argv[1:]
 raw = open(path, "rb").read()
 value = json.loads(raw)
 assert raw.endswith(b"\n") and raw.count(b"\n") == 1
-assert value["schema_version"] == 1
+assert value["schema_version"] == 2
 assert value["kind"] == "agy-worker-evidence-receipt"
 assert value["gate_authority"] == "qa-gate"
 assert value["resolved_base"] == base
 assert value["gate_exit"] == int(expected_exit)
 assert value["gate_outcome"] == expected_outcome
 assert value["verdict"] == expected_verdict
-assert value["recommendations_participated_in_acceptance"] is False
 assert value["integrity"]["signed"] is False
 assert value["integrity"]["tamper_evident"] is False
 assert value["verifiers"][0]["label"] == "verify-001"
@@ -116,7 +115,7 @@ run_receipt_case() {
     fi
 }
 
-echo "Evidence Receipt v1 offline test suite"
+echo "Evidence Receipt v2 offline test suite"
 if python3 -I -S -B - "$VALIDATOR" <<'PY'
 import importlib.util,json,sys
 spec=importlib.util.spec_from_file_location('receipt_module',sys.argv[1])
@@ -635,76 +634,29 @@ esac
 SH
 chmod +x "$TMP/selection-bin/agy"
 export PATH="$TMP/selection-bin:$PATH"
-echo "selection and recommendation bindings:"
-"$ROOT/model-selection.sh" --tier bulk --tier-source cli > "$TMP/selection.json"
-"$ROOT/model-recommendation.sh" --stage pre-dispatch --selected-tier bulk \
-    --evidence batched-mechanical > "$TMP/recommendation.json"
+echo "selection bindings:"
+PATH="$TMP/selection-bin:$PATH" "$ROOT/model-selection.sh" > "$TMP/selection.json"
 reset_repo; printf 'worker edit\n' > "$REPO/a.txt"
 bound="$RECEIPTS/bound.json"
 "$VERIFY" --receipt "$bound" --envelope "$TMP/honest.json" --repo "$REPO" \
-    --base "$BASE" --selection "$TMP/selection.json" \
-    --pre-recommendation "$TMP/recommendation.json" --verify-argv '["true"]' \
+    --base "$BASE" --selection "$TMP/selection.json" --verify-argv '["true"]' \
     > "$TMP/bound.out" 2> "$TMP/bound.err"
-if [[ $? == 0 ]] && python3 -B - "$bound" "$TMP/selection.json" "$TMP/recommendation.json" <<'PY'
+if [[ $? == 0 ]] && python3 -B - "$bound" "$TMP/selection.json" <<'PYTHON'
 import json,sys
 receipt=json.load(open(sys.argv[1]))
 assert receipt['caller_selection']==json.load(open(sys.argv[2]))
-assert receipt['pre_dispatch_recommendation']==json.load(open(sys.argv[3]))
-assert receipt['recommendations_participated_in_acceptance'] is False
-PY
-then ok "valid selection and pre-dispatch advisory bind without gate authority"; else bad "valid selection and pre-dispatch advisory bind without gate authority"; fi
-
-for optional_mode in selection recommendation; do
-    reset_repo; printf 'worker edit\n' > "$REPO/a.txt"
-    optional_target="$RECEIPTS/$optional_mode-only.json"
-    optional_args=()
-    if [[ "$optional_mode" == selection ]]; then
-        optional_args=(--selection "$TMP/selection.json")
-    else
-        optional_args=(--pre-recommendation "$TMP/recommendation.json")
-    fi
-    "$VERIFY" --receipt "$optional_target" --envelope "$TMP/honest.json" \
-        --repo "$REPO" --base "$BASE" "${optional_args[@]}" --verify-argv '["true"]' \
-        >/dev/null 2>&1
-    if [[ $? == 0 && -f "$optional_target" ]]; then ok "$optional_mode input is independently optional"; else bad "$optional_mode input is independently optional"; fi
-done
-
-"$ROOT/model-recommendation.sh" --stage post-gate --selected-tier bulk \
-    --evidence gate-accepted > "$TMP/post.json"
-post_target="$RECEIPTS/post.json"
-"$VERIFY" --receipt "$post_target" --envelope "$TMP/honest.json" --repo "$REPO" \
-    --base "$BASE" --pre-recommendation "$TMP/post.json" --verify-argv '["true"]' >/dev/null 2>&1
-if [[ $? == 64 && ! -e "$post_target" ]]; then ok "post-gate advisory cannot bind in P0-A"; else bad "post-gate advisory cannot bind in P0-A"; fi
-
-python3 -B - "$TMP/recommendation.json" "$TMP/applied.json" <<'PY'
-import json,sys
-value=json.load(open(sys.argv[1])); value['applied']=True
-json.dump(value,open(sys.argv[2],'w'))
-PY
-applied_target="$RECEIPTS/applied.json"
-"$VERIFY" --receipt "$applied_target" --envelope "$TMP/honest.json" --repo "$REPO" \
-    --base "$BASE" --pre-recommendation "$TMP/applied.json" --verify-argv '["true"]' >/dev/null 2>&1
-if [[ $? == 64 && ! -e "$applied_target" ]]; then ok "advisory claiming application is rejected before gate"; else bad "advisory claiming application is rejected before gate"; fi
-
-"$ROOT/model-recommendation.sh" --stage pre-dispatch --selected-tier cheap \
-    --evidence bounded-routine > "$TMP/mismatch-recommendation.json"
-mismatch_target="$RECEIPTS/mismatch-selection.json"
-"$VERIFY" --receipt "$mismatch_target" --envelope "$TMP/honest.json" --repo "$REPO" \
-    --base "$BASE" --selection "$TMP/selection.json" \
-    --pre-recommendation "$TMP/mismatch-recommendation.json" --verify-argv '["true"]' >/dev/null 2>&1
-if [[ $? == 64 && ! -e "$mismatch_target" ]]; then ok "selection and advisory mismatch is rejected before gate"; else bad "selection and advisory mismatch is rejected before gate"; fi
+assert receipt['caller_selection']['selection_mode']=='agy-default'
+PYTHON
+then ok "default selection binds without gate authority"; else bad "default selection binds without gate authority"; fi
 
 PATH="$TMP/selection-bin:$PATH" "$ROOT/model-selection.sh" \
     --model gemini-3.6-flash --effort high \
     > "$TMP/direct-selection.json"
-"$ROOT/model-recommendation.sh" --stage pre-dispatch \
-    --selected-model gemini-3.6-flash --selected-effort high \
-    --evidence batched-mechanical > "$TMP/direct-recommendation.json"
 reset_repo; printf 'worker edit\n' > "$REPO/a.txt"
 direct_target="$RECEIPTS/direct-selection.json"
 "$VERIFY" --receipt "$direct_target" --envelope "$TMP/honest.json" \
     --repo "$REPO" --base "$BASE" --selection "$TMP/direct-selection.json" \
-    --pre-recommendation "$TMP/direct-recommendation.json" --verify-argv '["true"]' \
+    --verify-argv '["true"]' \
     >/dev/null 2>&1
 if [[ $? == 0 ]] && python3 -B - "$direct_target" <<'PY'
 import json,sys
@@ -714,9 +666,7 @@ assert selection['selection_mode']=='model-effort'
 assert selection['user_model']=='gemini-3.6-flash'
 assert selection['user_effort']=='high'
 assert selection['resolved_agy_model']=='gemini-3.6-flash'
-assert selection['schema_version']==4
-assert value['pre_dispatch_recommendation']['recommendation_only'] is True
-assert value['pre_dispatch_recommendation']['applied'] is False
+assert selection['schema_version']==5
 PY
 then ok "direct model/effort provenance binds without changing selection"; else bad "direct model/effort provenance binds without changing selection"; fi
 
@@ -736,30 +686,6 @@ PY
         --repo "$REPO" --base "$BASE" --selection "$TMP/direct-$direct_mutation.json" \
         --verify-argv '["true"]' >/dev/null 2>&1
     if [[ $? == 64 && ! -e "$invalid_direct_target" ]]; then ok "direct $direct_mutation mutation is rejected before gate"; else bad "direct $direct_mutation mutation is rejected before gate"; fi
-done
-
-# Valid literal effort differs from the advisory; provenance is separately
-# bound by the published receipt, since advisories carry no source provenance.
-for mismatch in effort provenance; do
-    python3 -B - "$TMP/direct-selection.json" "$TMP/literal-$mismatch.json" "$mismatch" <<'PYTHON'
-import json,sys
-value=json.load(open(sys.argv[1]))
-if sys.argv[3]=='effort': value['user_effort']='future-level'
-else: value['user_model_source']='environment'
-json.dump(value,open(sys.argv[2],'w'))
-PYTHON
-    target="$RECEIPTS/literal-$mismatch.json"
-    if [[ "$mismatch" == effort ]]; then
-        "$VERIFY" --receipt "$target" --envelope "$TMP/honest.json" --repo "$REPO" \
-            --base "$BASE" --selection "$TMP/literal-$mismatch.json" \
-            --pre-recommendation "$TMP/direct-recommendation.json" --verify-argv '["true"]' \
-            >/dev/null 2>&1
-        if [[ $? == 64 && ! -e "$target" ]]; then ok "literal effort mismatch rejects before gate"; else bad "literal effort mismatch rejects before gate"; fi
-    else
-        python3 -B "$VALIDATOR" validate --receipt "$direct_target" \
-            --selection "$TMP/literal-$mismatch.json" >/dev/null 2>&1
-        if [[ $? == 1 ]]; then ok "receipt rejects separately bound provenance mismatch"; else bad "receipt rejects separately bound provenance mismatch"; fi
-    fi
 done
 
 echo
@@ -859,17 +785,11 @@ python3 -B "$VALIDATOR" validate --receipt "$RECEIPTS/pass.json" \
     --final-state-digest "$(printf 'e%.0s' {1..64})" >/dev/null 2>&1
 if [[ $? == 1 ]]; then ok "validator rejects final candidate digest mismatch"; else bad "validator rejects final candidate digest mismatch"; fi
 
-python3 -B "$VALIDATOR" validate --receipt "$bound" \
-    --selection "$TMP/selection.json" \
-    --pre-recommendation "$TMP/recommendation.json" >/dev/null 2>&1
-if [[ $? == 0 ]]; then ok "validator accepts matching selection and advisory bindings"; else bad "validator accepts matching selection and advisory bindings"; fi
-"$ROOT/model-selection.sh" --tier cheap --tier-source cli > "$TMP/cheap-selection.json"
-python3 -B "$VALIDATOR" validate --receipt "$bound" \
-    --selection "$TMP/cheap-selection.json" >/dev/null 2>&1
+python3 -B "$VALIDATOR" validate --receipt "$bound" --selection "$TMP/selection.json" >/dev/null 2>&1
+if [[ $? == 0 ]]; then ok "validator accepts matching selection"; else bad "validator accepts matching selection"; fi
+PATH="$TMP/selection-bin:$PATH" "$ROOT/model-selection.sh" --model literal > "$TMP/different-selection.json"
+python3 -B "$VALIDATOR" validate --receipt "$bound" --selection "$TMP/different-selection.json" >/dev/null 2>&1
 if [[ $? == 1 ]]; then ok "validator rejects separately bound selection mismatch"; else bad "validator rejects separately bound selection mismatch"; fi
-python3 -B "$VALIDATOR" validate --receipt "$bound" \
-    --pre-recommendation "$TMP/mismatch-recommendation.json" >/dev/null 2>&1
-if [[ $? == 1 ]]; then ok "validator rejects separately bound advisory mismatch"; else bad "validator rejects separately bound advisory mismatch"; fi
 
 for mutation in schema extra outcome duplicate; do
     mutated="$TMP/receipt-$mutation.json"
@@ -878,11 +798,11 @@ import json,sys
 source,target,mode=sys.argv[1:]
 raw=open(source).read()
 value=json.loads(raw)
-if mode=='schema': value['schema_version']=2
+if mode=='schema': value['schema_version']=1
 elif mode=='extra': value['private_path']='/PRIVATE/PATH'
 elif mode=='outcome': value['gate_outcome']='human-required'
 if mode=='duplicate':
-    open(target,'w').write('{"schema_version":1,'+raw[1:])
+    open(target,'w').write('{"schema_version":2,'+raw[1:])
 else:
     json.dump(value,open(target,'w'),sort_keys=True,separators=(',',':'))
     open(target,'a').write('\n')
@@ -1114,7 +1034,6 @@ mkdir -m 700 "$INJECT_PARENT"
 INJECT_PARENT="$(CDPATH= cd -- "$INJECT_PARENT" && pwd -P)"
 if python3 -B - "$ROOT/skills/agy-worker/runtime/scripts" \
         "$ROOT/skills/agy-worker/runtime/schemas/evidence-receipt.schema.json" \
-        "$ROOT/skills/agy-worker/runtime/scripts/model-recommendation.py" \
         "$RECEIPTS/pass.json" "$INJECT_PARENT" <<'PY'
 import importlib.util
 import json
@@ -1123,7 +1042,7 @@ from pathlib import Path
 import stat
 import sys
 
-scripts,schema_path,recommender,receipt_path,parent_text=sys.argv[1:]
+scripts,schema_path,receipt_path,parent_text=sys.argv[1:]
 sys.path.insert(0,scripts)
 spec=importlib.util.spec_from_file_location('receipt_module',Path(scripts)/'evidence_receipt.py')
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -1131,7 +1050,7 @@ parent=Path(parent_text); target=parent/'restrictive-umask.json'
 value=json.load(open(receipt_path)); schema=module.load_schema(Path(schema_path))
 old_umask=os.umask(0o777)
 try:
-    module.publish_receipt(target,parent,value,schema,Path(recommender))
+    module.publish_receipt(target,parent,value,schema)
 finally:
     os.umask(old_umask)
 assert stat.S_IMODE(target.lstat().st_mode)==0o600
@@ -1141,7 +1060,6 @@ then ok "publication forces exact mode 0600 under a restrictive umask"; else bad
 for injection in validation file-fsync link parent-fsync; do
     if python3 -B - "$ROOT/skills/agy-worker/runtime/scripts" \
             "$ROOT/skills/agy-worker/runtime/schemas/evidence-receipt.schema.json" \
-            "$ROOT/skills/agy-worker/runtime/scripts/model-recommendation.py" \
             "$RECEIPTS/pass.json" "$INJECT_PARENT" "$injection" <<'PY'
 import importlib.util
 import json
@@ -1149,7 +1067,7 @@ import os
 from pathlib import Path
 import sys
 
-scripts,schema_path,recommender,receipt_path,parent_text,mode=sys.argv[1:]
+scripts,schema_path,receipt_path,parent_text,mode=sys.argv[1:]
 sys.path.insert(0,scripts)
 spec=importlib.util.spec_from_file_location('receipt_module',Path(scripts)/'evidence_receipt.py')
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -1174,7 +1092,7 @@ elif mode=='link':
     module.os.link=fail_link
 try:
     try:
-        module.publish_receipt(target,parent,value,schema,Path(recommender))
+        module.publish_receipt(target,parent,value,schema)
     except module.PublicationFailure:
         pass
     else:
@@ -1191,7 +1109,6 @@ done
 
 if python3 -B - "$ROOT/skills/agy-worker/runtime/scripts" \
         "$ROOT/skills/agy-worker/runtime/schemas/evidence-receipt.schema.json" \
-        "$ROOT/skills/agy-worker/runtime/scripts/model-recommendation.py" \
         "$RECEIPTS/pass.json" "$INJECT_PARENT" <<'PY'
 import importlib.util
 import json
@@ -1199,7 +1116,7 @@ import os
 from pathlib import Path
 import sys
 
-scripts,schema_path,recommender,receipt_path,parent_text=sys.argv[1:]
+scripts,schema_path,receipt_path,parent_text=sys.argv[1:]
 sys.path.insert(0,scripts)
 spec=importlib.util.spec_from_file_location('receipt_module',Path(scripts)/'evidence_receipt.py')
 module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -1217,7 +1134,7 @@ def replace_then_fail(fd):
 module.os.fsync=replace_then_fail
 try:
     try:
-        module.publish_receipt(target,parent,value,schema,Path(recommender))
+        module.publish_receipt(target,parent,value,schema)
     except module.PublicationFailure:
         pass
     else:

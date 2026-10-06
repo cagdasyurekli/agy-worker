@@ -1687,6 +1687,18 @@ else
     bad "root and portable ground-truth phases preserve their read-only boundary"
 fi
 
+for retired_file in "$ROOT/model-recommendation.sh" \
+        "$ROOT/skills/agy-worker/runtime/model-recommendation.sh" \
+        "$ROOT/skills/agy-worker/runtime/scripts/model-recommendation.py" \
+        "$ROOT/skills/agy-worker/runtime/scripts/recommendation_record.py" \
+        "$ROOT/skills/agy-worker/runtime/schemas/model-recommendation.schema.json"; do
+    if [[ ! -e "$retired_file" && ! -L "$retired_file" ]]; then
+        ok "retired model feature file is absent: ${retired_file##*/}"
+    else
+        bad "retired model feature file is absent: ${retired_file##*/}"
+    fi
+done
+
 if [[ -x "$ROOT/model-selection.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/model-selection.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/model_selection.py" ]]; then
@@ -1699,15 +1711,14 @@ if [[ -x "$ROOT/verify-job.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/verify-job.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/evidence_receipt.py" ]] \
         && [[ -f "$ROOT/skills/agy-worker/runtime/schemas/evidence-receipt.schema.json" ]]; then
-    ok "root and portable packages include Evidence Receipt v1"
+    ok "root and portable packages include Evidence Receipt v2"
 else
-    bad "root and portable packages include Evidence Receipt v1"
+    bad "root and portable packages include Evidence Receipt v2"
 fi
 
 if [[ -x "$ROOT/evidence-report.sh" ]] \
         && [[ -x "$ROOT/skills/agy-worker/runtime/evidence-report.sh" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/evidence_report.py" ]] \
-        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/recommendation_record.py" ]]; then
+        && [[ -x "$ROOT/skills/agy-worker/runtime/scripts/evidence_report.py" ]]; then
     ok "root and portable packages include the pure Evidence Report renderer"
 else
     bad "root and portable packages include the pure Evidence Report renderer"
@@ -1832,7 +1843,6 @@ required_runtime_dependencies=(
     qa-gate.sh
     verify-job.sh
     evidence-report.sh
-    model-recommendation.sh
     model-selection.sh
     doctor.sh
     ground-truth.sh
@@ -1841,8 +1851,6 @@ required_runtime_dependencies=(
     scripts/validate-envelope.py
     scripts/evidence_receipt.py
     scripts/evidence_report.py
-    scripts/recommendation_record.py
-    scripts/model-recommendation.py
     scripts/model_selection.py
     scripts/candidate_state.py
     scripts/agy_dispatch.py
@@ -1857,7 +1865,6 @@ required_runtime_dependencies=(
     schemas/worker-result.provider.schema.json
     schemas/evidence-receipt.schema.json
     schemas/model-selection.schema.json
-    schemas/model-recommendation.schema.json
     schemas/job-state.schema.json
     schemas/delegation-policy.schema.json
 )
@@ -1999,7 +2006,6 @@ for specification in \
     'scripts/validate-envelope.py:executable' \
     'scripts/evidence_receipt.py:executable' \
     'scripts/evidence_report.py:executable' \
-    'scripts/recommendation_record.py:executable' \
     'scripts/candidate_state.py:executable' \
     'scripts/agy_dispatch.py:executable' \
     'scripts/agy_dispatch_worktree.py:data' \
@@ -2199,9 +2205,9 @@ else
 fi
 
 if ci_stage_registered './tests/test-evidence-receipt.sh'; then
-    ok "macOS CI runs the dedicated Evidence Receipt v1 suite"
+    ok "macOS CI runs the dedicated Evidence Receipt v2 suite"
 else
-    bad "macOS CI runs the dedicated Evidence Receipt v1 suite"
+    bad "macOS CI runs the dedicated Evidence Receipt v2 suite"
 fi
 
 if grep -Fq './proof-demo.sh' "$ROOT/README.md" \
@@ -2233,15 +2239,15 @@ def check_schema(value):
     assert value["additionalProperties"] is False
     assert set(value["required"]) == {"schema_version", "kind", "selection_mode", "resolved_agy_model"}
     props = value["properties"]
-    assert props["schema_version"]["const"] == 4
-    assert set(props) == {"schema_version", "kind", "selection_mode", "resolved_agy_model", "selected_tier", "selected_tier_source", "user_model", "user_model_source", "user_effort", "user_effort_source", "installed_agy_version", "probed_executable"}
-    assert set(props["selection_mode"]["enum"]) == {"tier", "exact-model", "model-effort"}
+    assert props["schema_version"]["const"] == 5
+    assert set(props) == {"schema_version", "kind", "selection_mode", "resolved_agy_model", "user_model", "user_model_source", "user_effort", "user_effort_source", "installed_agy_version", "probed_executable"}
+    assert set(props["selection_mode"]["enum"]) == {"agy-default", "exact-model", "model-effort"}
     modes = {v["properties"]["selection_mode"]["const"]: v for v in value["oneOf"]}
-    expected = {"tier": {"selected_tier", "selected_tier_source"}, "exact-model": {"user_model", "user_model_source"}, "model-effort": {"user_model", "user_model_source", "user_effort", "user_effort_source"}}
+    expected = {"agy-default": set(), "exact-model": {"user_model", "user_model_source"}, "model-effort": {"user_model", "user_model_source", "user_effort", "user_effort_source"}}
     selectors = set().union(*expected.values())
     for mode, required in expected.items():
-        assert set(modes[mode]["required"]) == required
-        assert {tuple(x["required"]) for x in modes[mode]["not"]["anyOf"]} == {(key,) for key in selectors - required}
+        assert set(modes[mode].get("required", [])) == required
+        assert {tuple(x["required"]) for x in modes[mode].get("not", {}).get("anyOf", [])} == {(key,) for key in selectors - required}
     assert value["dependencies"] == {"installed_agy_version": ["probed_executable"], "probed_executable": ["installed_agy_version"]}
     binding = props["probed_executable"]
     assert binding["additionalProperties"] is False
@@ -2260,19 +2266,12 @@ def check_schema(value):
         assert set(item["required"]) == set(item["properties"]) == keys
         assert item["properties"]["lstat"] == lstat
     assert props["user_model_source"]["enum"] == props["user_effort_source"]["enum"] == ["cli", "environment"]
-    tier = modes["tier"]["allOf"]
-    assert tier == [
-        {"if": {"required": ["selected_tier"], "properties": {"selected_tier": {"const": "default"}}},
-         "then": {"properties": {"resolved_agy_model": {"type": "null"}}},
-         "else": {"properties": {"resolved_agy_model": {"type": "string", "minLength": 1}}}},
-        {"if": {"required": ["selected_tier_source"], "properties": {"selected_tier_source": {"const": "implicit-default"}}},
-         "then": {"properties": {"selected_tier": {"const": "default"}}}},
-    ]
+    assert modes["agy-default"]["properties"]["resolved_agy_model"] == {"type": "null"}
     for mode in ("exact-model", "model-effort"):
         assert modes[mode]["properties"]["resolved_agy_model"] == {"type": "string", "minLength": 1}
 check_schema(schema)
 mutants = []
-for kind in ("extra", "missing", "forbidden", "dependency", "binding", "lstat", "nested-lstat", "tier", "direct"):
+for kind in ("extra", "missing", "forbidden", "dependency", "binding", "lstat", "nested-lstat", "default", "direct"):
     mutant = copy.deepcopy(schema)
     if kind == "extra": mutant["additionalProperties"] = True
     elif kind == "missing": mutant["oneOf"][2]["required"].remove("user_effort_source")
@@ -2281,7 +2280,7 @@ for kind in ("extra", "missing", "forbidden", "dependency", "binding", "lstat", 
     elif kind == "binding": mutant["properties"]["probed_executable"]["required"].remove("content_sha256")
     elif kind == "lstat": mutant["properties"]["probed_executable"]["properties"]["target_lstat"]["required"].remove("ctime_ns")
     elif kind == "nested-lstat": mutant["properties"]["probed_executable"]["properties"]["components"]["items"]["properties"]["lstat"]["additionalProperties"] = True
-    elif kind == "tier": mutant["oneOf"][0]["allOf"].pop()
+    elif kind == "default": mutant["oneOf"][0]["properties"]["resolved_agy_model"]["type"] = "string"
     else: mutant["oneOf"][1]["properties"].pop("resolved_agy_model")
     mutants.append(mutant)
 for mutant in mutants:
@@ -2290,9 +2289,9 @@ for mutant in mutants:
     raise AssertionError("weakened packaged selection schema was accepted")
 PYSCHEMA
 then
-    ok "selection v4 schema preserves exact choice, provenance, executable pairing and closed fields"
+    ok "selection v5 schema preserves exact choice, provenance, executable pairing and closed fields"
 else
-    bad "selection v4 schema preserves exact choice, provenance, executable pairing and closed fields"
+    bad "selection v5 schema preserves exact choice, provenance, executable pairing and closed fields"
 fi
 
 resolved="$(bash "$ROOT/skills/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
@@ -2305,7 +2304,7 @@ fi
 mkdir -p "$TMP/legacy-claude-only/.claude-plugin" \
     "$TMP/legacy-claude-only/skills"
 cp "$ROOT/agy-worker.sh" "$ROOT/qa-gate.sh" \
-    "$ROOT/model-recommendation.sh" "$TMP/legacy-claude-only/"
+    "$ROOT/model-selection.sh" "$TMP/legacy-claude-only/"
 cp -R "$ROOT/skills/agy-worker" "$TMP/legacy-claude-only/skills/agy-worker"
 printf '{}\n' > "$TMP/legacy-claude-only/.claude-plugin/plugin.json"
 legacy_resolved="$(bash "$TMP/legacy-claude-only/skills/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
@@ -2365,19 +2364,13 @@ fi
 copied_pipeline="$(PATH="$TMP/no-network-bin:$PATH" \
     NETWORK_MARKER="$TMP/network-called" \
     bash "$TMP/skill-folder-copy/agy-worker/scripts/resolve-pipeline.sh" 2>/dev/null)"
-PATH="$TMP/no-network-bin:$PATH" NETWORK_MARKER="$TMP/network-called" \
-    "$copied_pipeline/model-recommendation.sh" --stage pre-dispatch \
-    --selected-tier cheap --evidence bounded-routine \
-    > "$TMP/copied-recommendation.json" 2> "$TMP/copied-recommendation.err"
-rc=$?
-if [[ "$rc" == "0" ]] \
-        && [[ "$copied_pipeline" == "$(cd "$TMP/skill-folder-copy/agy-worker/runtime" && pwd -P)" ]] \
-        && grep -Fq '"recommendation_only": true' "$TMP/copied-recommendation.json" \
-        && grep -Fq '"applied": false' "$TMP/copied-recommendation.json" \
+if [[ "$copied_pipeline" == "$(cd "$TMP/skill-folder-copy/agy-worker/runtime" && pwd -P)" ]] \
+        && [[ ! -e "$copied_pipeline/model-recommendation.sh" ]] \
+        && [[ ! -e "$copied_pipeline/scripts/recommendation_record.py" ]] \
         && [[ ! -e "$TMP/network-called" ]]; then
-    ok "skill-folder-only copy resolves and runs a bounded offline advisory"
+    ok "skill-folder-only copy resolves without removed feature files or network"
 else
-    bad "skill-folder-only copy resolves and runs a bounded offline advisory"
+    bad "skill-folder-only copy readiness"
 fi
 
 mkdir -p "$TMP/portable-receipt-repo" "$TMP/portable-receipts" \
@@ -2445,27 +2438,38 @@ printf '%s\n' '#!/usr/bin/env bash' \
     '  *) exit 97 ;;' \
     'esac' > "$TMP/selector-bin/agy"
 chmod +x "$TMP/selector-bin/agy"
+PATH="$TMP/selector-bin:$PATH" "$copied_pipeline/model-selection.sh" \
+    > "$TMP/copied-default.json" 2> "$TMP/copied-default.err"
+if [[ $? == 0 ]] && python3 -B - "$TMP/copied-default.json" <<'PYDEFAULT'
+import json,sys
+value=json.load(open(sys.argv[1]))
+assert value['schema_version']==5 and value['selection_mode']=='agy-default'
+assert value['resolved_agy_model'] is None and 'probed_executable' in value
+assert not {'user_model','user_effort','selected_tier'} & set(value)
+PYDEFAULT
+then ok "copied runtime binds default selection through fake capability checks"; else bad "copied runtime default selection"; fi
+
 PATH="$TMP/selector-bin:$PATH" NETWORK_MARKER="$TMP/network-called" \
     "$copied_pipeline/model-selection.sh" --model gemini-3.6-flash --effort high \
     > "$TMP/copied-selection.json" 2> "$TMP/copied-selection.err"
 rc=$?
-copied_selection_v4=0
+copied_selection_v5=0
 if python3 -B - "$TMP/copied-selection.json" <<'PY'
 import json
 import sys
 
 record = json.load(open(sys.argv[1], encoding="utf-8"))
-assert record["schema_version"] == 4
+assert record["schema_version"] == 5
 assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(record))
 PY
 then
-    copied_selection_v4=1
+    copied_selection_v5=1
 fi
 if [[ "$rc" == 0 ]] \
         && grep -Fq '"resolved_agy_model": "gemini-3.6-flash"' \
             "$TMP/copied-selection.json" \
         && grep -Fq '"user_effort": "high"' "$TMP/copied-selection.json" \
-        && [[ "$copied_selection_v4" == 1 ]] \
+        && [[ "$copied_selection_v5" == 1 ]] \
         && [[ ! -e "$TMP/network-called" ]]; then
     ok "skill-folder-only copy resolves an exact direct selector offline"
 else
@@ -2477,11 +2481,8 @@ fi
     PATH="$TMP/selector-bin:$PATH" \
         "$copied_pipeline/model-selection.sh" \
         --model gemini-3.6-flash --effort high \
-        > "$TMP/no-spill-selection.json" 2> "$TMP/no-spill-selection.err" \
-    && "$copied_pipeline/model-recommendation.sh" \
-        --stage pre-dispatch --selected-model gemini-3.6-flash \
-        --selected-effort high --evidence bounded-routine \
-        > "$TMP/no-spill-recommendation.json" 2> "$TMP/no-spill-recommendation.err"
+        > "$TMP/no-spill-selection.json" 2> "$TMP/no-spill-selection.err"
+
 )
 no_spill_rc=$?
 if [[ "$no_spill_rc" == 0 ]] \
@@ -2495,9 +2496,9 @@ for root_text in sys.argv[1:]:
     assert not leaked, leaked
 PY
 then
-    ok "normal direct selector and recommendation runs leave no bytecode in public bundles"
+    ok "normal direct selector runs leave no bytecode in public bundles"
 else
-    bad "normal direct selector and recommendation runs leave no bytecode in public bundles"
+    bad "normal direct selector runs leave no bytecode in public bundles"
 fi
 
 mkdir -p "$TMP/incomplete-skill/agy-worker/agents" \
@@ -2720,7 +2721,7 @@ provider_notice_clauses=(
     'The notice must precede every dispatch attempt and remain accurate afterward.'
     'If preflight fails before provider launch, explicitly state that the task was not sent to AGY.'
     'If provider reach is genuinely uncertain, state that it is unverified rather than claiming success.'
-    'Direct model and effort selection remain caller-owned; recommendations are advisory.'
+    'Direct model and effort selection remain caller-owned.'
 )
 
 provider_notice_lifecycle_contract() {
@@ -3147,10 +3148,6 @@ if grep -Fq '## AGY capability requirements' "$ROOT/docs/INSTALLATION.md" \
         && grep -Fq '| `--allow-slash-commands` |' "$ROOT/docs/USAGE.md" \
         && grep -Fq 'Leave slash expansion disabled when any prompt content comes from a repository or' \
             "$ROOT/docs/USAGE.md" \
-        && grep -Fq '| `cheap` | `gemini-3.6-flash-low` |' "$ROOT/docs/USAGE.md" \
-        && grep -Fq '| `hardest` | `claude-opus-4-6-thinking` |' "$ROOT/docs/USAGE.md" \
-        && grep -Fq './model-recommendation.sh --stage pre-dispatch' "$ROOT/docs/USAGE.md" \
-        && grep -Fq './model-recommendation.sh --stage post-gate' "$ROOT/docs/USAGE.md" \
         && grep -Fq 'symbolic launcher `"$PIPELINE/agy-worker.sh"`; export `PIPELINE` before copying it.' \
             "$ROOT/docs/PROJECT_WORKFLOW.md" \
         && grep -Fq 'deterministic state, worktree, and branch bindings under an owner-private' "$ROOT/docs/PROJECT_WORKFLOW.md" \

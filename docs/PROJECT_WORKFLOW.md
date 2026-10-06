@@ -156,8 +156,7 @@ The following surfaces were removed after v0.22.0:
 | `--boost`, `--approve-boost-risk-sha`, and `--persona` | Use an ordinary workflow with the task instructions in its prompt; these flags fail with “removed after v0.22.0” and grant no replacement authority |
 
 Advanced dispatcher and job lifecycle commands still use `--approve-state-sha`.
-Named tiers and raw dispatch remain supported; their legacy naming is unrelated to
-retired on-disk job formats. Historical release notes describe their released trees,
+Raw dispatch remains supported; historical release notes describe their released trees,
 not support in this agy-worker release.
 
 ## Quality and command boundary
@@ -513,10 +512,8 @@ RECEIPT_DIR="$(mktemp -d -t agyworker-receipts.XXXXXX)"
   --verify-argv '["/usr/bin/git","diff","--check"]'
 ```
 
-`--selection FILE` may bind one validated current selection record.
-`--pre-recommendation FILE` may bind one canonical pre-dispatch advisory. Both are
-optional and accepted at most once. The command never discovers `logs/`, creates a
-recommendation, or applies one.
+`--selection FILE` may bind one validated current selection record. It is optional and
+accepted at most once. The command never discovers `logs/` or changes dispatch selection.
 
 The receipt maps gate `0` to `gate-passed`, exits `10`–`14` to `rejected`, and exit
 `15` to `routed`, then returns that exact exit only after durable no-overwrite

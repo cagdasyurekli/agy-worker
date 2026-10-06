@@ -90,8 +90,8 @@ copied across README and task guides.
   guaranteed ranking, provider quality, or task quality.
 - Keep offline-test, fixture-conformance, green-gate, and exit-code claims narrow. A
   check proves only its exercised contract.
-- Model and effort choices remain caller-owned. Avoid static model badges and transient
-  model recommendations in the README.
+- Model and effort choices remain caller-owned. Avoid static model badges and claims
+  based on transient model catalogs in the README.
 
 ## Keep private and campaign artifacts out of public docs
 

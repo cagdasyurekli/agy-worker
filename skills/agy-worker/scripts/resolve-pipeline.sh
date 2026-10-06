@@ -26,7 +26,7 @@ is_pipeline() {
     fi
     pipeline_runtime_complete "$runtime_root" || return 1
 
-    for required in workflow.sh agy-worker.sh qa-gate.sh verify-job.sh evidence-report.sh model-recommendation.sh model-selection.sh doctor.sh ground-truth.sh delegation-policy.sh; do
+    for required in workflow.sh agy-worker.sh qa-gate.sh verify-job.sh evidence-report.sh model-selection.sh doctor.sh ground-truth.sh delegation-policy.sh; do
         [[ -f "$pipeline_root/$required" && -x "$pipeline_root/$required" \
             && ! -L "$pipeline_root/$required" ]] || return 1
     done
@@ -57,7 +57,6 @@ pipeline_runtime_complete() {
         qa-gate.sh \
         verify-job.sh \
         evidence-report.sh \
-        model-recommendation.sh \
         model-selection.sh \
         doctor.sh \
         ground-truth.sh \
@@ -66,8 +65,6 @@ pipeline_runtime_complete() {
         scripts/validate-envelope.py \
         scripts/evidence_receipt.py \
         scripts/evidence_report.py \
-        scripts/recommendation_record.py \
-        scripts/model-recommendation.py \
         scripts/model_selection.py \
         scripts/candidate_state.py \
         scripts/agy_dispatch.py \
@@ -99,7 +96,6 @@ pipeline_runtime_complete() {
         schemas/worker-result.provider.schema.json \
         schemas/evidence-receipt.schema.json \
         schemas/model-selection.schema.json \
-        schemas/model-recommendation.schema.json \
         schemas/job-state.schema.json \
         schemas/delegation-policy.schema.json; do
         dependency_parent="${required%/*}"

@@ -61,8 +61,8 @@ Exclude secrets, denied paths and unrelated private content from every approved 
 
 Keep raw logs and controller state outside the worktree and prompts. Each launch
 requires capability preflight and immediate executable-binding recheck. Model and
-effort stay caller-owned; recommendations are advisory. Child environment opt-ins
-require approval per variable name. Installation grants no provider or Git authority.
+effort stay caller-owned. Child environment opt-ins require approval per variable
+name. Installation grants no provider or Git authority.
 
 Read [Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md) before a
 first live dispatch or changing execution exposure. It owns native network/Keychain

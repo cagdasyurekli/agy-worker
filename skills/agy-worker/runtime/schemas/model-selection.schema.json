@@ -12,7 +12,7 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 4
+      "const": 5
     },
     "kind": {
       "type": "string",
@@ -21,21 +21,9 @@
     "selection_mode": {
       "type": "string",
       "enum": [
-        "tier",
+        "agy-default",
         "exact-model",
         "model-effort"
-      ]
-    },
-    "selected_tier": {
-      "type": "string",
-      "minLength": 1
-    },
-    "selected_tier_source": {
-      "type": "string",
-      "enum": [
-        "cli",
-        "environment",
-        "implicit-default"
       ]
     },
     "user_model": {
@@ -290,25 +278,14 @@
     {
       "properties": {
         "selection_mode": {
-          "const": "tier"
+          "const": "agy-default"
+        },
+        "resolved_agy_model": {
+          "type": "null"
         }
       },
-      "required": [
-        "selected_tier",
-        "selected_tier_source"
-      ],
       "not": {
         "anyOf": [
-          {
-            "required": [
-              "user_effort"
-            ]
-          },
-          {
-            "required": [
-              "user_effort_source"
-            ]
-          },
           {
             "required": [
               "user_model"
@@ -318,57 +295,19 @@
             "required": [
               "user_model_source"
             ]
+          },
+          {
+            "required": [
+              "user_effort"
+            ]
+          },
+          {
+            "required": [
+              "user_effort_source"
+            ]
           }
         ]
-      },
-      "allOf": [
-        {
-          "if": {
-            "required": [
-              "selected_tier"
-            ],
-            "properties": {
-              "selected_tier": {
-                "const": "default"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "resolved_agy_model": {
-                "type": "null"
-              }
-            }
-          },
-          "else": {
-            "properties": {
-              "resolved_agy_model": {
-                "type": "string",
-                "minLength": 1
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "required": [
-              "selected_tier_source"
-            ],
-            "properties": {
-              "selected_tier_source": {
-                "const": "implicit-default"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "selected_tier": {
-                "const": "default"
-              }
-            }
-          }
-        }
-      ]
+      }
     },
     {
       "properties": {
@@ -386,16 +325,6 @@
       ],
       "not": {
         "anyOf": [
-          {
-            "required": [
-              "selected_tier"
-            ]
-          },
-          {
-            "required": [
-              "selected_tier_source"
-            ]
-          },
           {
             "required": [
               "user_effort"
@@ -424,21 +353,7 @@
         "user_model_source",
         "user_effort",
         "user_effort_source"
-      ],
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "selected_tier"
-            ]
-          },
-          {
-            "required": [
-              "selected_tier_source"
-            ]
-          }
-        ]
-      }
+      ]
     }
   ],
   "dependencies": {

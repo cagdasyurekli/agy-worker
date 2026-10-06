@@ -545,7 +545,7 @@ check("preserve instructions reject unverified state", lambda: run_cli("preserve
 
 original = fixture.value()
 legacy = dict(original); legacy.pop("dispatch")
-check("pre-feature schema-v1 lifecycle states remain readable", lambda: MODULE.validate_state(legacy) is legacy)
+check("current lifecycle rejects missing dispatch", lambda: rejects(lambda: MODULE.validate_state(legacy)))
 mutated = dict(original); mutated["previous_state_sha256"] = None
 check("state history rejects a missing digest after sequence one", lambda: rejects(lambda: MODULE.validate_state(mutated)))
 mutated = dict(original); mutated["branch_ref"] = "refs/heads/other"
@@ -559,31 +559,55 @@ check("state rejects noncanonical bound paths", lambda: rejects(lambda: MODULE.v
 facade_schema = Fixture("facade-schema")
 assert facade_schema.init(facade_created=True).returncode == 0
 facade_schema_value = facade_schema.value()
+for subject in (fixture, facade_schema):
+    current_bytes = subject.state.read_bytes()
+    current_value = subject.value()
+    assert MODULE.validate_state(current_value) == current_value and current_value["dispatch"] is None
+    for old_version in (1, 2):
+        subject.state.write_bytes(canonical(dict(current_value, schema_version=old_version)))
+        rejected_bytes = subject.state.read_bytes()
+        before_refs = git(subject.repo, "show-ref")
+        for command in ("status", "preserve-instructions"):
+            rejected_result = run_cli(command, "--state", str(subject.state))
+            check(f"old ready job{old_version} {command} rejects with no resource changes",
+                  lambda result=rejected_result, subject=subject, rejected_bytes=rejected_bytes, before_refs=before_refs: result.returncode == 64
+                  and b"finish or discard" in result.stderr
+                  and subject.state.read_bytes() == rejected_bytes
+                  and subject.worktree.exists() and git(subject.repo, "show-ref") == before_refs)
+    subject.state.write_bytes(current_bytes)
+
+for current_state in (original, facade_schema_value):
+    assert MODULE.validate_state(current_state) == current_state
+    for version in (1, 2, True, False, 3.0, 4.0):
+        retired = dict(current_state, schema_version=version)
+        check(f"lifecycle rejects retired or noninteger version {version!r}",
+              lambda retired=retired: rejects(lambda: MODULE.validate_state(retired)))
+
 check(
-    "facade init creates exact schema-v2 origin without changing low-level schema-v1",
+    "facade init creates exact schema-v4 origin without changing low-level schema-v3",
     lambda: (
-        facade_schema_value["schema_version"] == 2
+        facade_schema_value["schema_version"] == 4
         and facade_schema_value["origin"] == "workflow-facade"
         and facade_schema_value["dispatch_job_dir"] == str(
             facade_schema.root / "dispatch-job"
         )
-        and original["schema_version"] == 1
+        and original["schema_version"] == 3
         and "origin" not in original
     ),
 )
 check(
-    "validator reads facade schema-v2 state without migration",
+    "validator reads facade schema-v4 state without migration",
     lambda: MODULE.validate_state(facade_schema_value) is facade_schema_value,
 )
 invalid_facade = dict(facade_schema_value); invalid_facade["origin"] = "other"
 check(
-    "schema-v2 state requires the exact workflow facade origin",
+    "schema-v4 state requires the exact workflow facade origin",
     lambda: rejects(lambda: MODULE.validate_state(invalid_facade)),
 )
 missing_dispatch_binding = dict(facade_schema_value)
 missing_dispatch_binding.pop("dispatch_job_dir")
 check(
-    "schema-v2 state requires the exact dispatch job directory binding",
+    "schema-v4 state requires the exact dispatch job directory binding",
     lambda: rejects(lambda: MODULE.validate_state(missing_dispatch_binding)),
 )
 clean_fixture(facade_schema)
@@ -592,7 +616,7 @@ clean_fixture(facade_schema)
 rollback_v1 = Fixture("rollback-v1")
 assert rollback_v1.init().returncode == 0
 check(
-    "rollback-ready refuses non-facade schema-v1 lifecycle state",
+    "rollback-ready refuses non-facade schema-v3 lifecycle state",
     lambda: (
         rollback_v1.rollback().returncode == 64
         and rollback_v1.state.exists()
@@ -897,6 +921,14 @@ check("cleanup rejects stale state approval", lambda: fixture.cleanup(state_sha=
 check("cleanup rejects wrong candidate approval", lambda: fixture.cleanup(candidate="0" * 64).returncode == 64)
 
 receipt_bytes = fixture.receipt.read_bytes()
+receipt_value = json.loads(receipt_bytes)
+assert MODULE._receipt_binding(fixture.receipt, receipt_value["gate_exit"], fixture.base)
+for field in ("pre_dispatch_recommendation", "recommendations_participated_in_acceptance"):
+    for inert in (False, None, {}, ""):
+        fixture.receipt.write_bytes(canonical(dict(receipt_value, **{field: inert})))
+        check(f"lifecycle consumption rejects removed {field}={inert!r}",
+              lambda: rejects(lambda: MODULE._receipt_binding(fixture.receipt, receipt_value["gate_exit"], fixture.base)))
+fixture.receipt.write_bytes(receipt_bytes)
 fixture.receipt.write_bytes(receipt_bytes + b" ")
 check("cleanup rejects mutated receipt bytes", lambda: fixture.cleanup().returncode == 64)
 fixture.receipt.write_bytes(receipt_bytes); fixture.receipt.chmod(0o600)

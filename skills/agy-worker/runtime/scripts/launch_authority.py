@@ -17,7 +17,7 @@ MAX_TASK_BYTES = 8 * 1024 * 1024
 AUTHORITY_FIELDS = {
     "kind", "content", "task_sha256", "full_prompt_sha256", "workspace_template_sha256", "base_commit", "workdir",
     "staged_instruction_template_sha256", "workflow", "mode", "max_cycles",
-    "idle_seconds", "hard_seconds", "max_seconds", "notice_seconds", "tier", "model",
+    "idle_seconds", "hard_seconds", "max_seconds", "notice_seconds", "model",
     "effort", "allow_scoped_repair", "self_verification_manifest_sha256",
     "provider_env_names", "allow_slash_commands", "add_dirs", "provider_schema_sha256",
 }
@@ -155,7 +155,7 @@ def build_authority(
     *, content: dict[str, str | None], task: bytes, prompt: bytes,
     workflow: str, mode: str, max_cycles: int,
     idle_seconds: int | float, hard_seconds: int | float, max_seconds: int | float, notice_seconds: int | float,
-    tier: str | None, model: str | None, effort: str | None,
+    model: str | None, effort: str | None,
     allow_scoped_repair: bool, self_verification_manifest_sha256: str | None,
     provider_env_names: list[str], allow_slash_commands: bool,
     add_dirs: list[str], provider_schema_sha256: str, base_commit: str | None, workdir: str,
@@ -166,7 +166,7 @@ def build_authority(
     if add_dirs != sorted(set(add_dirs)):
         raise LaunchAuthorityError("additional directories are not canonical")
     return {
-        "kind": "agy-worker-launch-authority-v1",
+        "kind": "agy-worker-launch-authority-v2",
         "content": content,
         "task_sha256": sha256(task),
         "full_prompt_sha256": sha256(prompt),
@@ -181,7 +181,6 @@ def build_authority(
         "hard_seconds": hard_seconds,
         "max_seconds": max_seconds,
         "notice_seconds": notice_seconds,
-        "tier": tier,
         "model": model,
         "effort": effort,
         "allow_scoped_repair": allow_scoped_repair,
@@ -194,7 +193,7 @@ def build_authority(
 
 
 def approval_sha256(authority: dict[str, Any]) -> str:
-    if authority.get("kind") != "agy-worker-launch-authority-v1" or set(authority) != AUTHORITY_FIELDS:
+    if authority.get("kind") != "agy-worker-launch-authority-v2" or set(authority) != AUTHORITY_FIELDS:
         raise LaunchAuthorityError("launch authority kind is invalid")
     if not isinstance(authority["workdir"], str) or not authority["workdir"].startswith("/") or "\0" in authority["workdir"]:
         raise LaunchAuthorityError("launch authority destination is invalid")
@@ -217,10 +216,12 @@ def approval_sha256(authority: dict[str, Any]) -> str:
             raise LaunchAuthorityError("launch authority budget is invalid")
     if authority["workflow"] not in {"legacy", "explore", "task", "project"} or authority["mode"] not in {"plan", "accept-edits"}:
         raise LaunchAuthorityError("launch authority workflow is invalid")
-    for key in ("tier", "model", "effort"):
+    for key in ("model", "effort"):
         value = authority[key]
         if value is not None and (not isinstance(value, str) or not value or "\0" in value):
             raise LaunchAuthorityError("launch authority selector is invalid")
+    if authority["model"] is None and authority["effort"] is not None:
+        raise LaunchAuthorityError("launch authority effort requires model")
     for key in ("provider_env_names", "add_dirs"):
         value = authority[key]
         if (not isinstance(value, list) or any(not isinstance(item, str) for item in value)
@@ -243,7 +244,7 @@ def approval_sha256(authority: dict[str, Any]) -> str:
 def changed_field(expected: dict[str, Any], actual: dict[str, Any]) -> str | None:
     # Report the caller's changed selector before its derived prompt digest.
     order = ["task_sha256", "self_verification_manifest_sha256", "allow_scoped_repair",
-             "model", "effort", "tier", "mode", "workflow", "max_cycles"]
+             "model", "effort", "mode", "workflow", "max_cycles"]
     for field in order + sorted((expected.keys() | actual.keys()) - set(order)):
         if expected.get(field) != actual.get(field):
             if field == "content" and isinstance(expected.get(field), dict) and isinstance(actual.get(field), dict):
@@ -336,7 +337,7 @@ def preview_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workflow", choices=("legacy", "explore", "task", "project"), default="legacy")
     parser.add_argument("--mode", choices=("plan", "accept-edits"))
     parser.add_argument("--max-cycles", type=int)
-    for flag in ("tier", "model", "effort", "idle-timeout", "hard-timeout", "max-runtime", "notice-interval"):
+    for flag in ("model", "effort", "idle-timeout", "hard-timeout", "max-runtime", "notice-interval"):
         parser.add_argument(f"--{flag}")
     parser.add_argument("--allow-scoped-repair", action="store_true")
     parser.add_argument("--self-verification-manifest")
@@ -351,9 +352,11 @@ def preview_parser() -> argparse.ArgumentParser:
 def preview_authority(result: dict[str, Any], args: argparse.Namespace,
                       task_raw: bytes, *, use_environment: bool = True) -> tuple[dict[str, Any], str]:
     import agy_dispatch_verification as verification
-    import model_selection
     import candidate_state
+    import model_selection
     environment_values = os.environ if use_environment else {}
+    if environment_values.get("AGY_WORKER_TIER"):
+        raise LaunchAuthorityError("AGY_WORKER_TIER is retired; use --model / AGY_WORKER_MODEL")
 
     task, task_text = normalize_task(task_raw)
     workflow = args.workflow
@@ -366,21 +369,17 @@ def preview_authority(result: dict[str, Any], args: argparse.Namespace,
     if not 1 <= cycles <= maximum_cycles:
         raise LaunchAuthorityError("max_cycles is invalid")
     selectors: dict[str, str | None] = {}
-    for name in ("tier", "model", "effort"):
+    for name in ("model", "effort"):
         explicit = getattr(args, name)
         environment = environment_values.get(f"AGY_WORKER_{name.upper()}")
         if explicit is not None and environment is not None:
             raise LaunchAuthorityError(f"{name} has conflicting sources")
         selectors[name] = explicit if explicit is not None else environment
-    tier, model, effort = selectors["tier"], selectors["model"], selectors["effort"]
-    if tier is not None and (model is not None or effort is not None):
-        raise LaunchAuthorityError("tier conflicts with model or effort")
+    model, effort = selectors["model"], selectors["effort"]
     if effort is not None and model is None:
         raise LaunchAuthorityError("effort requires model")
-    if tier is not None:
-        model = None if tier == "default" else model_selection.TIER_MODEL_BY_NAME.get(tier, tier)
     if any(value is not None and (not value or value.strip() != value or "\0" in value)
-           for value in (tier, model, effort)):
+           for value in (model, effort)):
         raise LaunchAuthorityError("model selector is invalid")
     timeouts = {}
     for field, option, environment, default in (
@@ -454,7 +453,7 @@ def preview_authority(result: dict[str, Any], args: argparse.Namespace,
                          verification_block=block)
     authority = build_authority(
         content=content, task=task, prompt=prompt, workflow=workflow, mode=mode,
-        max_cycles=cycles, **timeouts, tier=tier, model=model, effort=effort,
+        max_cycles=cycles, **timeouts, model=model, effort=effort,
         allow_scoped_repair=args.allow_scoped_repair,
         self_verification_manifest_sha256=manifest_sha, provider_env_names=names,
         allow_slash_commands=args.allow_slash_commands and mode == "accept-edits", add_dirs=sorted(set(add_dirs)),

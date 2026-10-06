@@ -4428,7 +4428,7 @@ with tempfile.TemporaryDirectory() as temporary:
             "symlink_chain": [], "components": [],
         })
         document = json.loads(schema.read_text())
-        assert document["properties"]["schema_version"]["const"] == 4
+        assert document["properties"]["schema_version"]["const"] == 5
         binding = document["properties"]["probed_executable"]
         assert "content_sha256" in binding["required"]
         assert "ctime_ns" in binding["properties"]["target_lstat"]["required"]

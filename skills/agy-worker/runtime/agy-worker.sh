@@ -18,6 +18,11 @@
 #   * Therefore: exit code 0 proves nothing. Empty stdout is a FAILURE. See classify().
 set -euo pipefail
 
+if [[ -n "${AGY_WORKER_TIER:-}" ]]; then
+    echo "agy-worker.sh: AGY_WORKER_TIER is retired; use --model / AGY_WORKER_MODEL" >&2
+    exit 64
+fi
+
 
 # Prompts, streams, stderr, and envelopes can contain private repository content.
 # Create dispatcher-owned artifacts under a private mask regardless of the caller's
@@ -40,10 +45,9 @@ LOG_DIR="${AGY_WORKER_LOG_DIR:-$SCRIPT_DIR/logs}"
 
 # Selector values are presence-sensitive. An explicitly empty environment variable
 # is not the same as an unset one, and CLI never silently overrides environment.
-tier_env_seen=0; tier_env_value=""
 model_env_seen=0; model_env_value=""
 effort_env_seen=0; effort_env_value=""
-if [[ -n "${AGY_WORKER_TIER+x}" ]]; then tier_env_seen=1; tier_env_value="$AGY_WORKER_TIER"; fi
+
 if [[ -n "${AGY_WORKER_MODEL+x}" ]]; then model_env_seen=1; model_env_value="$AGY_WORKER_MODEL"; fi
 if [[ -n "${AGY_WORKER_EFFORT+x}" ]]; then effort_env_seen=1; effort_env_value="$AGY_WORKER_EFFORT"; fi
 mode_env_seen=0; mode_env_value=""
@@ -114,7 +118,6 @@ usage() {
     cat >&2 <<'EOF'
 usage: agy-worker.sh [--workdir DIR] [--mode plan|accept-edits]
                      [--workflow explore|task|project] [--max-cycles N]
-                     [--tier bulk|cheap|hard|hardest|default|MODEL]
                      [--model MODEL [--effort EFFORT]]
                      [--idle-timeout 10m] [--hard-timeout 2h]
                      [--max-runtime 12h] [--notice-interval 30m]
@@ -291,7 +294,6 @@ workflow=""
 max_cycles=""
 workflow_cli_seen=0; max_cycles_cli_seen=0; mode_cli_seen=0
 extra_dirs=()
-tier_cli_seen=0; tier_cli_value=""
 model_cli_seen=0; model_cli_value=""
 effort_cli_seen=0; effort_cli_value=""
 idle_cli_seen=0; hard_cli_seen=0; max_cli_seen=0; notice_cli_seen=0
@@ -326,10 +328,6 @@ while [[ $# -gt 0 ]]; do
         --max-cycles)
             [[ $# -ge 2 && $max_cycles_cli_seen -eq 0 ]] || usage
             max_cycles_cli_seen=1; max_cycles="$2"; shift 2 ;;
-        --tier)
-            [[ $# -ge 2 ]] || usage
-            (( tier_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --tier" >&2; exit 64; }
-            tier_cli_seen=1; tier_cli_value="$2"; shift 2 ;;
         --model)
             [[ $# -ge 2 ]] || usage
             (( model_cli_seen == 0 )) || { echo "agy-worker.sh: repeated --model" >&2; exit 64; }
@@ -490,34 +488,21 @@ if (( legacy_timeout_seen )); then
     echo "agy-worker.sh: warning: AGY_WORKER_TIMEOUT is deprecated; use --hard-timeout" >&2
 fi
 
-(( tier_cli_seen == 0 || tier_env_seen == 0 )) || {
-    echo "agy-worker.sh: --tier conflicts with AGY_WORKER_TIER" >&2; exit 64;
-}
 (( model_cli_seen == 0 || model_env_seen == 0 )) || {
     echo "agy-worker.sh: --model conflicts with AGY_WORKER_MODEL" >&2; exit 64;
 }
 (( effort_cli_seen == 0 || effort_env_seen == 0 )) || {
     echo "agy-worker.sh: --effort conflicts with AGY_WORKER_EFFORT" >&2; exit 64;
 }
-tier_seen=$((tier_cli_seen + tier_env_seen))
 model_seen=$((model_cli_seen + model_env_seen))
 effort_seen=$((effort_cli_seen + effort_env_seen))
 
-if (( tier_seen > 0 && (model_seen > 0 || effort_seen > 0) )); then
-    echo "agy-worker.sh: explicit tier and model/effort selectors are mutually exclusive" >&2
-    exit 64
-fi
 if (( effort_seen > 0 && model_seen == 0 )); then
     echo "agy-worker.sh: effort requires an explicit base model" >&2
     exit 64
 fi
 
-if (( tier_seen > 0 )); then
-    if (( tier_cli_seen )); then tier="$tier_cli_value"; tier_source="cli"
-    else tier="$tier_env_value"; tier_source="environment"; fi
-    [[ -n "$tier" ]] || { echo "agy-worker.sh: explicit tier must not be empty" >&2; exit 64; }
-    selection_kind="tier"
-elif (( model_seen > 0 )); then
+if (( model_seen > 0 )); then
     if (( model_cli_seen )); then user_model="$model_cli_value"; model_source="cli"
     else user_model="$model_env_value"; model_source="environment"; fi
     [[ -n "$user_model" ]] || { echo "agy-worker.sh: explicit model must not be empty" >&2; exit 64; }
@@ -529,7 +514,7 @@ elif (( model_seen > 0 )); then
     fi
     selection_kind="model"
 else
-    tier="default"; tier_source="implicit-default"; selection_kind="tier"
+    selection_kind="agy-default"
 fi
 
 case "$workflow" in
@@ -895,8 +880,7 @@ staged_dir="$job_dir/staged"
 staged_prompt_file="$staged_dir/full-prompt.txt"
 selection_file="$job_dir/selection.json"
 
-# Resolve once before consuming the task. New direct selectors validate the exact
-# capability probe; convenience tiers preserve their documented mapping.
+# Resolve once before consuming the task; every selection shares capability checks.
 selection_args=(--output "$selection_file" --provider-isolation "$provider_isolation")
 child_env_args=()
 for provider_env_name in ${provider_env+"${provider_env[@]}"}; do
@@ -905,9 +889,7 @@ done
 if (( ${#child_env_args[@]} )); then
     selection_args+=("${child_env_args[@]}")
 fi
-if [[ "$selection_kind" == "tier" ]]; then
-    selection_args+=(--tier "$tier" --tier-source "$tier_source")
-else
+if [[ "$selection_kind" == "model" ]]; then
     selection_args+=(--model "$user_model" --model-source "$model_source")
     if [[ -n "$user_effort" ]]; then
         selection_args+=(--effort "$user_effort" --effort-source "$effort_source")
@@ -1145,7 +1127,6 @@ launch_preview_args=(transmission-preview --workdir "$workdir"
 [[ -z "$self_verification_manifest_file" ]] || \
     launch_preview_args+=(--self-verification-manifest "$self_verification_manifest_file")
 (( disable_slash )) || launch_preview_args+=(--allow-slash-commands)
-(( tier_cli_seen == 0 )) || launch_preview_args+=(--tier "$tier_cli_value")
 (( model_cli_seen == 0 )) || launch_preview_args+=(--model "$model_cli_value")
 (( effort_cli_seen == 0 )) || launch_preview_args+=(--effort "$effort_cli_value")
 for provider_env_name in ${provider_env+"${provider_env[@]}"}; do

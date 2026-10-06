@@ -24,7 +24,6 @@ sys.dont_write_bytecode = True
 
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 SOURCE_NAMES = ("cli", "environment")
-TIER_SOURCES = ("cli", "environment", "implicit-default")
 CHILD_ENV_BASE = ("HOME", "PATH", "TMPDIR", "LANG", "LANGUAGE")
 CHILD_ENV_LOCALES = (
     "LC_ALL", "LC_CTYPE", "LC_NUMERIC", "LC_TIME", "LC_COLLATE",
@@ -52,12 +51,6 @@ POLICY_FILE_LIMIT = 256 * 1024
 # finite pre-task hashing bound while leaving enough room for a near-term
 # executable growth without weakening the descriptor identity checks.
 EXECUTABLE_CONTENT_LIMIT = 512 * 1024 * 1024
-TIER_MODEL_BY_NAME = {
-    "bulk": "gemini-3.6-flash-medium",
-    "cheap": "gemini-3.6-flash-low",
-    "hard": "gemini-3.1-pro-high",
-    "hardest": "claude-opus-4-6-thinking",
-}
 
 
 def validate_child_environment_names(names: list[str]) -> list[str]:
@@ -86,7 +79,7 @@ def child_environment(
     if force_c_locale:
         environment["LC_ALL"] = "C"
     return environment
-SELECTION_SCHEMA = 4
+SELECTION_SCHEMA = 5
 COMMON_RECORD_FIELDS = {"schema_version", "kind", "selection_mode", "resolved_agy_model"}
 PROBE_FIELDS = {"installed_agy_version", "probed_executable"}
 REQUIRED_AGY_CAPABILITIES = (
@@ -596,17 +589,6 @@ def resolve_selection(
     return bind_selection(record, provider_isolation=provider_isolation) if probe_version else record
 
 
-def resolve_tier_selection(tier: str, source: str) -> dict[str, Any]:
-    transport_value(tier, "--tier")
-    if source not in TIER_SOURCES or (source == "implicit-default" and tier != "default"):
-        raise CallerError("tier provenance is invalid")
-    return {
-        "schema_version": SELECTION_SCHEMA, "kind": "agy-worker-selection", "selection_mode": "tier",
-        "selected_tier": tier, "selected_tier_source": source,
-        "resolved_agy_model": None if tier == "default" else TIER_MODEL_BY_NAME.get(tier, tier),
-    }
-
-
 def require_exact_fields(record: dict[str, Any], expected: set[str]) -> None:
     actual = set(record)
     if actual != expected:
@@ -700,9 +682,9 @@ def validate_selection_record_shape(record: dict[str, Any]) -> None:
         raise CallerError("selection record kind is invalid")
     mode = record.get("selection_mode")
     fields = set(COMMON_RECORD_FIELDS)
-    if mode == "tier":
-        fields |= {"selected_tier", "selected_tier_source"}
-        expected = resolve_tier_selection(require_string(record, "selected_tier"), require_string(record, "selected_tier_source"))
+    if mode == "agy-default":
+        expected = {"schema_version": SELECTION_SCHEMA, "kind": "agy-worker-selection",
+                    "selection_mode": "agy-default", "resolved_agy_model": None}
     elif mode in {"exact-model", "model-effort"}:
         fields |= {"user_model", "user_model_source"}
         if mode == "model-effort":
@@ -859,7 +841,7 @@ def publish_record(path: Path, record: dict[str, Any]) -> None:
 
 def build_parser() -> UsageParser:
     parser = UsageParser(prog="model-selection.sh")
-    for name in ("tier", "tier-source", "model", "effort", "model-source", "effort-source", "provider-isolation", "output", "validate-record", "verify-record-executable"):
+    for name in ("model", "effort", "model-source", "effort-source", "provider-isolation", "output", "validate-record", "verify-record-executable"):
         parser.add_argument("--" + name, action="append")
     observation = parser.add_mutually_exclusive_group()
     observation.add_argument("--observe-installed-version", action="store_true")
@@ -900,20 +882,16 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
         provider_isolation = get("provider_isolation") or "session"
         required_agy_capabilities(provider_isolation=provider_isolation)
-        tier, model, effort = get("tier"), get("model"), get("effort")
-        if sum(value is not None for value in (tier, model)) != 1:
-            parser.error("exactly one of --tier or --model is required")
-        if tier is not None:
+        model, effort = get("model"), get("effort")
+        if model is None:
             if effort is not None or get("model_source") or get("effort_source"):
-                parser.error("--tier conflicts with model/effort inputs")
-            record = bind_selection(
-                resolve_tier_selection(tier, get("tier_source") or "cli"),
-                provider_isolation=provider_isolation,
-            )
+                parser.error("effort and provenance require --model")
+            record = bind_selection({
+                "schema_version": SELECTION_SCHEMA, "kind": "agy-worker-selection",
+                "selection_mode": "agy-default", "resolved_agy_model": None,
+            }, provider_isolation=provider_isolation)
         else:
-            if get("tier_source"):
-                parser.error("--tier-source requires --tier")
-            record = resolve_selection(model or "", effort, get("model_source") or "cli",
+            record = resolve_selection(model, effort, get("model_source") or "cli",
                 (get("effort_source") or "cli") if effort is not None else get("effort_source"),
                 probe_version=True, provider_isolation=provider_isolation)
         if get("output"):
