@@ -760,7 +760,7 @@ def _delegation_from_dispatch(
     elif reason in {
         "provider_terminal_error", "provider_timeout", "agy_failed_unclassified",
         "provider_unavailable", "authentication_failed", "provider_terminal_cancelled",
-        "idle_timeout", "hard_deadline_exceeded",
+        "idle_timeout", "hard_deadline_exceeded", "model_selection_rejected",
     }:
         preflight_passed, provider_state = True, "unavailable"
     elif status == "succeeded":
@@ -1701,6 +1701,8 @@ def _workflow_status(args: argparse.Namespace) -> int:
             dispatch_raw = dispatch_facts.get("state_sha256") if dispatch_facts else None
             dispatch_sha = dispatch_raw if isinstance(dispatch_raw, str) else "none"
             line2 = f"dispatch: status={disp} phase={phase} state={dispatch_sha[:12] if dispatch_sha != 'none' else 'none'} candidate={cand[:12] if cand != 'none' else 'none'}"
+            if dispatch_facts and dispatch_facts.get("reason") == "model_selection_rejected":
+                line2 += " " + DISPATCH.MODEL_SELECTION_REJECTED_MESSAGE
             verdict = verification_facts.get("verdict", "unverified") if verification_facts else "unverified"
             assurance = dispatch_facts.get("assurance") if dispatch_facts else "none"
             line3 = f"verification: verdict={verdict} assurance={assurance or 'none'}"
@@ -1798,6 +1800,11 @@ def _dispatcher_status(
         "kind": KIND_WORKFLOW_STATUS,
         "source_kind": "dispatcher",
         "job_id": job_id,
+        "reason": facts.get("reason"),
+        "reason_message": (
+            DISPATCH.MODEL_SELECTION_REJECTED_MESSAGE
+            if facts.get("reason") == "model_selection_rejected" else None
+        ),
         "phase": facts.get("phase"),
         "controller_phase": facts.get("controller_phase"),
         "available_actions": facts.get("available_actions", []),
@@ -1820,6 +1827,8 @@ def _dispatcher_status(
             f"phase: {result['controller_phase'] or result['phase']}\n"
             f"advanced-recovery: actions={','.join(action_names)} via agy-worker.sh\n"
         )
+        if result["reason_message"]:
+            sys.stdout.write(result["reason_message"] + "\n")
     return 0
 
 
