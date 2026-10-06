@@ -728,7 +728,10 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
     arguments = iter(value["argv"][1:])
     for argument in arguments:
         option = argument.partition("=")[0]
-        if option in {"--agent", "--boost", "--approve-boost-risk-sha", "--persona"}:
+        if option in {
+            "--agent", "--boost", "--approve-boost-risk-sha", "--persona",
+            "--remote-control", "--input-format", "--project", "--new-project",
+        }:
             raise DispatchError("dispatch argv contains a retired feature")
         if "=" not in argument and option in {
             "--print", "--model", "--mode", "--json-schema", "--add-dir",

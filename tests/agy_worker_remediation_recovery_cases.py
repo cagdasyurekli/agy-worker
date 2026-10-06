@@ -218,7 +218,12 @@ def run(context: dict[str, object]) -> None:
     def current_commands_reject_retired_feature_authority() -> None:
         job, _state, _sha, _envelope = current_candidate_fixture("retired-authority")
         original = json.loads((job / MODULE.COMMAND_NAME).read_bytes())
-        for flag in ("--agent", "--boost", "--approve-boost-risk-sha", "--persona"):
+        forbidden_flags = (
+            "--agent", "--boost", "--approve-boost-risk-sha", "--persona",
+            "--remote-control", "--input-format", "--project", "--new-project",
+        )
+        accepted_arguments = []
+        for flag in forbidden_flags:
             for spelling in ([flag, "Boost"], [flag + "=Boost"]):
                 command = {**original, "argv": [original["argv"][0], *spelling, *original["argv"][1:]]}
                 MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
@@ -227,7 +232,8 @@ def run(context: dict[str, object]) -> None:
                 except MODULE.DispatchError as exc:
                     assert str(exc) == "dispatch argv contains a retired feature", exc
                 else:
-                    raise AssertionError("current command accepted a retired feature argument")
+                    accepted_arguments.append(spelling)
+        assert not accepted_arguments, accepted_arguments
         for field, value in (("boost", False), ("boost_policy_sha256", None),
                              ("approved_boost_risk_sha256", None)):
             MODULE.write_atomic(job, MODULE.COMMAND_NAME, {**original, field: value})
@@ -237,10 +243,11 @@ def run(context: dict[str, object]) -> None:
                 assert str(exc) == "dispatch command fields are invalid", exc
             else:
                 raise AssertionError("current command accepted a retired feature field")
-        command = {**original, "argv": list(original["argv"])}
-        command["argv"][command["argv"].index("--print") + 1] = "--agent"
-        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
-        MODULE.load_command(job)
+        for flag in forbidden_flags:
+            command = {**original, "argv": list(original["argv"])}
+            command["argv"][command["argv"].index("--print") + 1] = flag
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+            MODULE.load_command(job)
 
     check("current commands reject retired feature authority and preserve prompt text", current_commands_reject_retired_feature_authority)
 

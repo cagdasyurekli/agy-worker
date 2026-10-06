@@ -59,7 +59,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 121
+EXPECTED_CHECKS = 122
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -69,7 +69,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 72, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 73, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -2592,6 +2592,8 @@ with tempfile.TemporaryDirectory() as temporary:
             ("denial-1-2-11", "1.2.11", True, True, "failed", "permission_required", 6),
             ("ordinary-1-2-11", "1.2.11", False, True, "succeeded", None, 0),
             ("live-invalid-1-2-11", "1.2.11", True, False, "failed", "permission_required", 6),
+            ("denial-1-3-0", "1.3.0", True, True, "failed", "permission_required", 6),
+            ("live-invalid-1-3-0", "1.3.0", True, False, "failed", "permission_required", 6),
             ("unreviewed-intermediate", "arbitrary-build", True, True, "failed", "permission_required", 6),
             ("prior-version", "1.1.26", True, True, "failed", "permission_required", 6),
             # The live 1.2.2 denial emitted this top-level key but no structured
@@ -2618,7 +2620,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 # never parsed or persisted by the controller.
                 terminal["denied_actions"] = (
                     [{"action": "command", "display_name": "RunCommand"}]
-                    if version in {"1.2.2", "1.2.6", "1.2.11"} else None
+                    if version in {"1.2.2", "1.2.6", "1.2.11", "1.3.0"} else None
                 )
             events = [
                 {"event": "init", "init": {}, "conversation_id": "conversation-1"},
@@ -2780,6 +2782,13 @@ with tempfile.TemporaryDirectory() as temporary:
                 "usage": {"prompt_tokens": 50},
                 "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
             }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
+            # Observed 1.3.0 command denial; identity and usage are synthetic.
+            ("exact-refusal-1-3-0-command", "1.3.0", True, {
+                "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
+                "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
+                "usage": {},
+                "denied_actions": [{"action": "command", "display_name": "RunCommand"}],
+            }, "failed", "permission_required", 6, False, "missing_structured_output", 0, "success"),
             ("exact-refusal-1-2-11-mcp", "1.2.11", True, {
                 "conversation_id": "conversation-1", "status": "SUCCESS", "response": "",
                 "duration_seconds": 1.25, "num_turns": 1, "json_schema": {},
@@ -2827,6 +2836,13 @@ with tempfile.TemporaryDirectory() as temporary:
                 ) + f"\n{exit_line}",
                 encoding="utf-8",
             ); fake.chmod(0o755)
+            if version == "1.3.0":
+                fake.write_text(fake.read_text() + (
+                    "printf '%s\\n' " + shlex.quote(
+                        'jetski: no output produced — a tool required the "command" '
+                        'permission that headless mode cannot prompt for, so it was auto-denied.'
+                    ) + " >&2\n"
+                ), encoding="utf-8")
             bound_provider = root / f"refusal-canary-{label}-provider.json"
             provider_schema(bound_provider)
             command = current_command_fixture({
@@ -2861,6 +2877,58 @@ with tempfile.TemporaryDirectory() as temporary:
     check(
         "exact 1.2.6 refusal canary yields permission_required without candidate and fails unknown shapes closed",
         exact_1_2_6_refusal_canary_yields_permission_required_without_candidate,
+    )
+
+    def model_effort_conflict_1_3_0_fails_without_candidate() -> None:
+        repo = root / "model-effort-conflict-repo"; repo.mkdir()
+        initialize_linked_fixture(repo)
+        job = root / "model-effort-conflict-job"; job.mkdir(mode=0o700)
+        bin_dir = root / "model-effort-conflict-bin"; bin_dir.mkdir()
+        error = (
+            'invalid model selection (--model "gemini-3.8-flash-medium" --effort "high"): '
+            '--model gemini-3.8-flash-medium conflicts with --effort=high'
+        )
+        # The observed rejection has only a result event, no init or AGY_ERROR.
+        terminal = {"event": "result", "result": {
+            "conversation_id": "", "status": "ERROR", "response": "", "error": error,
+            "duration_seconds": 0, "num_turns": 0, "usage": {},
+        }}
+        payload = json.dumps(terminal).encode("utf-8") + b"\n"
+        stderr = ("error: " + error + "\n").encode("utf-8")
+        assert b"AGY_ERROR" not in stderr
+        fake = bin_dir / "agy"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport os\n"
+            f"os.write(1, {payload!r})\nos.write(2, {stderr!r})\nraise SystemExit(1)\n",
+            encoding="utf-8",
+        ); fake.chmod(0o700)
+        schema = root / "model-effort-conflict-schema.json"; provider_schema(schema)
+        command = current_command_fixture({
+            "job_id": "model-effort-conflict", "workdir": str(repo),
+            "argv": ["agy", "--model", "gemini-3.8-flash-medium", "--effort", "high",
+                     "--json-schema", str(schema), "--print", "task"],
+            "agy_version": "1.3.0", "agy_version_observed": True,
+            "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20,
+        })
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.create_state(job, "initial", resume=False)
+        assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["invalid_envelope"]
+        state, _raw, sha = MODULE.load_state(job)
+        # Invalid framing can stop the child before its explicit exit 1.
+        assert (state["status"], state["reason"], state["failure_stage"]) == (
+            "failed", "invalid_envelope", "framing",
+        )
+        assert state["candidate_source"] == "none"
+        assert not state["candidate_recognized"] and not state["result_available"]
+        assert state["result_path"] is None and state["result_sha256"] is None
+        assert not (job / "result.json").exists()
+        assert not state["resume_available"] and not state["continue_available"]
+        actions = {item["action"] for item in MODULE.public_status(state, sha, job=job)["available_actions"]}
+        assert not {"result", "resume", "continue"} & actions
+
+    check(
+        "1.3.0 model effort conflict with empty conversation fails classified without candidate",
+        model_effort_conflict_1_3_0_fails_without_candidate,
     )
 
     def static_agy_error_metadata_offline_parser_contracts() -> None:
@@ -3208,6 +3276,13 @@ with tempfile.TemporaryDirectory() as temporary:
         assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
         assert MODULE._reviewed_provider_timeout_lines("arbitrary-build", 20)
         timeout_line = next(iter(MODULE._reviewed_provider_timeout_lines("1.2.2", 20)))
+        timeout_1s = b"[agy] print timeout after 1s with turn in progress; returning partial output"
+        assert MODULE._reviewed_provider_timeout_lines("1.3.0", 1) == {timeout_1s}
+        timeout_stderr = root / "timeout-1-3-0-stderr"
+        timeout_stderr.write_bytes(timeout_1s + b"\n")
+        assert MODULE._classify_stderr(
+            timeout_stderr, "1.3.0", returncode=0, provider_timeout_seconds=1,
+        ) == "provider_timeout"
 
         cases = [
             ("exact", "1.2.2", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
@@ -3216,6 +3291,9 @@ with tempfile.TemporaryDirectory() as temporary:
             ("normal-1-2-11", "1.2.11", True, False, b"", report(summary="complete"), None, 0, True),
             ("partial-1-2-11", "1.2.11", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("empty-1-2-11", "1.2.11", True, False, b"", None, "invalid_envelope", 4, False),
+            # Supplemental valid-candidate coverage; C3 emitted no report.
+            ("partial-1-3-0", "1.3.0", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
+            ("exact-1-3-0", "1.3.0", True, False, timeout_1s, None, "invalid_envelope", 4, False),
             ("near-miss-1-2-7", "1.2.7", True, False, timeout_line + b".", report(summary="complete"), None, 0, True),
             ("unobserved-version-1-2-7", "1.2.7", False, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
             ("invalid-envelope-1-2-7", "1.2.7", True, False, timeout_line, None, "invalid_envelope", 4, False),
@@ -3237,6 +3315,9 @@ with tempfile.TemporaryDirectory() as temporary:
                 "conversation_id": "conversation-1", "status": "SUCCESS",
                 "structured_output": candidate,
             }
+            if label == "exact-1-3-0":
+                terminal.pop("structured_output")
+                terminal.update(response="", duration_seconds=0, num_turns=1, json_schema={}, usage={})
             if include_denial:
                 terminal["denied_actions"] = [
                     {"action": "command", "display_name": "RunCommand"},
@@ -3262,7 +3343,9 @@ with tempfile.TemporaryDirectory() as temporary:
                 "schema_version": MODULE.CURRENT_COMMAND_SCHEMA, "kind": "agy-worker-dispatch-command", "job_id": f"partial-timeout-{label}",
                 "workdir": str(repo), "argv": ["agy", "--json-schema", str(bound_provider), "--print", "task"],
                 "agy_version": version, "agy_version_observed": version_observed,
-                "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20, "notice_seconds": 3,
+                "idle_seconds": 1 if label == "exact-1-3-0" else 2,
+                "hard_seconds": 1 if label == "exact-1-3-0" else 3,
+                "max_seconds": 1 if label == "exact-1-3-0" else 20, "notice_seconds": 3,
                 "stage_dir": None, "stage_file": None, "child_umask": "022", "workflow": "task",
                 "max_cycles": 2, "resume_prompt": "resume", "continue_prompt": "continue",
             })
