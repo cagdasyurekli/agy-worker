@@ -34,9 +34,9 @@ import launch_authority as LAUNCH_AUTHORITY  # noqa: E402 -- sibling imports fol
 from delegation_policy import evaluate_policy  # noqa: E402 -- sibling imports follow startup isolation/path setup
 
 STATUS_SCHEMA_VERSION = 3
-BOUND_SCHEMA_VERSION = 7
-BOUND_FACADE_SCHEMA_VERSION = 8
-JOB_STATE_SCHEMA_VERSION = 2
+BOUND_SCHEMA_VERSION = 9
+BOUND_FACADE_SCHEMA_VERSION = 10
+JOB_STATE_SCHEMA_VERSION = 4
 KIND_WORKFLOW_STATE = "agy-worker-workflow-state"
 KIND_WORKFLOW_STATUS = "agy-worker-workflow-status"
 KIND_JOB_STATE = "agy-worker-local-job-state"
@@ -615,7 +615,7 @@ def canonical_transmission_preview(
     else:
         command += ["--add-dir", str(worktree)]
     command += ["--workflow", launch_args.workflow, "--mode", launch_args.mode]
-    for name in ("tier", "model", "effort", "max_cycles", "idle_timeout",
+    for name in ("model", "effort", "max_cycles", "idle_timeout",
                  "hard_timeout", "max_runtime", "notice_interval", "self_verification_manifest"):
         value = getattr(launch_args, name)
         if value is not None:
@@ -1132,7 +1132,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--job-state", help="Optional path to job.sh state file.")
     run_parser.add_argument("--workflow", choices=("explore", "task", "project"), default="task")
     run_parser.add_argument("--mode", choices=("plan", "accept-edits"))
-    run_parser.add_argument("--tier", action=SingleValue)
     run_parser.add_argument("--model", action=SingleValue)
     run_parser.add_argument("--effort", action=SingleValue)
     run_parser.add_argument("--max-cycles", type=int)
@@ -1178,7 +1177,6 @@ def build_parser() -> argparse.ArgumentParser:
     vf_parser.add_argument("--verify-env", action="append", default=[])
     vf_parser.add_argument("--verify-credential-env", action="append", default=[])
     vf_parser.add_argument("--selection")
-    vf_parser.add_argument("--pre-recommendation")
     vf_parser.add_argument("--assurance", required=True, choices=("verified", "partially_verified", "rejected", "blocked"))
     vf_parser.add_argument(
         "--approve-dispatch-sha",
@@ -1215,8 +1213,6 @@ def _dispatch_run(
         if base is not None:
             cmd += ["--base-commit", base]
         cmd += ["--approve-whole-worktree", approved_whole_worktree]
-    if args.tier:
-        cmd += ["--tier", args.tier]
     if args.model:
         cmd += ["--model", args.model]
     if args.effort:
@@ -1980,8 +1976,6 @@ def command_verify_finalize(args: argparse.Namespace) -> int:
             verify_cmd += ["--verify-credential-env", val]
         if args.selection:
             verify_cmd += ["--selection", args.selection]
-        if args.pre_recommendation:
-            verify_cmd += ["--pre-recommendation", args.pre_recommendation]
 
         proc = subprocess.run(verify_cmd, check=False)
         rc = proc.returncode
@@ -2077,7 +2071,15 @@ def main(argv: list[str] | None = None) -> int:
             return 64
         if option in value_options and "=" not in argument:
             next(remaining, None)
-    args = parser.parse_args(arguments)
+    if os.environ.get("AGY_WORKER_TIER"):
+        sys.stderr.write("workflow: AGY_WORKER_TIER is retired; use --model / AGY_WORKER_MODEL\n")
+        return 64
+    try:
+        args = parser.parse_args(arguments)
+    except SystemExit as exc:
+        if exc.code == 2:
+            return 64
+        raise
     try:
         if args.command == "run":
             return command_run(args)

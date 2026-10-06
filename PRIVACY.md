@@ -7,8 +7,8 @@ not a claim about every version or configuration of the third-party tools it cal
 ## What the project itself does
 
 The repository does not operate a hosted service, collect analytics, or send
-telemetry on its own. Model-tier recommendations, Evidence Receipt v1 creation and
-validation, and all offline test suites run locally without a network or provider.
+telemetry on its own. Evidence Receipt v2 creation and validation, and all offline
+test suites run locally without a network or provider.
 Installing the skill copies its public workflow files and a local pointer to
 the checkout; it does not contact a network service or change agy or Codex
 configuration.
@@ -99,8 +99,7 @@ When explicitly requested, `verify-job.sh` creates one local receipt at a new pa
 user chose in an owner-private directory outside the audited repository. It records
 the immutable base; SHA-256 hashes of the exact envelope snapshot, ordered path
 policy, verifier commands, and candidate states; bounded gate outcome labels; and,
-when supplied, the validated caller model/tier selection and canonical pre-dispatch
-advisory (including its rationale, controlled evidence, and relative cost statement).
+when supplied, the validated caller model/effort selection.
 It does not store source or diff content, repository paths, prompts, worker prose,
 raw logs, verifier commands or output, credentials, provider telemetry, or pricing.
 Receipts are mode `0600`, unsigned, not self-authenticating, and never uploaded by

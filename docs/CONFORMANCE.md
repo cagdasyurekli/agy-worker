@@ -52,9 +52,9 @@ The runner creates owner-private disposable Git repositories outside the checkou
 uses full commit IDs except in the deliberate mutable-base rejection, passes only
 fixed verifier kinds, bounds each gate invocation to ten seconds and 8 KiB per
 output stream, and removes its workspace before reporting success. It invokes no
-agy process, provider, network client, Receipt renderer, lifecycle action, model
-selector, or recommendation policy. Output never includes fixture paths or captured
-gate output.
+agy process, provider, network client, Receipt renderer, or lifecycle action, and
+does not exercise model selection or dispatch policy. Output never includes fixture
+paths or captured gate output.
 
 `--gate PATH` is still an explicit request to execute that program with the current
 user's privileges. The kit is not a sandbox: a hostile gate can access user-visible
@@ -80,8 +80,8 @@ private residual. It never scans for or chases a moved directory. This design do
 not claim same-user tamper resistance; review the supplied gate and loaded code
 before execution and inspect private residuals after a hostile-gate failure.
 
-The kit directly tests `qa-gate.sh`. Evidence Receipt v1, evidence reports, the local
-job lifecycle, worker dispatch, recommendation policy, and real provider behavior
+The kit directly tests `qa-gate.sh`. Evidence Receipts, evidence reports, the local
+job lifecycle, worker dispatch, model-selection policy, and real provider behavior
 are intentionally outside the v1 claim. Receipts and reports remain non-authoritative
 views of the gate result, and `qa-gate.sh` remains the sole acceptance authority.
 

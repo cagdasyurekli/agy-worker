@@ -63,11 +63,6 @@ def bind_command(module: Any, command: dict[str, Any], *, bind_content: bool = T
     elif not scoped and bind_content:
         whole_sha = module.WORKTREE.whole_worktree_content_manifest(str(root))["manifest_sha256"]
         command["whole_worktree_content_sha256"] = whole_sha
-    tier = None
-    if command["selection_path"] is not None:
-        selection = json.loads(Path(command["selection_path"]).read_bytes())
-        if selection["selection_mode"] == "tier" and selection["selected_tier_source"] != "implicit-default":
-            tier = selection["selected_tier"]
     add_dirs = [Path(argv[index + 1]).resolve().relative_to(root.resolve()).as_posix()
                 for index, item in enumerate(argv) if item == "--add-dir"
                 and (not command["stage_dir"] or Path(argv[index + 1]).resolve() != Path(command["stage_dir"]).resolve())]
@@ -79,7 +74,7 @@ def bind_command(module: Any, command: dict[str, Any], *, bind_content: bool = T
         task=task, prompt=prompt, workflow=command["workflow"], mode=mode,
         max_cycles=command["max_cycles"], idle_seconds=command["idle_seconds"],
         hard_seconds=command["hard_seconds"], max_seconds=command["max_seconds"],
-        notice_seconds=command["notice_seconds"], tier=tier, model=option("--model"), effort=option("--effort"),
+        notice_seconds=command["notice_seconds"], model=option("--model"), effort=option("--effort"),
         allow_scoped_repair=command["allow_scoped_repair"], self_verification_manifest_sha256=manifest_sha,
         provider_env_names=command["provider_env"],
         allow_slash_commands=mode == "accept-edits" and "--disable-slash-commands" not in argv,
@@ -114,7 +109,7 @@ def main() -> int:
     worker, *arguments = sys.argv[1:]
     task = sys.stdin.buffer.read(8 * 1024 * 1024 + 1)
     values = {"--workdir", "--worktree", "--provider-scope", "--provider-isolation",
-              "--workflow", "--mode", "--max-cycles", "--tier", "--model", "--effort",
+              "--workflow", "--mode", "--max-cycles", "--model", "--effort",
               "--idle-timeout", "--hard-timeout", "--max-runtime", "--notice-interval",
               "--self-verification-manifest", "--provider-env", "--add-dir", "--base-commit"}
     switches = {"--allow-scoped-repair", "--allow-slash-commands"}

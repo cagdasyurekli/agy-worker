@@ -14,7 +14,6 @@ unset AGY_WORKER_MAX_ATTEMPTS AGY_WORKER_JOB_ID AGY_WORKER_LOG_DIR
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 WORKER="$ROOT/agy-worker.sh"
-RECOMMENDER="$ROOT/model-recommendation.sh"
 SELECTOR="$ROOT/model-selection.sh"
 TMP="$(mktemp -d -t agyworker-dispatch.XXXXXX)"
 tmp_identity() {
@@ -57,81 +56,6 @@ parts = [part for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
 raise SystemExit(0 if len(parts) >= 2 and parts[-2] == b"--print" else 1)
 PY
     then ok "$name"; else bad "$name"; fi
-}
-expect_recommendation() {
-    local name="$1" stage="$2" tier="$3" evidence="$4"
-    local decision="$5" recommended="$6" direction="$7" steps="$8"
-    local output="$TMP/recommendation-$pass.json" rc
-    "$RECOMMENDER" --stage "$stage" --selected-tier "$tier" --evidence "$evidence" \
-        > "$output" 2> "$output.err"
-    rc=$?
-    if [[ "$rc" == "0" ]] && python3 - "$output" "$stage" "$tier" "$evidence" \
-        "$decision" "$recommended" "$direction" "$steps" <<'PY'
-import json
-import sys
-
-path, stage, tier, evidence, decision, recommended, direction, steps = sys.argv[1:]
-with open(path, encoding="utf-8") as handle:
-    result = json.load(handle)
-assert result["schema_version"] == 2
-assert result["kind"] == "model-tier-recommendation"
-assert result["stage"] == stage
-assert result["selected_tier"] == tier
-assert result["evidence"]["owner"] == "driver"
-assert result["evidence"]["code"] == evidence
-assert result["evidence"]["description"]
-assert result["recommendation_only"] is True
-assert result["applied"] is False
-assert result["decision"] == decision
-assert result["recommended_tier"] == (None if recommended == "null" else recommended)
-assert result["rationale"]
-assert result["cost_impact"]["direction"] == direction
-assert result["cost_impact"]["relative_tier_steps"] == int(steps)
-assert result["cost_impact"]["summary"]
-PY
-    then
-        ok "$name"
-    else
-        bad "$name"
-    fi
-}
-expect_recommendation_reject() {
-    local name="$1"; shift
-    local output="$TMP/recommendation-reject-$pass.out" rc
-    "$RECOMMENDER" "$@" > "$output" 2> "$output.err"
-    rc=$?
-    if [[ "$rc" == "64" && ! -s "$output" ]]; then
-        ok "$name (exit $rc)"
-    else
-        bad "$name (exit $rc, wanted 64 with empty stdout)"
-    fi
-}
-expect_direct_recommendation() {
-    local name="$1" stage="$2" model="$3" effort="$4" evidence="$5" resolved="$6"
-    local output="$TMP/direct-recommendation-$pass.json" rc
-    local args=(--stage "$stage" --selected-model "$model" --evidence "$evidence")
-    [[ -z "$effort" ]] || args+=(--selected-effort "$effort")
-    "$RECOMMENDER" "${args[@]}" > "$output" 2> "$output.err"
-    rc=$?
-    if [[ "$rc" == 0 ]] && python3 - "$output" "$model" "$effort" "$resolved" <<'PY'
-import json
-import sys
-
-path, model, effort, resolved = sys.argv[1:]
-value = json.load(open(path, encoding="utf-8"))
-assert "selected_tier" not in value
-assert value["user_model"] == model
-assert value.get("user_effort", "") == effort
-assert value["resolved_agy_model"] == resolved
-assert not any(key.startswith("matrix_") for key in value)
-assert value["recommendation_only"] is True
-assert value["applied"] is False
-assert value["decision"] == "no-escalation"
-assert value["recommended_tier"] is None
-assert value["cost_impact"]["direction"] == "none"
-assert "caller-owned and unranked" in value["rationale"]
-PY
-    then ok "$name"; else bad "$name (exit $rc)"; fi
 }
 private_tree_is_private() {
     python3 - "$1" <<'PY'
@@ -1485,30 +1409,30 @@ else
     bad "post-preview whole content binding failure boundary"
 fi
 
-printf 'small task\n' | run_worker tier --tier cheap > "$TMP/tier.out" 2> "$TMP/tier.err"
+printf 'small task\n' | run_worker literal-smoke --model gemini-3.6-flash-low > "$TMP/literal-smoke.out" 2> "$TMP/literal-smoke.err"
 rc=$?
 if [[ "$rc" != "0" ]]; then
     # Keep the first synthetic dispatch actionable in remote CI.  This fixture
     # contains no provider prose or credentials; later cases intentionally keep
     # their captured diagnostics private.
-    tail -n 5 "$TMP/tier.err" >&2
+    tail -n 5 "$TMP/literal-smoke.err" >&2
 fi
-expect_exit "--tier cheap produces an envelope" 0 "$rc"
-if [[ "$(<"$TMP/tier.model")" == "gemini-3.6-flash-low" ]] \
-        && grep -Fq 'Use file tools to inspect and edit the approved workspace.' "$TMP/tier.prompt" \
-        && ! grep -Fq 'BOOST WORKSPACE CONTRACT' "$TMP/tier.prompt"; then
-    ok "--tier is resolved after CLI parsing and keeps the ordinary writable preamble"
+expect_exit "literal model produces an envelope" 0 "$rc"
+if [[ "$(<"$TMP/literal-smoke.model")" == "gemini-3.6-flash-low" ]] \
+        && grep -Fq 'Use file tools to inspect and edit the approved workspace.' "$TMP/literal-smoke.prompt" \
+        && ! grep -Fq 'BOOST WORKSPACE CONTRACT' "$TMP/literal-smoke.prompt"; then
+    ok "literal model is forwarded after CLI parsing and keeps the ordinary writable preamble"
 else
-    bad "--tier resolution or ordinary writable preamble"
+    bad "literal model forwarding or ordinary writable preamble"
 fi
-expect_print_last "small prompt keeps --print and its value last" "$TMP/tier.argv"
+expect_print_last "small prompt keeps --print and its value last" "$TMP/literal-smoke.argv"
 
 LEGACY_UNAPPROVED_JOB="$TMP/logs/legacy-unapproved-initial"
 mkdir "$LEGACY_UNAPPROVED_JOB"
 chmod 0700 "$LEGACY_UNAPPROVED_JOB"
 LEGACY_UNAPPROVED_JOB="$(cd "$LEGACY_UNAPPROVED_JOB" && pwd -P)"
 PYTHONDONTWRITEBYTECODE=1 python3 - \
-        "$TMP/logs/tier/dispatch-command.json" \
+        "$TMP/logs/literal-smoke/dispatch-command.json" \
         "$LEGACY_UNAPPROVED_JOB/dispatch-command.json" <<'PY'
 import json
 import os
@@ -1582,7 +1506,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 command, _raw, _identity = module.load_command(Path(job_text).resolve())
-assert command["schema_version"] == 15
+assert command["schema_version"] == 16
 assert command["provider_isolation"] == "session"
 assert command["native_grant_profile"] == "baseline"
 assert command["whole_worktree_content_sha256"] is None
@@ -1762,7 +1686,7 @@ info = copied_path.stat()
 
 assert copied == source
 assert stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
-assert command["schema_version"] == 15
+assert command["schema_version"] == 16
 assert command["provider_isolation"] == "session"
 assert command["allow_self_verification"] is True
 assert command["self_verification_manifest_path"] == str(copied_path)
@@ -1992,7 +1916,7 @@ prompt = argv[argv.index(b"--print") + 1].decode("utf-8")
 root_marker = "The exact absolute workspace root for this attempt is the JSON string "
 root_start = prompt.index(root_marker) + len(root_marker)
 decoded_root, root_end = json.JSONDecoder().raw_decode(prompt[root_start:])
-assert command["schema_version"] == 15
+assert command["schema_version"] == 16
 assert command["provider_isolation"] == "session"
 assert b"--sandbox" not in argv
 assert command["provider_scope_path"] is None
@@ -2035,7 +1959,7 @@ ambient_env_observed="$TMP/ambient-env-observed.txt"
 printf 'ambient environment filter\n' | \
     AGY_WORKER_UNRELATED_SECRET=do-not-forward \
     FAKE_ENV_OBSERVED_FILE="$ambient_env_observed" \
-    run_worker ambient-env-filter --tier cheap \
+    run_worker ambient-env-filter --model gemini-3.6-flash-low \
     > "$TMP/ambient-env-filter.out" 2> "$TMP/ambient-env-filter.err"
 ambient_env_rc=$?
 if [[ "$ambient_env_rc" == 0 && -s "$ambient_env_observed" ]] \
@@ -2049,7 +1973,7 @@ explicit_env_observed="$TMP/explicit-env-observed.txt"
 printf 'explicit environment opt-in\n' | \
     AGY_WORKER_UNRELATED_SECRET=approved-value \
     FAKE_ENV_OBSERVED_FILE="$explicit_env_observed" \
-    run_worker explicit-env-opt-in --tier cheap \
+    run_worker explicit-env-opt-in --model gemini-3.6-flash-low \
         --provider-env AGY_WORKER_UNRELATED_SECRET \
     > "$TMP/explicit-env-opt-in.out" 2> "$TMP/explicit-env-opt-in.err"
 explicit_env_rc=$?
@@ -2061,12 +1985,12 @@ else
 fi
 
 printf 'unsafe provider environment\n' | run_worker unsafe-provider-env \
-    --tier cheap --provider-env PYTHONPATH \
+    --model gemini-3.6-flash-low --provider-env PYTHONPATH \
     > "$TMP/unsafe-provider-env.out" 2> "$TMP/unsafe-provider-env.err"
 expect_exit "runtime-injection provider environment name is rejected" 64 "$?"
 
 printf 'raw custom model\n' | run_worker raw-flash-high \
-    --tier gemini-3.6-flash-high > "$TMP/raw-flash-high.out" 2>/dev/null
+    --model gemini-3.6-flash-high > "$TMP/raw-flash-high.out" 2>/dev/null
 rc=$?
 if [[ "$rc" == "0" && "$(<"$TMP/raw-flash-high.model")" == "gemini-3.6-flash-high" ]] \
         && python3 - "$TMP/raw-flash-high.argv" "$TMP/raw-flash-high.calls" <<'PY'
@@ -2081,71 +2005,17 @@ else
     bad "raw flash-high stays exact pass-through with no effort argument"
 fi
 
-assert_tier_selection() {
-    local name="$1" job="$2" tier_value="$3" tier_source="$4" expected_model="$5"
-    if python3 - "$TMP/$job.argv" "$TMP/logs/$job/selection.json" \
-        "$TMP/$job.calls" "$tier_value" "$tier_source" "$expected_model" <<'PY'
-import json
-import sys
-
-argv_path, selection_path, calls_path, tier, source, expected = sys.argv[1:]
-parts = [part for part in open(argv_path, "rb").read().split(b"\0") if part]
-record = json.load(open(selection_path, encoding="utf-8"))
-assert open(calls_path, encoding="ascii").read().splitlines() == ["version", "help"] * 2 + ["worker"]
-assert record["selection_mode"] == "tier"
-assert record["selected_tier"] == tier
-assert record["selected_tier_source"] == source
-assert record["resolved_agy_model"] == (expected or None)
-if expected:
-    assert parts.count(b"--model") == 1
-    assert parts[parts.index(b"--model") + 1].decode() == expected
-else:
-    assert b"--model" not in parts
-PY
-    then ok "$name"; else bad "$name"; fi
-}
-
-legacy_index=0
-while IFS='|' read -r legacy_tier legacy_model; do
-    legacy_index=$((legacy_index+1))
-    legacy_job="legacy-tier-$legacy_index"
-    printf 'legacy tier %s\n' "$legacy_tier" | run_worker "$legacy_job" --tier "$legacy_tier" \
-        > "$TMP/$legacy_job.out" 2> "$TMP/$legacy_job.err"
-    rc=$?
-    if [[ "$rc" == 0 ]]; then
-        assert_tier_selection "legacy tier $legacy_tier preserves its exact mapping" \
-            "$legacy_job" "$legacy_tier" cli "$legacy_model"
-    else
-        bad "legacy tier $legacy_tier preserves its exact mapping (exit $rc)"
-    fi
-done <<'EOF'
-bulk|gemini-3.6-flash-medium
-cheap|gemini-3.6-flash-low
-hard|gemini-3.1-pro-high
-hardest|claude-opus-4-6-thinking
-default|
-vendor/model-v1|vendor/model-v1
-EOF
-
-printf 'environment tier\n' | AGY_WORKER_TIER=hard run_worker legacy-tier-env \
-    > "$TMP/legacy-tier-env.out" 2> "$TMP/legacy-tier-env.err"
+printf 'default model\n' | run_worker agy-default > "$TMP/agy-default.out" 2> "$TMP/agy-default.err"
 rc=$?
-if [[ "$rc" == 0 ]]; then
-    assert_tier_selection "legacy environment tier records environment provenance" \
-        legacy-tier-env hard environment gemini-3.1-pro-high
-else
-    bad "legacy environment tier records environment provenance (exit $rc)"
-fi
-
-printf 'implicit default tier\n' | run_worker legacy-tier-implicit \
-    > "$TMP/legacy-tier-implicit.out" 2> "$TMP/legacy-tier-implicit.err"
-rc=$?
-if [[ "$rc" == 0 ]]; then
-    assert_tier_selection "no selector uses the agy-owned default without a model" \
-        legacy-tier-implicit default implicit-default ''
-else
-    bad "no selector uses the agy-owned default without a model (exit $rc)"
-fi
+if [[ "$rc" == 0 ]] && python3 -B - "$TMP/agy-default.argv" "$TMP/logs/agy-default/selection.json" "$TMP/agy-default.calls" <<'PYTHON'
+import json,sys
+parts=open(sys.argv[1],'rb').read().split(b'\0');record=json.load(open(sys.argv[2]))
+assert record['selection_mode']=='agy-default' and record['resolved_agy_model'] is None
+assert 'probed_executable' in record and 'installed_agy_version' in record
+assert b'--model' not in parts and b'--effort' not in parts
+assert open(sys.argv[3]).read().splitlines()==['version','help']*2+['worker']
+PYTHON
+then ok "bound agy default preserves executable checks and emits no model or effort"; else bad "bound agy default"; fi
 
 printf 'literal model under malformed version output\n' | FAKE_VERSION_MODE=malformed \
     run_worker literal-version-independent --model future-model-1.2 \
@@ -2165,7 +2035,7 @@ assert calls == ["version", "help"] * 2 + ["worker"]
 assert argv.count(b"--model") == 1
 assert argv[argv.index(b"--model") + 1] == b"future-model-1.2"
 assert b"--effort" not in argv and b"--thinking-level" not in argv
-assert record["schema_version"] == 4
+assert record["schema_version"] == 5
 assert record["selection_mode"] == "exact-model"
 assert record["user_model"] == record["resolved_agy_model"] == "future-model-1.2"
 assert record["user_model_source"] == "cli"
@@ -2182,7 +2052,7 @@ fi
 assert_direct_result() {
     local name="$1" job="$2" expected="$3" user_model="$4" user_effort="$5"
     local model_source="${6:-cli}" effort_source="${7:-}"
-    local expected_schema="${8:-4}"
+    local expected_schema="${8:-5}"
     if [[ "$(<"$TMP/$job.model")" == "$expected" ]] \
             && [[ "$(wc -l < "$TMP/$job.worker-calls" | tr -d ' ')" == "1" ]] \
             && python3 - "$TMP/$job.argv" "$TMP/logs/$job/selection.json" \
@@ -2233,7 +2103,7 @@ printf 'exact-version structural help may dispatch\n' | \
 rc=$?
 if [[ "$rc" == 0 ]]; then
     assert_direct_result "complete structural probe proceeds without version approval" \
-        exact-version-unseen-help gemini-3.6-flash gemini-3.6-flash high cli cli 4
+        exact-version-unseen-help gemini-3.6-flash gemini-3.6-flash high cli cli 5
 else
     bad "exact-version structural probe boundary (exit $rc)"
 fi
@@ -2247,7 +2117,7 @@ printf 'help prose requires Codex, not controller, semantic interpretation\n' | 
 rc=$?
 if [[ "$rc" == 0 ]]; then
     assert_direct_result "option prose does not override the structural capability check" \
-        help-option-negation gemini-3.6-flash gemini-3.6-flash high cli cli 4
+        help-option-negation gemini-3.6-flash gemini-3.6-flash high cli cli 5
 else
     bad "exact-version option prose structural boundary (exit $rc)"
 fi
@@ -2261,7 +2131,7 @@ import json, sys
 payload = open(sys.argv[1], "rb").read()
 record = json.loads(payload)
 assert sys.argv[2].encode() not in payload
-assert record["schema_version"] == 4
+assert record["schema_version"] == 5
 assert record["installed_agy_version"] == "1.1.17"
 assert record["user_model"] == record["resolved_agy_model"] == "gemini-3.6-flash"
 assert record["user_effort"] == "high"
@@ -2436,7 +2306,7 @@ expect_selector_reject "repeated model is ambiguous" repeated-model \
     --model gemini-3.6-flash --model gemini-3.6-flash --effort high
 expect_selector_reject "repeated effort is ambiguous" repeated-effort \
     --model gemini-3.6-flash --effort high --effort high
-expect_selector_reject "repeated tier is ambiguous" repeated-tier --tier bulk --tier bulk
+expect_selector_reject "removed tier is unknown" repeated-tier --tier bulk --tier bulk
 expect_selector_reject "retired literal alias rejects before task or provider" retired-literal \
     --literal-model future-model-1.2
 model_too_long="$(python3 -c 'print("a-" + "b" * 127)')"
@@ -2476,32 +2346,13 @@ assert_env_reject "same effort in CLI and environment conflicts" same-effort-con
 printf 'same tier conflict\n' | AGY_WORKER_TIER=bulk \
     run_worker same-tier-conflict --tier bulk \
     > "$TMP/same-tier-conflict.out" 2> "$TMP/same-tier-conflict.err"
-assert_env_reject "same tier in CLI and environment conflicts" same-tier-conflict "$?"
+assert_env_reject "retired environment is rejected" same-tier-conflict "$?"
 printf 'empty env model\n' | AGY_WORKER_MODEL= run_worker empty-env-model \
     > "$TMP/empty-env-model.out" 2> "$TMP/empty-env-model.err"
 assert_env_reject "explicit empty environment model is rejected" empty-env-model "$?"
 printf 'empty env effort\n' | AGY_WORKER_MODEL=gemini-3.6-flash AGY_WORKER_EFFORT= \
     run_worker empty-env-effort > "$TMP/empty-env-effort.out" 2> "$TMP/empty-env-effort.err"
 assert_env_reject "explicit empty environment effort is rejected" empty-env-effort "$?"
-printf 'empty env tier\n' | AGY_WORKER_TIER= run_worker empty-env-tier \
-    > "$TMP/empty-env-tier.out" 2> "$TMP/empty-env-tier.err"
-assert_env_reject "explicit empty environment tier is rejected" empty-env-tier "$?"
-printf 'tier cli model env\n' | AGY_WORKER_MODEL=gemini-3.6-flash-high \
-    run_worker tier-cli-model-env --tier bulk \
-    > "$TMP/tier-cli-model-env.out" 2> "$TMP/tier-cli-model-env.err"
-assert_env_reject "CLI tier conflicts with environment model" tier-cli-model-env "$?"
-printf 'tier env model cli\n' | AGY_WORKER_TIER=bulk \
-    run_worker tier-env-model-cli --model gemini-3.6-flash-high \
-    > "$TMP/tier-env-model-cli.out" 2> "$TMP/tier-env-model-cli.err"
-assert_env_reject "environment tier conflicts with CLI model" tier-env-model-cli "$?"
-printf 'tier cli effort env\n' | AGY_WORKER_EFFORT=high \
-    run_worker tier-cli-effort-env --tier bulk \
-    > "$TMP/tier-cli-effort-env.out" 2> "$TMP/tier-cli-effort-env.err"
-assert_env_reject "CLI tier conflicts with environment effort" tier-cli-effort-env "$?"
-printf 'tier env effort cli\n' | AGY_WORKER_TIER=bulk \
-    run_worker tier-env-effort-cli --effort high \
-    > "$TMP/tier-env-effort-cli.out" 2> "$TMP/tier-env-effort-cli.err"
-assert_env_reject "environment tier conflicts with CLI effort" tier-env-effort-cli "$?"
 
 selector_fixture_has_no_bytecode() {
     ! find "$1/runtime/scripts" -type f -name '*.pyc' -print -quit | grep -q . \
@@ -2567,12 +2418,11 @@ expect_compat_reject() {
 
 VERSION_FIXTURE="$TMP/selector-version-probes"
 make_selector_fixture "$VERSION_FIXTURE" clean
-# Every base option must be advertised even on default and tier routes.
+# Every base option must be advertised even on default routes.
 for missing in add-dir disable-slash-commands json-schema mode model output-format print print-timeout; do
-    for route in default tier direct; do
+    for route in default direct; do
         selector_args=()
         case "$route" in
-            tier) selector_args=(--tier cheap) ;;
             direct) selector_args=(--model vendor/Future-Model --effort Future-Level) ;;
         esac
         job="missing-$route-$missing"
@@ -2587,10 +2437,9 @@ for missing in add-dir disable-slash-commands json-schema mode model output-form
 done
 # Conditional capabilities: initial session exploration needs neither native nor recovery flags.
 for missing in sandbox conversation effort; do
-    for route in default tier model; do
+    for route in default model; do
         selector_args=()
         case "$route" in
-            tier) selector_args=(--tier cheap) ;;
             model) selector_args=(--model vendor/Future-Model) ;;
         esac
         job="optional-$route-$missing"
@@ -2644,10 +2493,9 @@ if [[ "$rc" == 8 && ! -e "$TMP/logs/required-native" && ! -s "$TMP/required-nati
 else bad "native capability boundary (exit $rc)"; fi
 rm -f "$native_capability_target" "$native_capability_scope"
 
-for route in default tier direct; do
+for route in default direct; do
     selector_args=()
     case "$route" in
-        tier) selector_args=(--tier cheap) ;;
         direct) selector_args=(--model vendor/Future-Model --effort Future-Level) ;;
     esac
     job="arbitrary-version-$route"
@@ -2664,9 +2512,6 @@ assert open(sys.argv[3]).read().splitlines() == ['version','help'] * 2 + ['worke
 if sys.argv[4] == 'direct':
     assert argv[argv.index(b'--model')+1] == b'vendor/Future-Model'
     assert argv[argv.index(b'--effort')+1] == b'Future-Level'
-elif sys.argv[4] == 'tier':
-    assert argv[argv.index(b'--model')+1] == b'gemini-3.6-flash-low'
-    assert b'--effort' not in argv
 else:
     assert b'--model' not in argv and b'--effort' not in argv
 PYTHON
@@ -3050,15 +2895,15 @@ else
     bad "direct selector launch-failure boundary (exit $rc)"
 fi
 
-printf 'tier missing agy must not read the task\n' | \
-    run_without_fake_agy legacy-path-missing "$NO_AGY_PATH" --tier cheap \
+printf 'model missing agy must not read the task\n' | \
+    run_without_fake_agy legacy-path-missing "$NO_AGY_PATH" --model gemini-3.6-flash-low \
     > "$TMP/legacy-path-missing.out" 2> "$TMP/legacy-path-missing.err"
 rc=$?
 if [[ "$rc" == 8 && ! -e "$TMP/no-agy-logs/legacy-path-missing/task.txt" \
         && ! -e "$TMP/no-agy-logs/legacy-path-missing/selection.json" ]]; then
-    ok "tier missing-agy fails before task intake"
+    ok "model missing-agy fails before task intake"
 else
-    bad "tier missing-agy preflight (exit $rc)"
+    bad "model missing-agy preflight (exit $rc)"
 fi
 
 printf 'prefixed semantic version\n' | AGY_TEST_WORKER="$VERSION_FIXTURE/runtime/agy-worker.sh" \
@@ -3068,28 +2913,28 @@ printf 'prefixed semantic version\n' | AGY_TEST_WORKER="$VERSION_FIXTURE/runtime
 rc=$?
 if [[ "$rc" == 0 ]]; then
     assert_direct_result "documented prefixed agy version is accepted" version-prefixed \
-        gemini-3.6-flash gemini-3.6-flash high cli cli 4
+        gemini-3.6-flash gemini-3.6-flash high cli cli 5
 else
     bad "documented prefixed agy version is accepted (exit $rc)"
 fi
 
 VALID_DIRECT_RECORD="$TMP/logs/version-prefixed/selection.json"
-VALID_TIER_RECORD="$TMP/logs/legacy-tier-1/selection.json"
+VALID_DEFAULT_RECORD="$TMP/logs/agy-default/selection.json"
 ARTIFACT_CASES="$TMP/selection-artifacts"
 mkdir -p "$ARTIFACT_CASES"
-python3 -B - "$VALID_DIRECT_RECORD" "$VALID_TIER_RECORD" "$ARTIFACT_CASES" <<'PY'
+python3 -B - "$VALID_DIRECT_RECORD" "$VALID_DEFAULT_RECORD" "$ARTIFACT_CASES" <<'PY'
 import copy
 import json
 from pathlib import Path
 import sys
 
 direct = json.load(open(sys.argv[1], encoding="utf-8"))
-tier = json.load(open(sys.argv[2], encoding="utf-8"))
+default = json.load(open(sys.argv[2], encoding="utf-8"))
 root = Path(sys.argv[3])
-assert direct["schema_version"] == 4
+assert direct["schema_version"] == 5
 cases = {
-    "three-key-direct": {"schema_version": 4, "kind": "agy-worker-selection", "selection_mode": "exact-model"},
-    "tier-with-direct-fields": {**tier, "user_model": "untrusted"},
+    "three-key-direct": {"schema_version": 5, "kind": "agy-worker-selection", "selection_mode": "exact-model"},
+    "default-with-direct-fields": {**default, "user_model": "untrusted"},
     "direct-missing-provenance": {key: value for key, value in direct.items() if key != "user_model_source"},
     "direct-invalid-source": {**direct, "user_model_source": "worker"},
     "direct-invalid-sha": {**direct, "probed_executable": {**direct["probed_executable"], "content_sha256": "z" * 64}},
@@ -3100,7 +2945,7 @@ cases = {
     "effort-provenance-missing": {key: value for key, value in direct.items() if key != "user_effort_source"},
     "retired-matrix-field": {**direct, "matrix_sha256": "a" * 64},
 }
-for schema in (1, 2, 3):
+for schema in (1, 2, 3, 4):
     cases[f"retired-{schema}"] = {**direct, "schema_version": schema}
 for name, value in cases.items():
     (root / f"{name}.json").write_text(json.dumps(value) + "\n", encoding="utf-8")
@@ -3119,11 +2964,11 @@ expect_invalid_selection_record() {
     if [[ "$got" == 64 && ! -s "$path.invalid.out" ]]; then ok "$name"; else bad "$name (exit $got)"; fi
 }
 expect_valid_selection_record "runtime validator accepts a complete direct artifact" "$VALID_DIRECT_RECORD"
-expect_valid_selection_record "runtime validator accepts a complete tier artifact" "$VALID_TIER_RECORD"
+expect_valid_selection_record "runtime validator accepts a complete default artifact" "$VALID_DEFAULT_RECORD"
 for record in "$ARTIFACT_CASES"/*.json; do
     expect_invalid_selection_record "runtime validator rejects $(basename "$record")" "$record"
 done
-for schema in 1 2 3; do
+for schema in 1 2 3 4; do
     record="$ARTIFACT_CASES/retired-$schema.json"
     before="$(shasum -a 256 "$record")"
     "$SELECTOR" --verify-record-executable "$record" > "$record.verify.out" 2> "$record.verify.err"
@@ -3596,7 +3441,7 @@ rc=$?
 expect_exit "--add-dir outside audited workdir is rejected" 64 "$rc"
 
 operand_index=0
-for option in --workdir --mode --tier --add-dir; do
+for option in --workdir --mode --model --add-dir; do
     operand_index=$((operand_index+1))
     printf 'missing operand\n' | run_worker "missing-$operand_index" "$option" > "$TMP/missing-$operand_index.out" 2>/dev/null
     rc=$?
@@ -3978,7 +3823,7 @@ path = Path(sys.argv[3])
 st = repo.stat()
 ident = {"dev": st.st_dev, "ino": st.st_ino, "mode": st.st_mode, "uid": st.st_uid, "gid": st.st_gid}
 value = {
-    "schema_version": 7, "kind": "agy-worker-workflow-state", "job_id": "empty-success",
+    "schema_version": 9, "kind": "agy-worker-workflow-state", "job_id": "empty-success",
     "repo_path": str(repo), "repo_identity": ident,
     "worktree_path": str(repo), "worktree_identity": ident,
     "branch": "test", "branch_ref": "refs/heads/test", "base": "0" * 40,
@@ -4085,7 +3930,7 @@ else
 fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
-        "$TMP/logs/tier/dispatch-command.json" "$TMP/diagnostic-command" <<'PY'
+        "$TMP/logs/literal-smoke/dispatch-command.json" "$TMP/diagnostic-command" <<'PY'
 import copy
 import importlib.util
 import json
@@ -4496,7 +4341,7 @@ fi
 
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/skills/agy-worker/runtime/scripts/agy_dispatch.py" \
         "$TMP/queued-cancel-job" "$TMP/repo" \
-        "$TMP/logs/tier/dispatch-command.json" <<'PY'
+        "$TMP/logs/literal-smoke/dispatch-command.json" <<'PY'
 import fcntl
 import importlib.util
 import json
@@ -4579,7 +4424,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 17
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 18
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -5638,118 +5483,6 @@ else
 fi
 
 echo
-echo "model-recommendation.sh offline policy tests:"
-expect_direct_recommendation "pre-dispatch explicit pair stays unranked and unapplied" \
-    pre-dispatch gemini-3.6-flash high high-complexity-bounded gemini-3.6-flash
-expect_direct_recommendation "post-gate explicit pair cannot be changed or redispatched" \
-    post-gate gemini-3.1-pro low driver-verification-failed gemini-3.1-pro
-expect_direct_recommendation "fixed exact model stays unranked and unapplied" \
-    pre-dispatch claude-sonnet-4-6 '' high-complexity-bounded claude-sonnet-4-6
-expect_recommendation "pre-dispatch routine work needs no escalation" \
-    pre-dispatch cheap bounded-routine no-escalation null none 0
-expect_recommendation "pre-dispatch mechanical batch recommends bulk" \
-    pre-dispatch cheap batched-mechanical consider-higher-tier bulk increase 1
-expect_recommendation "pre-dispatch bounded cross-file work recommends hard" \
-    pre-dispatch bulk cross-file-bounded consider-higher-tier hard increase 1
-expect_recommendation "pre-dispatch bounded high-complexity work recommends hardest" \
-    pre-dispatch hard high-complexity-bounded consider-higher-tier hardest increase 1
-expect_recommendation "pre-dispatch recommendation can span named tier steps" \
-    pre-dispatch cheap high-complexity-bounded consider-higher-tier hardest increase 3
-expect_recommendation "pre-dispatch never escalates the highest named tier" \
-    pre-dispatch hardest high-complexity-bounded no-escalation null none 0
-expect_recommendation "pre-dispatch default tier stays non-rankable" \
-    pre-dispatch default high-complexity-bounded no-escalation null none 0
-expect_recommendation "pre-dispatch custom model stays non-rankable" \
-    pre-dispatch vendor/model-v1 high-complexity-bounded no-escalation null none 0
-expect_recommendation "raw flash-high stays custom, unranked, and recommendation-only" \
-    pre-dispatch gemini-3.6-flash-high high-complexity-bounded no-escalation null none 0
-
-expect_recommendation "accepted gate result needs no escalation" \
-    post-gate bulk gate-accepted no-escalation null none 0
-expect_recommendation "driver verification failure recommends one higher tier" \
-    post-gate bulk driver-verification-failed consider-higher-tier hard increase 1
-expect_recommendation "driver quality review failure recommends one higher tier" \
-    post-gate cheap driver-quality-review-failed consider-higher-tier bulk increase 1
-expect_recommendation "missing expected edits recommends one higher tier" \
-    post-gate hard expected-edits-missing consider-higher-tier hardest increase 1
-expect_recommendation "permission failures are non-escalatable" \
-    post-gate cheap permission-failed no-escalation null none 0
-expect_recommendation "authentication failures are non-escalatable" \
-    post-gate cheap authentication-failed no-escalation null none 0
-expect_recommendation "scope-policy failures are non-escalatable" \
-    post-gate cheap scope-policy-failed no-escalation null none 0
-expect_recommendation "human-required outcomes are non-escalatable" \
-    post-gate cheap human-required no-escalation null none 0
-expect_recommendation "untrusted noncompleted outcomes are non-escalatable" \
-    post-gate cheap noncompleted-worker-outcome no-escalation null none 0
-expect_recommendation "untrusted worker claims are non-escalatable" \
-    post-gate cheap untrusted-worker-claim no-escalation null none 0
-expect_recommendation "invalid envelopes are non-escalatable" \
-    post-gate cheap invalid-envelope no-escalation null none 0
-expect_recommendation "post-gate never escalates the highest named tier" \
-    post-gate hardest driver-verification-failed no-escalation null none 0
-expect_recommendation "post-gate default tier stays non-rankable" \
-    post-gate default driver-verification-failed no-escalation null none 0
-expect_recommendation "post-gate custom model stays non-rankable" \
-    post-gate vendor:model-v1 driver-verification-failed no-escalation null none 0
-
-expect_recommendation_reject "pre-dispatch rejects post-gate evidence" \
-    --stage pre-dispatch --selected-tier bulk --evidence permission-failed
-expect_recommendation_reject "post-gate rejects pre-dispatch evidence" \
-    --stage post-gate --selected-tier bulk --evidence batched-mechanical
-expect_recommendation_reject "unknown evidence is rejected" \
-    --stage post-gate --selected-tier bulk --evidence worker-says-hard
-expect_recommendation_reject "invalid selected tier syntax is rejected" \
-    --stage pre-dispatch --selected-tier 'hard tier' --evidence high-complexity-bounded
-expect_recommendation_reject "duplicate stage is rejected as ambiguous" \
-    --stage pre-dispatch --stage post-gate --selected-tier bulk --evidence gate-accepted
-expect_recommendation_reject "duplicate selected tier is rejected as ambiguous" \
-    --stage pre-dispatch --selected-tier cheap --selected-tier hard --evidence bounded-routine
-expect_recommendation_reject "duplicate evidence is rejected as ambiguous" \
-    --stage pre-dispatch --selected-tier bulk --evidence bounded-routine --evidence batched-mechanical
-expect_recommendation_reject "missing stage is rejected" \
-    --selected-tier bulk --evidence bounded-routine
-expect_recommendation_reject "missing selected tier is rejected" \
-    --stage pre-dispatch --evidence bounded-routine
-expect_recommendation_reject "missing evidence is rejected" \
-    --stage pre-dispatch --selected-tier bulk
-expect_recommendation_reject "thinking-level flags are not an interface" \
-    --stage pre-dispatch --selected-tier bulk --evidence bounded-routine --thinking-level high
-expect_recommendation_reject "selected tier and selected model conflict" \
-    --stage pre-dispatch --selected-tier bulk --selected-model gemini-3.6-flash-high \
-    --evidence bounded-routine
-expect_recommendation_reject "selected effort requires selected model" \
-    --stage pre-dispatch --selected-tier bulk --selected-effort high --evidence bounded-routine
-expect_recommendation_reject "duplicate selected model is ambiguous" \
-    --stage pre-dispatch --selected-model gemini-3.6-flash-high \
-    --selected-model gemini-3.6-flash-high --evidence bounded-routine
-expect_recommendation_reject "duplicate selected effort is ambiguous" \
-    --stage pre-dispatch --selected-model gemini-3.6-flash --selected-effort high \
-    --selected-effort high --evidence bounded-routine
-expect_direct_recommendation "arbitrary caller model and effort remain unranked" \
-    pre-dispatch vendor/Future-Model Future-Level bounded-routine vendor/Future-Model
-expect_recommendation_reject "positional arguments are rejected" \
-    --stage pre-dispatch --selected-tier bulk --evidence bounded-routine hardest
-
-mkdir -p "$TMP/route-bin"
-cat > "$TMP/route-bin/agy" <<EOF
-#!/usr/bin/env bash
-touch "$TMP/recommender-called-agy"
-EOF
-cat > "$TMP/route-bin/qa-gate.sh" <<EOF
-#!/usr/bin/env bash
-touch "$TMP/recommender-called-gate"
-EOF
-chmod +x "$TMP/route-bin/agy" "$TMP/route-bin/qa-gate.sh"
-PATH="$TMP/route-bin:$PATH" "$RECOMMENDER" --stage post-gate --selected-tier bulk \
-    --evidence driver-verification-failed > "$TMP/side-effect.json" 2>/dev/null
-rc=$?
-if [[ "$rc" == "0" && ! -e "$TMP/recommender-called-agy" && ! -e "$TMP/recommender-called-gate" ]]; then
-    ok "recommender invokes neither agy nor qa-gate"
-else
-    bad "recommender invokes neither agy nor qa-gate"
-fi
-
 # Exercise the actual resolved core after copying only the public skill folder.
 if python3 -B - "$ROOT" "$TMP" <<'PY'
 import json
@@ -5792,8 +5525,8 @@ call("/usr/bin/git", "-C", str(repo), "init", "-q")
 call("/usr/bin/git", "-C", str(repo), "add", "proof.txt")
 call("/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
 workflow = str(runtime / "workflow.sh")
-preview = json.loads(call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--preview", "--tier", "bulk", "--task", "Return the unchanged synthetic candidate", *provider_arguments).stdout)
-call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--approve-whole-worktree", preview["launch_approval_sha256"], "--tier", "bulk", "--task", "Return the unchanged synthetic candidate", *provider_arguments)
+preview = json.loads(call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--preview", "--model", "literal", "--task", "Return the unchanged synthetic candidate", *provider_arguments).stdout)
+call(workflow, "run", "--repo", str(repo), "--job-id", "folder-only", "--approve-whole-worktree", preview["launch_approval_sha256"], "--model", "literal", "--task", "Return the unchanged synthetic candidate", *provider_arguments)
 state_files = list(Path(env["XDG_STATE_HOME"]).glob("agy-worker/workflows/*/folder-only/workflow.json"))
 assert len(state_files) == 1
 state_file = state_files[0]

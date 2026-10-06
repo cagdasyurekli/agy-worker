@@ -48,7 +48,6 @@ doctor_runtime_complete() {
         qa-gate.sh \
         verify-job.sh \
         evidence-report.sh \
-        model-recommendation.sh \
         model-selection.sh \
         doctor.sh \
         ground-truth.sh \
@@ -57,8 +56,6 @@ doctor_runtime_complete() {
         scripts/validate-envelope.py \
         scripts/evidence_receipt.py \
         scripts/evidence_report.py \
-        scripts/recommendation_record.py \
-        scripts/model-recommendation.py \
         scripts/model_selection.py \
         scripts/candidate_state.py \
         scripts/agy_dispatch.py \
@@ -90,7 +87,6 @@ doctor_runtime_complete() {
         schemas/worker-result.provider.schema.json \
         schemas/evidence-receipt.schema.json \
         schemas/model-selection.schema.json \
-        schemas/model-recommendation.schema.json \
         schemas/job-state.schema.json \
         schemas/delegation-policy.schema.json; do
         dependency_parent="${required%/*}"

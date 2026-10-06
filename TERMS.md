@@ -13,8 +13,9 @@ This project does not grant access to those services or include their credential
 ## Operator responsibility
 
 You are responsible for choosing the repository, allowed paths, task prompt, model
-tier, verification commands, and whether to preserve or integrate a candidate. Obtain
-authorization before transmitting repository content to an external model provider.
+and effort, verification commands, and whether to preserve or integrate a candidate.
+Obtain authorization before transmitting repository content to an external model
+provider.
 Do not use the project to access or modify systems, data, or repositories without
 permission.
 

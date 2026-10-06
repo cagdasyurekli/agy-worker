@@ -275,8 +275,8 @@ CURRENT_STATE_FIELDS = {
     'worktree_snapshot_algorithm',
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
-CURRENT_STATE_SCHEMA = 17
-CURRENT_COMMAND_SCHEMA = 15
+CURRENT_STATE_SCHEMA = 18
+CURRENT_COMMAND_SCHEMA = 16
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
 CURRENT_WORKTREE_SNAPSHOT_ALGORITHM = WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -4870,11 +4870,7 @@ def _confirm_launch_authority(job: Path, command: dict[str, Any], state: Mapping
             raise DispatchError("launch authority changed: max_seconds")
         if option("--output-format") != "stream-json":
             raise DispatchError("dispatch launch output format is invalid")
-        selection = _load_bound_selection(command, state)
-        tier = None
-        if selection is not None and selection["selection_mode"] == "tier":
-            if selection["selected_tier_source"] != "implicit-default":
-                tier = selection["selected_tier"]
+        _load_bound_selection(command, state)
         mode = option("--mode")
         if mode not in {"plan", "accept-edits"}:
             raise DispatchError("dispatch launch mode is invalid")
@@ -4927,7 +4923,7 @@ def _confirm_launch_authority(job: Path, command: dict[str, Any], state: Mapping
             workflow=command["workflow"], mode=mode, max_cycles=command["max_cycles"],
             idle_seconds=command["idle_seconds"], hard_seconds=command["hard_seconds"],
             max_seconds=command["max_seconds"], notice_seconds=command["notice_seconds"],
-            tier=tier, model=option("--model"), effort=option("--effort"),
+            model=option("--model"), effort=option("--effort"),
             allow_scoped_repair=command["allow_scoped_repair"],
             self_verification_manifest_sha256=manifest_sha,
             provider_env_names=command["provider_env"],
@@ -5014,7 +5010,7 @@ def _launch_controller_provider(
         outcome.reason = "status_unavailable"
         execution.returncode = EXIT_BY_REASON["status_unavailable"]
     except OSError:
-        # A legacy tier deliberately reaches this point even when agy is
+        # A selection reaches this point even when agy is
         # absent.  Publish a terminal, sanitized dispatch failure rather
         # than leaking an interpreter traceback or leaving a queued job.
         outcome.reason = "agy_failed_unclassified"

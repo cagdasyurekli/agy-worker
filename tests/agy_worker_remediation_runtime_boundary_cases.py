@@ -105,7 +105,7 @@ def run(context: dict[str, object]) -> None:
                 )
             finally:
                 os.environ["PATH"] = previous_path
-            assert selection["schema_version"] == 4
+            assert selection["schema_version"] == 5
             assert not ({"compatibility_disposition", "approved_help_sha256", "compatibility_decision_sha256"} & set(selection))
             selection_path = job / "selection.json"
             MODULE.MODEL_SELECTION.publish_record(selection_path, selection)

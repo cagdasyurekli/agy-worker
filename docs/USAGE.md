@@ -77,6 +77,7 @@ used and model/effort is unresolved. For fixed, compound, or literal models wher
 effort is not separately selectable, say so without inventing backend reasoning or a
 thinking level. If preflight fails before provider launch, state that the task was not
 sent. If provider reach is uncertain, state that it is unverified.
+Direct model and effort selection remain caller-owned.
 
 ## Choose a workflow
 
@@ -245,6 +246,7 @@ WT=/tmp/agy-job-12345
 JOB_BRANCH=agy/tests-parser-errors-12345
 ENVELOPE=/tmp/agy-job-12345-envelope.json
 JOB_ID=parser-tests-12345
+MODEL="${MODEL:?set to an exact value reported by agy models}"
 BASE="$(git -C "$TARGET" rev-parse HEAD)"
 
 git -C "$TARGET" worktree add -b "$JOB_BRANCH" "$WT" "$BASE"
@@ -255,13 +257,13 @@ The driver runs every command. Return commands_run and tests_run as empty arrays
 APPROVAL_RECORD=/absolute/private/parser-launch-preview.json
 ( umask 077
   "$PIPELINE/agy-worker.sh" transmission-preview --workdir "$WT" \
-    --workflow task --mode accept-edits --tier bulk --add-dir "$WT" --task "$TASK" \
+    --workflow task --mode accept-edits --model "$MODEL" --add-dir "$WT" --task "$TASK" \
     > "$APPROVAL_RECORD"
 )
 WHOLE_WORKTREE_SHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["launch_approval_sha256"])' "$APPROVAL_RECORD")"
 
 if ! printf '%s\n' "$TASK" | AGY_WORKER_JOB_ID="$JOB_ID" "$PIPELINE/agy-worker.sh" \
-    --workflow task --mode accept-edits --tier bulk \
+    --workflow task --mode accept-edits --model "$MODEL" \
     --workdir "$WT" --add-dir "$WT" \
     --approve-whole-worktree "$WHOLE_WORKTREE_SHA" --approval-record "$APPROVAL_RECORD" > "$ENVELOPE"; then
   echo "Dispatch failed; inspect the sanitized terminal state/result. Resume only a candidate-free failure; handle an ERROR candidate with Verification v2, and preserve/finalize or freshly restart a CANCELED candidate." >&2
@@ -354,7 +356,6 @@ prove the worker's architecture prose or completeness.
 | `--max-cycles 1..2` | — | `explore` or `task` attempt budget; default `2`. |
 | `--max-cycles 1..5` | — | `project` attempt budget; default `5`. |
 | `--mode plan|accept-edits` | `AGY_WORKER_MODE` | Raw compatibility mode; explicit workflows constrain it. |
-| `--tier cheap|bulk|hard|hardest|default` | `AGY_WORKER_TIER` | Legacy named tier or agy-owned default. |
 | `--model EXACT_MODEL` | `AGY_WORKER_MODEL` | Caller-owned literal model value. |
 | `--effort VALUE` | `AGY_WORKER_EFFORT` | Requires `--model`; forwards the literal effort separately. |
 | `--workdir DIR` | — | Source worktree. Without `--provider-scope`, treat all content as worker-readable and potentially transmissible. |
@@ -387,54 +388,27 @@ Existing jobs must satisfy the [current format policy](PROJECT_WORKFLOW.md#retir
 
 ## Model and effort selection
 
-Model and effort selection belongs to the caller. Recommendations are advisory and
-never silently alter that selection. With no selector, the dispatcher sends no model
-and leaves agy's default unchanged.
+Model and effort selection belongs to the caller. Available model names are reported
+by `agy models`; agy-worker forwards the caller's model and optional effort literally.
+With no selector, the dispatcher sends no model and leaves agy's default unchanged.
 The `selection` record, `resolved_agy_model`, and an override label establish only
 the model requested or forwarded on AGY's CLI; the backend model that actually ran
 remains unknown unless AGY stream JSON reports it.
 
-Legacy named tiers currently resolve as follows:
-
-| Tier | Exact downstream selection |
-|---|---|
-| `cheap` | `gemini-3.6-flash-low` |
-| `bulk` | `gemini-3.6-flash-medium` |
-| `hard` | `gemini-3.1-pro-high` |
-| `hardest` | `claude-opus-4-6-thinking` |
-| `default` | no `--model`; let agy choose |
-
-These constants are convenience labels, not verified claims about price, difficulty,
-provider, availability, or behavioral equivalence.
-
 `--model` and an optional `--effort` are forwarded unchanged as separate AGY options.
-There is no model/effort matrix or inferred compound slug. AGY decides whether a
-pair is supported; rejection does not trigger a different model or effort. Selector
-sources have no silent precedence: repeated selectors, CLI/environment duplicates,
-tier plus direct selection, and effort without a model fail before dispatch.
+AGY decides whether a pair is supported; rejection does not trigger a different model
+or effort. AGY 1.3.0 rejected the observed combination
+`--model gemini-3.8-flash-medium` with `--effort high` and reported a conflict between
+that model and `--effort high`. This observation does not establish how a bare model
+name with `--effort` behaves.
+Repeated model or effort selectors, CLI/environment duplicates, and effort without a
+model fail before dispatch.
 
 `--literal-model` is retired; use `--model` for a caller-owned literal choice.
 
-Every provider attempt reuses the caller-owned frozen selection for that job. A
-model recommendation can report advice but cannot dispatch, change state, apply
-itself, or turn permission, authentication, path-policy, or human-required failures
-into a reason for higher model spend. See
+Every provider attempt reuses the caller-owned frozen selection for that job. See
 [capability requirements](INSTALLATION.md#agy-capability-requirements)
 for the launch preflight boundary.
-
-Request advisory JSON before dispatch or after a driver-owned gate result:
-
-```bash
-./model-recommendation.sh --stage pre-dispatch \
-  --selected-tier cheap --evidence batched-mechanical
-
-./model-recommendation.sh --stage post-gate \
-  --selected-tier bulk --evidence driver-verification-failed
-```
-
-The command never calls `agy`, runs the gate, changes job state, or applies its
-recommendation. Its finite evidence vocabulary and escalation policy are enforced by
-the bundled runtime; inspect `--help` before scripting additional cases.
 
 ## Verification and honest outcomes
 

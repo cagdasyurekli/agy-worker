@@ -51,7 +51,7 @@ def receipt(exit_code=0):
     }
     outcome, verdict = outcomes[exit_code]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "agy-worker-evidence-receipt",
         "gate_authority": "qa-gate",
         "resolved_base": "a" * 40,
@@ -66,7 +66,6 @@ def receipt(exit_code=0):
         "gate_exit": exit_code,
         "gate_outcome": outcome,
         "verdict": verdict,
-        "recommendations_participated_in_acceptance": False,
         "integrity": {
             "signed": False,
             "tamper_evident": False,
@@ -75,37 +74,13 @@ def receipt(exit_code=0):
     }
 
 
-def recommendation():
-    return {
-        "schema_version": 2,
-        "kind": "model-tier-recommendation",
-        "stage": "pre-dispatch",
-        "recommendation_only": True,
-        "applied": False,
-        "decision": "no-escalation",
-        "recommended_tier": None,
-        "rationale": "The selected tier already meets or exceeds the driver-evidenced bulk task profile.",
-        "cost_impact": {
-            "direction": "none",
-            "relative_tier_steps": 0,
-            "summary": "No tier change is recommended; no incremental model cost is proposed.",
-        },
-        "evidence": {
-            "owner": "driver",
-            "code": "batched-mechanical",
-            "description": "The driver identified a bounded batch of mechanical work.",
-        },
-        "selected_tier": "bulk",
-    }
-
-
 def selection():
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "kind": "agy-worker-selection",
-        "selection_mode": "tier",
-        "selected_tier": "bulk",
-        "selected_tier_source": "cli",
+        "selection_mode": "exact-model",
+        "user_model": "gemini-3.6-flash-medium",
+        "user_model_source": "cli",
         "resolved_agy_model": "gemini-3.6-flash-medium",
     }
 
@@ -155,7 +130,7 @@ first = run(base)
 second = run(base)
 case("text rendering is byte-stable", first.returncode == 0 and first.stdout == second.stdout)
 expected_text = (
-    "Evidence Report v1\n"
+    "Evidence Report v2\n"
     "Verdict: gate-passed\n"
     "Gate outcome: gate-passed (exit 0)\n"
     "Gate authority: qa-gate\n"
@@ -166,17 +141,15 @@ expected_text = (
     f"Final candidate state SHA-256: {'f'*64}\n"
     "Verification labels (2): verify-001, verify-002\n"
     "Caller selection bound: no\n"
-    "Pre-dispatch recommendation bound: no\n"
-    "Recommendations participated in acceptance: no\n"
     "Integrity: unsigned and not tamper-evident\n"
     "Human review: required before calling a gate-passed candidate accepted.\n"
 ).encode("ascii")
-case("text renderer matches the exact v1 byte contract", first.stdout == expected_text)
+case("text renderer matches the exact v2 byte contract", first.stdout == expected_text)
 markdown = run(base, "markdown")
 case(
     "Markdown rendering is stable and bounded",
     markdown.returncode == 0
-    and markdown.stdout.startswith(b"# Evidence Report v1\n")
+    and markdown.stdout.startswith(b"# Evidence Report v2\n")
     and len(markdown.stdout) < 65536,
 )
 case(
@@ -202,10 +175,8 @@ expected_json = {
     "integrity": {"signed": False, "tamper_evident": False},
     "kind": "agy-worker-evidence-report",
     "path_policy_sha256": "c" * 64,
-    "pre_dispatch_recommendation_bound": False,
-    "recommendations_participated_in_acceptance": False,
     "resolved_base": "a" * 40,
-    "schema_version": 1,
+    "schema_version": 2,
     "verdict": "gate-passed",
     "verification_labels": ["verify-001", "verify-002"],
 }
@@ -225,7 +196,7 @@ case(
     "GitHub Step Summary rendering is deterministic Markdown without commands or HTML",
     step_summary.returncode == 0
     and step_summary.stderr == b""
-    and step_summary.stdout.startswith(b"# Evidence Report v1 (GitHub Step Summary)\n")
+    and step_summary.stdout.startswith(b"# Evidence Report v2 (GitHub Step Summary)\n")
     and b"\n::" not in step_summary.stdout
     and b"](" not in step_summary.stdout
     and b"<" not in step_summary.stdout,
@@ -298,7 +269,7 @@ malformed = subprocess.run(
 )
 case("malformed JSON produces no report", malformed.returncode == 1 and malformed.stdout == b"")
 duplicate = TMP / "duplicate.json"
-raw = json.dumps(base).replace('"schema_version": 1', '"schema_version": 1, "schema_version": 1')
+raw = json.dumps(base).replace('"schema_version": 2', '"schema_version": 2, "schema_version": 1')
 duplicate.write_text(raw, encoding="ascii")
 dup = subprocess.run([str(REPORT), "--receipt", str(duplicate), "--format", "text"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 case("duplicate JSON key produces no report", dup.returncode == 1 and dup.stdout == b"")
@@ -306,7 +277,7 @@ private = copy.deepcopy(base); private["prompt"] = "/Users/private/secret"
 case("forbidden private field produces no report", run(private).returncode == 1)
 wrong = copy.deepcopy(base); wrong["verdict"] = "rejected"
 case("internally inconsistent outcome produces no report", run(wrong).returncode == 1)
-version = copy.deepcopy(base); version["schema_version"] = 2
+version = copy.deepcopy(base); version["schema_version"] = 1
 case("unsupported receipt version produces no report", run(version).returncode == 1)
 control = copy.deepcopy(base); control["verifiers"][0]["label"] = "verify-001\nsecret"
 case("control-character label produces no report", run(control).returncode == 1)
@@ -327,15 +298,9 @@ case("mismatched envelope digest renders nothing", run(bound, extra=("--envelope
 selected = selection(); selected_path = write_json(selected, "selection")
 selected_receipt = copy.deepcopy(base); selected_receipt["caller_selection"] = selected
 case("matching selection artifact renders", run(selected_receipt, extra=("--selection", str(selected_path))).returncode == 0)
-different_selection = copy.deepcopy(selected); different_selection["selected_tier"] = "hard"; different_selection["resolved_agy_model"] = "gemini-3.1-pro-high"
+different_selection = copy.deepcopy(selected); different_selection["user_model"] = "gemini-3.1-pro-high"; different_selection["resolved_agy_model"] = "gemini-3.1-pro-high"
 different_path = write_json(different_selection, "selection")
 case("mismatched selection artifact renders nothing", run(selected_receipt, extra=("--selection", str(different_path))).returncode == 1)
-advisory = recommendation(); advisory_path = write_json(advisory, "recommendation")
-advisory_receipt = copy.deepcopy(base); advisory_receipt["pre_dispatch_recommendation"] = advisory
-case("matching recommendation artifact renders", run(advisory_receipt, extra=("--pre-recommendation", str(advisory_path))).returncode == 0)
-changed_advisory = copy.deepcopy(advisory); changed_advisory["applied"] = True
-changed_path = write_json(changed_advisory, "recommendation")
-case("mismatched or applied recommendation renders nothing", run(advisory_receipt, extra=("--pre-recommendation", str(changed_path))).returncode == 1)
 case("matching trusted candidate digests render", run(base, extra=("--initial-state-digest", "e"*64, "--final-state-digest", "f"*64)).returncode == 0)
 case("mismatched trusted candidate digest renders nothing", run(base, extra=("--final-state-digest", "0"*64)).returncode == 1)
 
@@ -344,7 +309,6 @@ print("pure validation and mutation authority:")
 sys.path.insert(0, str(SCRIPTS))
 import evidence_receipt
 import evidence_report
-import recommendation_record
 
 original_run = evidence_receipt.subprocess.run
 def forbidden_subprocess(*args, **kwargs):
@@ -352,17 +316,17 @@ def forbidden_subprocess(*args, **kwargs):
 evidence_receipt.subprocess.run = forbidden_subprocess
 try:
     schema = evidence_receipt.load_schema(RUNTIME / "schemas/evidence-receipt.schema.json")
-    evidence_receipt.validate_receipt(advisory_receipt, schema)
+    evidence_receipt.validate_receipt(selected_receipt, schema)
     pure = True
 except BaseException:
     pure = False
 finally:
     evidence_receipt.subprocess.run = original_run
-case("receipt-only recommendation validation invokes no subprocess", pure)
+case("receipt-only selection validation invokes no subprocess", pure)
 
 direct = copy.deepcopy(base)
 direct["caller_selection"] = {
-    "schema_version": 4,
+    "schema_version": 5,
     "kind": "agy-worker-selection",
     "selection_mode": "exact-model",
     "user_model": "gemini-3.1-pro-high",
@@ -382,6 +346,55 @@ finally:
     model_selection.probe_capabilities = original_probe
     evidence_receipt.subprocess.run = original_run
 case("receipt-only direct selection validation invokes no interface probe or subprocess", pure_selection)
+
+# The packaged schema and Python authority both require an actual integer.
+evidence_receipt.validate_schema(base, schema)
+evidence_receipt.validate_receipt(base, schema)
+for invalid_version in (2.0, True, False):
+    malformed = dict(base, schema_version=invalid_version)
+    for validator in (evidence_receipt.validate_schema, evidence_receipt.validate_receipt):
+        try:
+            validator(malformed, schema)
+            rejected = False
+        except evidence_receipt.ValidationFailure:
+            rejected = True
+        case(f"{validator.__name__} rejects noninteger receipt version {invalid_version!r}", rejected)
+
+# Closed receipt fields remain strict for inert false/null/empty values too.
+for field in ("pre_dispatch_recommendation", "recommendations_participated_in_acceptance"):
+    for value in (False, None, {}, ""):
+        removed = dict(base, **{field: value})
+        try:
+            evidence_receipt.validate_receipt(removed, schema)
+            rejected = False
+        except evidence_receipt.ValidationFailure:
+            rejected = True
+        case(f"removed {field}={value!r} rejects receipt and report",
+             rejected and run(removed).returncode == 1)
+
+for mode in ("agy-default", "exact-model", "model-effort"):
+    candidate = {"schema_version": 5, "kind": "agy-worker-selection",
+                 "selection_mode": mode, "resolved_agy_model": None}
+    if mode != "agy-default":
+        candidate.update(user_model="literal", user_model_source="cli", resolved_agy_model="literal")
+    if mode == "model-effort": candidate.update(user_effort="future", user_effort_source="environment")
+    model_selection.validate_selection_record_shape(candidate)
+    case(f"current {mode} receipt selection accepted", run(dict(base, caller_selection=candidate)).returncode == 0)
+    mutations = [dict(candidate, schema_version=4), dict(candidate, selected_tier="default"),
+                 dict(candidate, selection_mode="tier"), dict(candidate, unknown=False)]
+    if mode == "agy-default":
+        mutations += [dict(candidate, resolved_agy_model="unexpected"),
+                      dict(candidate, user_effort="high"), dict(candidate, user_model_source="cli")]
+    else:
+        mutations += [{key: value for key, value in candidate.items() if key != "user_model_source"}]
+    for mutation in mutations:
+        try:
+            model_selection.validate_selection_record_shape(mutation)
+            rejected = False
+        except model_selection.CallerError:
+            rejected = True
+        case(f"{mode} selection mutation rejects through Python and receipt/report",
+             rejected and run(dict(base, caller_selection=mutation)).returncode == 1)
 
 direct_mismatch = copy.deepcopy(direct)
 direct_mismatch["caller_selection"]["resolved_agy_model"] = "claude-sonnet-4-6"
@@ -410,70 +423,6 @@ except selection_namespace["CallerError"]:
     selection_mutation_exposed = False
 case("exact-selection equality weakening mutation is detected", selection_mutation_exposed)
 
-invalid_advisory = copy.deepcopy(advisory); invalid_advisory["applied"] = True
-try:
-    recommendation_record.validate_recommendation_record(invalid_advisory)
-    secure_rejected = False
-except recommendation_record.RecommendationRecordError:
-    secure_rejected = True
-case("pure validator rejects an applied advisory", secure_rejected)
-
-source = (SCRIPTS / "recommendation_record.py").read_text(encoding="utf-8")
-needle = 'if value.get("recommendation_only") is not True or value.get("applied") is not False:'
-mutated = source.replace(needle, 'if value.get("recommendation_only") is not True:', 1)
-namespace = {"__name__": "recommendation_record_mutation", "__file__": str(SCRIPTS / "recommendation_record.py")}
-exec(compile(mutated, "<recommendation-mutation>", "exec"), namespace, namespace)
-try:
-    namespace["validate_recommendation_record"](invalid_advisory)
-    mutation_exposed = True
-except namespace["RecommendationRecordError"]:
-    mutation_exposed = False
-case("applied-guard weakening mutation is detected", mutation_exposed)
-
-direct_advisory = copy.deepcopy(advisory)
-direct_advisory.pop("selected_tier")
-direct_advisory["user_model"] = "claude-sonnet-4-6"
-direct_advisory["resolved_agy_model"] = "claude-sonnet-4-6"
-direct_advisory["rationale"] = (
-    "An explicit model/effort selection is caller-owned and unranked; "
-    "this advisory cannot change or redispatch it."
-)
-recommendation_record.validate_recommendation_record(direct_advisory)
-direct_advisory_bad = copy.deepcopy(direct_advisory)
-direct_advisory_bad["resolved_agy_model"] = "gpt-oss-120b-medium"
-try:
-    recommendation_record.validate_recommendation_record(direct_advisory_bad)
-    exact_advisory_rejected = False
-except recommendation_record.RecommendationRecordError:
-    exact_advisory_rejected = True
-case("pure recommendation validator rejects exact-model resolution mismatch", exact_advisory_rejected)
-
-advisory_equality = 'if value["resolved_agy_model"] != value["user_model"]:'
-assert source.count(advisory_equality) == 1
-equality_mutated = source.replace(advisory_equality, "if False:", 1)
-equality_namespace = {
-    "__name__": "recommendation_equality_mutation",
-    "__file__": str(SCRIPTS / "recommendation_record.py"),
-}
-exec(compile(equality_mutated, "<recommendation-equality-mutation>", "exec"), equality_namespace, equality_namespace)
-try:
-    equality_namespace["validate_recommendation_record"](direct_advisory_bad)
-    equality_mutation_exposed = True
-except equality_namespace["RecommendationRecordError"]:
-    equality_mutation_exposed = False
-case("exact-advisory equality weakening mutation is detected", equality_mutation_exposed)
-
-receipt_source = (SCRIPTS / "evidence_receipt.py").read_text(encoding="utf-8")
-case(
-    "receipt validator source contains no recommendation subprocess call",
-    "validate_recommendation_for_publication" in receipt_source
-    and "validate_receipt(candidate, schema)" in receipt_source,
-)
-recommender_source = (SCRIPTS / "model-recommendation.py").read_text(encoding="utf-8")
-case(
-    "recommender binds its output to the shared v2 validator",
-    "validate_recommendation_record(result)" in recommender_source,
-)
 report_source = (SCRIPTS / "evidence_report.py").read_text(encoding="utf-8")
 case(
     "renderer has no command, routing, gate, git, agy, or network execution surface",
@@ -565,7 +514,7 @@ finally:
 case(
     "GitHub summary environment file is never written implicitly",
     implicit.returncode == 0
-    and implicit.stdout.startswith(b"# Evidence Report v1")
+    and implicit.stdout.startswith(b"# Evidence Report v2")
     and summary_env.read_bytes() == b"sentinel\n",
 )
 

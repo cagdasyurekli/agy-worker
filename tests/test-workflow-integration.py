@@ -266,7 +266,7 @@ print(json.dumps({{
             raise AssertionError(f"expected one installed workflow state, got {workflow_states}")
         workflow_state = workflow_states[0]
         state = json.loads(workflow_state.read_bytes())
-        assert state["schema_version"] == 8
+        assert state["schema_version"] == 10
         assert state["preview_content_sha256"] == preview_data["content_manifest_sha256"]
         assert state["preview_launch_approval_sha256"] == launch_approval_sha
         assert state["native_grant_profile"] == "baseline"

@@ -47,7 +47,7 @@ These never relax without an explicit owner decision.
 - **Child environments are allowlisted.** Provider and verifier children start from an
   environment allowlist. `--provider-env` / `--verify-env` need approval per variable
   name.
-- **Model and effort are caller-owned.** Recommendations are advisory.
+- **Model and effort are caller-owned.**
 - **No bypasses.** Never add or recommend `--dangerously-skip-permissions`,
   `--dangerously-bypass-approvals-and-sandbox`, or disabling a host sandbox for agy.
 - **User config is off-limits.** Do not modify `~/.gemini`, `~/.codex`, or `~/.claude`
