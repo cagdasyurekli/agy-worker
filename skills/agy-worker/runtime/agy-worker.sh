@@ -160,7 +160,7 @@ Exit codes: 0 ok · 2 no prompt · 3 empty output · 4 schema invalid · 5 uncla
             6 permission gate · 8 capability evidence unavailable
             9 idle timeout · 16 hard deadline · 17 provider timeout · 20 status, binding, or verification-copy runtime unavailable · 21 resume failed
             22 cancelled · 23 output oversized · 24 quota exhausted · 25 provider terminal error
-            26 selection preflight failed · 27 native host sandbox unavailable
+            26 model selection failed · 27 native host sandbox unavailable
             64 invalid usage
 
 Advanced controls accept --state WORKFLOW_STATE to resolve the bound dispatch log root.

@@ -302,7 +302,7 @@ REASONS = {
     "permission_required", "empty_output", "invalid_envelope",
     "output_oversized", "interrupted", "provider_quota_exhausted",
     "provider_terminal_error", "provider_terminal_cancelled",
-    "selection_preflight_failed", "resolve_undo_present",
+    "selection_preflight_failed", "model_selection_rejected", "resolve_undo_present",
     "native_host_sandbox_unavailable",
 }
 EXIT_BY_REASON = {
@@ -322,10 +322,16 @@ EXIT_BY_REASON = {
     "provider_quota_exhausted": 24,
     "provider_terminal_error": 25,
     "selection_preflight_failed": 26,
+    "model_selection_rejected": 26,
     "native_host_sandbox_unavailable": 27,
     "provider_terminal_cancelled": 22,
     "interrupted": 143,
 }
+
+MODEL_SELECTION_REJECTED_MESSAGE = (
+    "AGY rejected the model/effort selection. Check `agy models` and the "
+    "`--model`/`--effort` pair before starting a new job."
+)
 
 MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
@@ -1924,7 +1930,7 @@ def _resume_is_eligible(value: Mapping[str, Any], now: float) -> bool:
     return bool(
         value["status"] == "failed"
         and not value["candidate_recognized"]
-        and value.get("reason") not in {"selection_preflight_failed", "permission_required"}
+        and value.get("reason") not in {"selection_preflight_failed", "model_selection_rejected", "permission_required"}
         and value["resume_available"]
         and isinstance(value["conversation_id"], str)
         and _restart_guard_accepts(value, elapsed_seconds=_live_elapsed(value, now))
@@ -1946,7 +1952,7 @@ def _continue_from_facts(value: Mapping[str, Any], now: float) -> bool:
         # another same-conversation continuation.
         # A provider-reported permission denial likewise preserves the candidate
         # for review, but is not authority for an automatic continuation.
-        and value["reason"] not in {"selection_preflight_failed", "permission_required"}
+        and value["reason"] not in {"selection_preflight_failed", "model_selection_rejected", "permission_required"}
         and value["candidate_recognized"]
         and value["result_available"]
         and value["candidate_source"] != "provider_cancelled"
@@ -2432,6 +2438,10 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         ),
         "migration_binding_sha256": None,
         "reason": value["reason"],
+        "reason_message": (
+            MODEL_SELECTION_REJECTED_MESSAGE
+            if value["reason"] == "model_selection_rejected" else None
+        ),
         "retry_after_seconds": retry_remaining,
         "remote_cancel_unverified": value["remote_cancel_unverified"],
         "resume_available": "resume" in action_names,
@@ -2524,6 +2534,7 @@ def print_text_status(value: Mapping[str, Any], sha: str, *, job: Path | None = 
     )
     lines = (
         f"Provider attempt: {value['status']}; reason: {reason}; failure stage: {failure_stage}; bound result available: {'yes' if public['result_available'] else 'no'}; driver disposition: {value['driver_disposition']}."
+        + (f" {public['reason_message']}" if public["reason_message"] else "")
         + (" macOS denied native sandbox_apply; this can occur when the driver host is already sandboxed. Use a compatible driver host with the same approved native mode." if reason == "native_host_sandbox_unavailable" else ""),
         f"Driver evidence: {counts['passed']} passed, {counts['failed']} failed, {counts['advisory']} advisory, {counts['missing']} missing; cycle: {public['cycle']}/{public['max_cycles']}."
         + (f" {public['cycle_budget_explanation']}" if public['cycle_budget_explanation'] else ""),
@@ -4019,6 +4030,58 @@ def _classify_stderr(
     return "agy_failed_unclassified"
 
 
+def _selection_rejection_result(line: bytes) -> bool:
+    """Recognize only a strict diagnostic frame, never a worker envelope."""
+    if not line or len(line) > MAX_EVENT_BYTES:
+        return False
+    try:
+        frame = json.loads(
+            line.decode("utf-8", "strict"), object_pairs_hook=_duplicates,
+            parse_constant=_invalid_json_constant,
+        )
+    except (UnicodeError, ValueError, OverflowError, DispatchError, RecursionError):
+        return False
+    result = frame.get("result") if isinstance(frame, dict) else None
+    return bool(
+        isinstance(frame, dict) and frame.get("event") == "result"
+        and isinstance(result, dict) and result.get("status") == "ERROR"
+        and type(result.get("num_turns")) is int and result["num_turns"] == 0
+    )
+
+
+def _model_selection_rejected(
+    stream: Path, stderr: Path, returncode: int, version: str,
+    provider_timeout_seconds: object, *, native: bool,
+) -> bool:
+    """Require the complete bounded evidence and actual reaped exit code."""
+    if returncode != 1:
+        return False
+    try:
+        with stderr.open("rb") as handle:
+            diagnostic = handle.read(MAX_STREAM_BYTES + 1)
+        with stream.open("rb") as handle:
+            output = handle.read(MAX_EVENT_BYTES + 2)
+    except OSError:
+        return False
+    lines = diagnostic.splitlines()
+    if (
+        len(diagnostic) > MAX_STREAM_BYTES
+        or b"AGY_ERROR" in diagnostic
+        or sum(line.startswith(b"error: invalid model selection (") for line in lines) != 1
+        or any(line.strip() in {
+            b"sandbox_apply: Operation not permitted",
+            b"sandbox-exec: sandbox_apply: Operation not permitted",
+        } for line in lines)
+        or _classify_stderr(stderr, version, returncode, provider_timeout_seconds, native=native)
+        != "agy_failed_unclassified"
+    ):
+        return False
+    return not output or bool(
+        output.endswith(b"\n") and output.count(b"\n") == 1
+        and _selection_rejection_result(output[:-1])
+    )
+
+
 def _terminal_result(stream: Path, *, strict: bool = False) -> dict[str, Any] | None:
     result: dict[str, Any] | None = None
     init_conversation: str | None = None
@@ -4338,6 +4401,7 @@ class _ControllerOutcome:
     failure_stage: str | None = None
     saw_init: bool = False
     saw_terminal: bool = False
+    provisional_orphan_result: bool = False
     result_binding: tuple[str, tuple[int, int, int, int, int]] | None = None
     outer_status: str | None = None
     provider_retry_after: int | None = None
@@ -5073,11 +5137,24 @@ def _consume_controller_events(
                 if len(line) > MAX_EVENT_BYTES:
                     outcome.reason = "output_oversized"
                     break
+                if outcome.provisional_orphan_result:
+                    # Keep subsequent bytes as evidence only. No progress,
+                    # conversation binding, or heartbeat credit is authorized.
+                    continue
                 valid, conversation, event_kind = _event(line)
                 if valid:
                     if outcome.saw_terminal or (event_kind == "init" and outcome.saw_init) or (
                         event_kind != "init" and not outcome.saw_init
                     ):
+                        if (
+                            not outcome.saw_init and not outcome.saw_terminal
+                            and streams.sizes[name] - len(remainder) == len(line) + 1
+                            and _selection_rejection_result(line)
+                        ):
+                            # Preserve framing as a provisional fallback while
+                            # the existing bounded monitor observes EOF/reap.
+                            outcome.provisional_orphan_result = True
+                            continue
                         outcome.reason = "invalid_envelope"
                         outcome.failure_stage = "framing"
                         break
@@ -5266,8 +5343,32 @@ def _observe_controller_terminal(
     outcome.outer_status = None
     outcome.provider_retry_after = None
     outcome.provider_retry_observed = None
+    if outcome.provisional_orphan_result and outcome.reason in {
+        None, "idle_timeout", "hard_deadline_exceeded",
+    }:
+        # These limits still stopped and reaped the child. Deferral alone
+        # exposed them; retain the orphan's original framing diagnosis.
+        if outcome.reason is None and _model_selection_rejected(
+            streams.stream_path, streams.stderr_path, execution.returncode,
+            binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+            binding.command["max_seconds"],
+            native=binding.command["provider_isolation"] == "native",
+        ):
+            outcome.reason = "model_selection_rejected"
+            outcome.failure_stage = None
+        else:
+            outcome.reason = "invalid_envelope"
+            outcome.failure_stage = "framing"
+    if outcome.reason is None and streams.sizes["stdout"] == 0 and _model_selection_rejected(
+        streams.stream_path, streams.stderr_path, execution.returncode,
+        binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
+        binding.command["max_seconds"],
+        native=binding.command["provider_isolation"] == "native",
+    ):
+        outcome.reason = "model_selection_rejected"
     reviewed_idle_partial = bool(
-        execution.idle_timeout_with_exited_provider
+        not outcome.provisional_orphan_result
+        and execution.idle_timeout_with_exited_provider
         and _has_reviewed_provider_timeout(
             streams.stderr_path,
             binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
@@ -5728,7 +5829,7 @@ def _controller_terminal_updates(
         "next_action": (
             "blocked" if disposition.candidate_unavailable else "driver_review"
         ) if disposition.candidate_recognized else (
-            "none" if outcome.reason in {"selection_preflight_failed", "permission_required"} else
+            "none" if outcome.reason in {"selection_preflight_failed", "model_selection_rejected", "permission_required"} else
             "resume" if current["conversation_id"] else "blocked"
         ),
         "next_action_command": None,
@@ -5743,7 +5844,7 @@ def _controller_terminal_updates(
         "resume_available": bool(
             current["conversation_id"] and not disposition.candidate_recognized
             and outcome.final_status == "failed"
-            and outcome.reason not in {"selection_preflight_failed", "permission_required"}
+            and outcome.reason not in {"selection_preflight_failed", "model_selection_rejected", "permission_required"}
         ),
         "continue_available": False,
         "remote_cancel_unverified": outcome.reason in {"cancelled", "interrupted"},
@@ -5780,7 +5881,7 @@ def _controller_terminal_updates(
             "assurance": "pending",
             "continue_available": bool(
                 outcome.final_status in {"succeeded", "failed"}
-                and outcome.reason not in {"selection_preflight_failed", "permission_required"}
+                and outcome.reason not in {"selection_preflight_failed", "model_selection_rejected", "permission_required"}
                 and disposition.candidate_source != "provider_cancelled"
                 and current["conversation_id"]
                 and current["attempt"] < current["max_cycles"]
@@ -6259,7 +6360,7 @@ def _terminal_projection(
         and state["attempt"] < state["max_cycles"]
         and float(state["elapsed_seconds"]) < _provider_max_seconds(state)
         and status == "failed"
-        and reason not in {"permission_required", "selection_preflight_failed"}
+        and reason not in {"permission_required", "selection_preflight_failed", "model_selection_rejected"}
         and allow_continue
         and not candidate_unavailable
     )
@@ -6288,7 +6389,7 @@ def _terminal_projection(
     else:
         resume_eligible = bool(
             status == "failed" and state["conversation_id"]
-            and reason not in {"permission_required", "selection_preflight_failed"}
+            and reason not in {"permission_required", "selection_preflight_failed", "model_selection_rejected"}
             and state["attempt_origin"] != "conversation-continue"
         )
         updates.update({

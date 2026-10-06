@@ -59,7 +59,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 122
+EXPECTED_CHECKS = 125
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -69,7 +69,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 73, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 76, "runtime": 1, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -2882,11 +2882,11 @@ with tempfile.TemporaryDirectory() as temporary:
     def model_effort_conflict_1_3_0_fails_without_candidate() -> None:
         repo = root / "model-effort-conflict-repo"; repo.mkdir()
         initialize_linked_fixture(repo)
-        job = root / "model-effort-conflict-job"; job.mkdir(mode=0o700)
+        job = root / "model-effort-conflict"; job.mkdir(mode=0o700)
         bin_dir = root / "model-effort-conflict-bin"; bin_dir.mkdir()
         error = (
             'invalid model selection (--model "gemini-3.8-flash-medium" --effort "high"): '
-            '--model gemini-3.8-flash-medium conflicts with --effort=high'
+            '--model gemini-3.8-flash-medium conflicts with --effort=high PRIVATE_SELECTION_SENTINEL'
         )
         # The observed rejection has only a result event, no init or AGY_ERROR.
         terminal = {"event": "result", "result": {
@@ -2899,7 +2899,7 @@ with tempfile.TemporaryDirectory() as temporary:
         fake = bin_dir / "agy"
         fake.write_text(
             "#!/usr/bin/env python3\nimport os\n"
-            f"os.write(1, {payload!r})\nos.write(2, {stderr!r})\nraise SystemExit(1)\n",
+            f"os.write(1, {payload!r})\nos.write(2, {stderr!r})\nos._exit(1)\n",
             encoding="utf-8",
         ); fake.chmod(0o700)
         schema = root / "model-effort-conflict-schema.json"; provider_schema(schema)
@@ -2912,24 +2912,218 @@ with tempfile.TemporaryDirectory() as temporary:
         })
         MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
         MODULE.create_state(job, "initial", resume=False)
-        assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON["invalid_envelope"]
+        assert run_controller(job, bin_dir) == 26
         state, _raw, sha = MODULE.load_state(job)
-        # Invalid framing can stop the child before its explicit exit 1.
         assert (state["status"], state["reason"], state["failure_stage"]) == (
-            "failed", "invalid_envelope", "framing",
+            "failed", "model_selection_rejected", None,
         )
+        assert state["agy_returncode"] == 1
         assert state["candidate_source"] == "none"
         assert not state["candidate_recognized"] and not state["result_available"]
         assert state["result_path"] is None and state["result_sha256"] is None
         assert not (job / "result.json").exists()
         assert not state["resume_available"] and not state["continue_available"]
-        actions = {item["action"] for item in MODULE.public_status(state, sha, job=job)["available_actions"]}
+        public = MODULE.public_status(state, sha, job=job)
+        assert public["reason_message"] == (
+            "AGY rejected the model/effort selection. Check `agy models` and the "
+            "`--model`/`--effort` pair before starting a new job."
+        )
+        captured = io.BytesIO()
+        wrapper = io.TextIOWrapper(captured, encoding="utf-8")
+        with contextlib.redirect_stdout(wrapper):
+            MODULE.print_text_status(state, sha, job=job)
+            wrapper.flush()
+        text = captured.getvalue().decode()
+        assert public["reason_message"] in text
+        for surface in (_raw.decode(), json.dumps(public), text):
+            assert "PRIVATE_SELECTION_SENTINEL" not in surface
+        assert state["progress_count"] == 0 and state["conversation_id"] is None
+        actions = {item["action"] for item in public["available_actions"]}
         assert not {"result", "resume", "continue"} & actions
+        for form in ("json", "text"):
+            workflow = subprocess.run([
+                sys.executable, "-I", "-S", "-B", str(SOURCE.with_name("workflow.py")),
+                "status", "--dispatch-state", str(job / MODULE.STATE_NAME), "--format", form,
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            assert public["reason_message"] in workflow.stdout.decode()
+            assert b"PRIVATE_SELECTION_SENTINEL" not in workflow.stdout + workflow.stderr
+        # Prior conversation facts cannot authorize reuse of this failed selection.
+        stale = dict(state, conversation_id="old-conversation", resume_available=True)
+        assert not MODULE._resume_is_eligible(stale, time.time())
+        stale.update(candidate_recognized=True, result_available=True, candidate_source="provider_error",
+                     phase="awaiting-verification", continue_available=True)
+        assert not MODULE._continue_from_facts(stale, time.time())
 
     check(
         "1.3.0 model effort conflict with empty conversation fails classified without candidate",
         model_effort_conflict_1_3_0_fails_without_candidate,
     )
+
+    def selection_failure_fixture(label, payload, diagnostic, rc=1, *, tail="", limits=None, consume=None):
+        repo = root / f"selection-{label}-repo"; repo.mkdir()
+        initialize_linked_fixture(repo)
+        job = root / f"selection-{label}"; job.mkdir(mode=0o700)
+        bin_dir = root / f"selection-{label}-bin"; bin_dir.mkdir()
+        child_record = root / f"selection-{label}-pid"
+        fake = bin_dir / "agy"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport os,time\n"
+            f"with open({str(child_record)!r}, 'w') as handle: handle.write(str(os.getpid()))\n"
+            f"os.write(1, {payload!r})\nos.write(2, {diagnostic!r})\n{tail}\nos._exit({rc})\n",
+            encoding="utf-8",
+        ); fake.chmod(0o700)
+        schema = root / f"selection-{label}-schema.json"; provider_schema(schema)
+        command = current_command_fixture({
+            "job_id": f"selection-{label}", "workdir": str(repo),
+            "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+            "agy_version": "1.3.0", "agy_version_observed": True,
+            "idle_seconds": 2, "hard_seconds": 3, "max_seconds": 20,
+            **(limits or {}),
+        })
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.create_state(job, "initial", resume=False)
+        with contextlib.ExitStack() as stack:
+            if consume is not None:
+                stack.enter_context(mock.patch.object(MODULE, "_consume_controller_events", consume))
+            code = run_controller(job, bin_dir)
+        state, raw, sha = MODULE.load_state(job)
+        assert not state["candidate_recognized"] and state["candidate_source"] == "none"
+        assert not state["result_available"] and not (job / "result.json").exists()
+        assert not state["resume_available"] and not state["continue_available"]
+        assert state["progress_count"] == 0 and state["conversation_id"] is None
+        public = MODULE.public_status(state, sha, job=job)
+        assert "PRIVATE_SELECTION_SENTINEL" not in raw.decode() + json.dumps(public)
+        if child_record.exists():
+            try:
+                os.kill(int(child_record.read_text()), 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError("provider child survived cleanup")
+        return code, state
+
+    def selection_rejection_requires_whole_strict_evidence() -> None:
+        frame = {"event": "result", "result": {
+            "status": "ERROR", "num_turns": 0, "conversation_id": "",
+            "error": "PRIVATE_SELECTION_SENTINEL",
+        }}
+        payload = json.dumps(frame).encode() + b"\n"
+        diagnostic = b"error: invalid model selection (PRIVATE_SELECTION_SENTINEL)\n"
+        changed_frames = []
+        for label, value in (("bool", False), ("nonzero", 1), ("string", "0"), ("missing", None)):
+            changed = copy.deepcopy(frame)
+            if value is None:
+                del changed["result"]["num_turns"]
+            else:
+                changed["result"]["num_turns"] = value
+            changed_frames.append((label, json.dumps(changed).encode() + b"\n"))
+        changed = copy.deepcopy(frame); changed["result"]["status"] = "SUCCESS"
+        changed_frames.append(("status", json.dumps(changed).encode() + b"\n"))
+        cases = [
+            ("empty", b"", diagnostic, 1, "model_selection_rejected"),
+            ("different", payload, b"error: model selection rejected (PRIVATE_SELECTION_SENTINEL)\n", 1, "invalid_envelope"),
+            ("indent", payload, b" " + diagnostic, 1, "invalid_envelope"),
+            ("duplicate-stderr", payload, diagnostic * 2, 1, "invalid_envelope"),
+            ("rc0", payload, diagnostic, 0, "invalid_envelope"),
+            ("rc3", payload, diagnostic, 3, "invalid_envelope"),
+            ("empty-rc0", b"", diagnostic, 0, "empty_output"),
+            ("empty-rc3", b"", diagnostic, 3, "agy_failed_unclassified"),
+            ("extra-result", payload * 2, diagnostic, 1, "invalid_envelope"),
+            ("extra-init", payload + b'{"event":"init","init":{}}\n', diagnostic, 1, "invalid_envelope"),
+            ("extra-progress", payload + b'{"event":"step_update","step_update":{}}\n', diagnostic, 1, "invalid_envelope"),
+            ("trailing", payload + b"trailing", diagnostic, 1, "invalid_envelope"),
+            ("blank", payload + b"\n", diagnostic, 1, "invalid_envelope"),
+            ("truncated", payload[:-1], diagnostic, 1, "invalid_envelope"),
+            ("malformed", b'{"event":"result",\n', diagnostic, 1, "invalid_envelope"),
+            ("duplicate-key", b'{"event":"result","result":{"status":"ERROR","num_turns":0,"num_turns":0}}\n', diagnostic, 1, "invalid_envelope"),
+            ("nonfinite", b'{"event":"result","result":{"status":"ERROR","num_turns":0,"error":NaN}}\n', diagnostic, 1, "invalid_envelope"),
+            ("utf8", payload.replace(b"PRIVATE_SELECTION_SENTINEL", b"\xff"), diagnostic, 1, "invalid_envelope"),
+            ("agy-error", payload, diagnostic + b'AGY_ERROR: {"short_error":"PRIVATE_SELECTION_SENTINEL"}\n', 1, "invalid_envelope"),
+            ("empty-agy-error", b"", diagnostic + b'AGY_ERROR: {"short_error":"PRIVATE_SELECTION_SENTINEL"}\n', 1, "agy_failed_unclassified"),
+            ("permission", payload, diagnostic + b"permission that headless mode cannot prompt for\n", 1, "invalid_envelope"),
+            ("empty-permission", b"", diagnostic + b"permission that headless mode cannot prompt for\n", 1, "permission_required"),
+            ("timeout", payload, diagnostic + b"[agy] print timeout after 20s with turn in progress; returning partial output\n", 1, "invalid_envelope"),
+            ("empty-timeout", b"", diagnostic + b"[agy] print timeout after 20s with turn in progress; returning partial output\n", 1, "provider_timeout"),
+        ] + [(label, changed, diagnostic, 1, "invalid_envelope") for label, changed in changed_frames]
+        for label, output, error, rc, reason in cases:
+            code, state = selection_failure_fixture(label, output, error, rc)
+            assert (code, state["reason"]) == (MODULE.EXIT_BY_REASON[reason], reason), (label, code, state)
+            assert state["failure_stage"] == ("framing" if reason == "invalid_envelope" else None)
+            if reason == "model_selection_rejected":
+                assert state["agy_returncode"] == 1
+
+    check("model selection rejection requires whole strict evidence and preserves every near miss", selection_rejection_requires_whole_strict_evidence)
+
+    def selection_rejection_deferral_preserves_bounded_lifecycle() -> None:
+        payload = b'{"event":"result","result":{"status":"ERROR","num_turns":0,"error":"PRIVATE_SELECTION_SENTINEL"}}\n'
+        diagnostic = b"error: invalid model selection (PRIVATE_SELECTION_SENTINEL)\n"
+        code, state = selection_failure_fixture("delayed", payload, diagnostic, tail="time.sleep(0.15)")
+        assert (code, state["reason"], state["agy_returncode"]) == (26, "model_selection_rejected", 1)
+        for label, limits in (
+            ("idle", {"idle_seconds": 1}),
+            ("hard", {"idle_seconds": 1, "hard_seconds": 1}),
+            ("max", {"idle_seconds": 1, "hard_seconds": 1, "max_seconds": 1}),
+        ):
+            code, state = selection_failure_fixture(label, payload, diagnostic, tail="time.sleep(60)", limits=limits)
+            assert (code, state["reason"], state["failure_stage"]) == (4, "invalid_envelope", "framing")
+            assert state["limit_kind"] == ("max-runtime" if label == "max" else label)
+            assert state["agy_returncode"] < 0
+        original_consume = MODULE._consume_controller_events
+        def cancel_after_orphan(job, binding, execution, streams, launch, outcome, events):
+            original_consume(job, binding, execution, streams, launch, outcome, events)
+            if outcome.provisional_orphan_result:
+                MODULE._controller_transition(job, binding, {"cancel_requested": True})
+        code, state = selection_failure_fixture("cancel", payload, diagnostic, tail="time.sleep(60)", consume=cancel_after_orphan)
+        assert (code, state["reason"]) == (22, "cancelled")
+        with mock.patch.object(MODULE, "_controller_monitor_limit", return_value=("idle_timeout", "idle")):
+            code, state = selection_failure_fixture("prior-limit", payload, diagnostic, tail="time.sleep(60)")
+        assert (code, state["reason"]) == (9, "idle_timeout")
+        with mock.patch.object(MODULE, "MAX_STREAM_BYTES", 4096):
+            code, state = selection_failure_fixture("cap", payload, diagnostic, tail="time.sleep(0.1)\nos.write(1, b'x' * 8192)")
+        assert (code, state["reason"]) == (23, "output_oversized")
+        with mock.patch.object(MODULE, "MAX_EVENT_BYTES", 256):
+            code, state = selection_failure_fixture("event-cap", payload, diagnostic, tail="time.sleep(0.1)\nos.write(1, b'x' * 512)")
+        assert (code, state["reason"]) == (23, "output_oversized")
+        code, state = selection_failure_fixture("late-trailing", payload, diagnostic, tail="time.sleep(0.1)\nos.write(1, b'trailing')")
+        assert (code, state["reason"]) == (4, "invalid_envelope")
+        code, state = selection_failure_fixture("closed-pipes", payload, diagnostic, tail="os.close(1)\nos.close(2)\ntime.sleep(60)")
+        assert (code, state["reason"], state["agy_returncode"]) == (4, "invalid_envelope", -15)
+        def interrupt_after_orphan(job, binding, execution, streams, launch, outcome, events):
+            original_consume(job, binding, execution, streams, launch, outcome, events)
+            if outcome.provisional_orphan_result:
+                execution.stop_signal = signal.SIGINT
+        code, state = selection_failure_fixture("interrupt", payload, diagnostic, tail="time.sleep(60)", consume=interrupt_after_orphan)
+        assert (code, state["reason"]) == (130, "interrupted")
+        def binding_failure_after_orphan(job, binding, execution, streams, launch, outcome, events):
+            original_consume(job, binding, execution, streams, launch, outcome, events)
+            if outcome.provisional_orphan_result:
+                outcome.reason, outcome.failure_stage = "status_unavailable", "binding_failure"
+        code, state = selection_failure_fixture("binding", payload, diagnostic, tail="time.sleep(60)", consume=binding_failure_after_orphan)
+        assert (code, state["reason"], state["failure_stage"]) == (20, "status_unavailable", "binding_failure")
+        code, state = selection_failure_fixture("signal", payload, diagnostic, tail="os.kill(os.getpid(), 15)")
+        assert (code, state["reason"], state["agy_returncode"]) == (4, "invalid_envelope", -15)
+
+    check("provisional selection result keeps deadlines control output caps and child cleanup", selection_rejection_deferral_preserves_bounded_lifecycle)
+
+    def selection_rejection_never_skips_project_boundary() -> None:
+        payload = b'{"event":"result","result":{"status":"ERROR","num_turns":0}}\n'
+        diagnostic = b"error: invalid model selection (PRIVATE_SELECTION_SENTINEL)\n"
+        mutate = "os.mkdir('nested')\nwith open('nested/.git', 'w') as handle: handle.write('untrusted marker')"
+        failures = []
+        for label, output, error in (
+            ("project-empty", b"", diagnostic),
+            ("project-orphan", payload, diagnostic),
+            ("project-framing", payload, b"other startup error\n"),
+        ):
+            code, state = selection_failure_fixture(
+                label, output, error, tail=mutate, limits={"workflow": "project"},
+            )
+            observed = (code, state["reason"], state["failure_stage"], state["phase"], state["assurance"])
+            if observed != (20, "status_unavailable", "binding_failure", "blocked", "blocked"):
+                failures.append((label, observed))
+        assert not failures, failures
+
+    check("selection diagnostics and deferred framing preserve unconditional project boundary", selection_rejection_never_skips_project_boundary)
 
     def static_agy_error_metadata_offline_parser_contracts() -> None:
         # 1. Fallback literal from Go runtime metadata

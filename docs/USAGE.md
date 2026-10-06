@@ -397,7 +397,9 @@ remains unknown unless AGY stream JSON reports it.
 
 `--model` and an optional `--effort` are forwarded unchanged as separate AGY options.
 AGY decides whether a pair is supported; rejection does not trigger a different model
-or effort. AGY 1.3.0 rejected the observed combination
+or effort. A strictly recognized startup rejection ends as `model_selection_rejected`
+(exit 26); status directs the caller to check `agy models` and the `--model`/`--effort`
+pair before starting a new job. AGY 1.3.0 rejected the observed combination
 `--model gemini-3.8-flash-medium` with `--effort high` and reported a conflict between
 that model and `--effort high`. This observation does not establish how a bare model
 name with `--effort` behaves.

@@ -1227,7 +1227,7 @@ def test_delegation_projection_uses_bound_facts_without_assurance_inference() ->
         "workflow": "task", "attempt": 1, "max_cycles": 2,
         "result_available": False, "failure_stage": None,
     }
-    for reason in ("idle_timeout", "hard_deadline_exceeded"):
+    for reason in ("idle_timeout", "hard_deadline_exceeded", "model_selection_rejected"):
         facts = {**base, "reason": reason}
         projection = WORKFLOW_MODULE._delegation_from_dispatch(
             facts, approval_bound=True,
@@ -2074,6 +2074,46 @@ def _explicit_state(f: RepoFixture) -> dict[str, Any]:
         "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY, "native_grant_profile": "baseline",
         "dispatch_job_dir": None, "job_state_path": None, "receipt_path": None,
     }
+
+
+def test_workflow_selection_rejection_status_is_actionable_and_read_only() -> bool:
+    f = RepoFixture("selection-rejection-status")
+    try:
+        job = f.state_dir / f.job_id; job.mkdir(mode=0o700)
+        state = {**_explicit_state(f), "dispatch_job_dir": str(job)}
+        f.state_file.write_bytes(WORKFLOW_MODULE.canonical_json(state) + b"\n")
+        f.state_file.chmod(0o600)
+        message = WORKFLOW_MODULE.DISPATCH.MODEL_SELECTION_REJECTED_MESSAGE
+        facts = {
+            "job_id": f.job_id, "state_sha256": "a" * 64,
+            "status": "failed", "phase": "attempt-failed", "controller_phase": "attempt-failed",
+            "reason": "model_selection_rejected", "reason_message": message,
+            "workflow": "task", "attempt": 1, "max_cycles": 2, "failure_stage": None,
+            "available_actions": [], "result_available": False,
+            "provider_execution": None, "provider_isolation": "session",
+        }
+        before = _tree_snapshot(f.tmp)
+        for form in ("json", "text"):
+            captured = io.BytesIO()
+            wrapper = io.TextIOWrapper(captured, encoding="utf-8")
+            with mock.patch.object(WORKFLOW_MODULE, "_bound_dispatch_status", return_value=facts), contextlib.redirect_stdout(wrapper):
+                assert WORKFLOW_MODULE.main(["status", "--state", str(f.state_file), "--format", form]) == 0
+                wrapper.flush()
+            output = captured.getvalue().decode()
+            assert message in output
+            assert "PRIVATE_SELECTION_SENTINEL" not in output
+            if form == "json":
+                projection = json.loads(output)
+                assert projection["dispatch"]["reason_message"] == message
+                assert projection["delegation_policy"]["decision"]["reason_code"] == "provider-unavailable"
+                assert projection["delegation_policy"]["decision"]["direct_codex_authorized"] is False
+            assert _tree_snapshot(f.tmp) == before
+        return True
+    finally:
+        f.clean()
+
+
+check("workflow selection rejection shows fixed guidance without mutation or direct-work authorization", test_workflow_selection_rejection_status_is_actionable_and_read_only)
 
 
 def test_workflow_versions_reject_before_effects() -> bool:
