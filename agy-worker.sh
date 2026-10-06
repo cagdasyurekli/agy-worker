@@ -3,12 +3,6 @@
 # canonical runtime. Derive a deterministic external state path when unset.
 set -euo pipefail
 
-if [[ -n "${AGY_WORKER_TIER:-}" ]]; then
-    echo "agy-worker.sh: AGY_WORKER_TIER is retired; use --model / AGY_WORKER_MODEL" >&2
-    exit 64
-fi
-
-
 SCRIPT_SOURCE_DIR="${BASH_SOURCE[0]%/*}"
 [[ "$SCRIPT_SOURCE_DIR" != "${BASH_SOURCE[0]}" ]] || SCRIPT_SOURCE_DIR=.
 SCRIPT_DIR="$(CDPATH= cd -- "$SCRIPT_SOURCE_DIR" && pwd -P)"
