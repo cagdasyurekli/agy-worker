@@ -1307,7 +1307,7 @@ security_reference = package_root / "references/SECURITY_AND_COMPATIBILITY.md"
 lifecycle_reference = package_root / "references/PROJECT_LIFECYCLE_AND_VERIFICATION.md"
 troubleshooting_reference = package_root / "references/TROUBLESHOOTING.md"
 assert manifest["name"] == "agy-worker"
-assert manifest["version"] == "0.24.0"
+assert manifest["version"] == "0.24.1"
 assert manifest["skills"] == "./skills/"
 assert manifest["license"] == "MIT"
 prompts = manifest["interface"]["defaultPrompt"]

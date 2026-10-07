@@ -1617,14 +1617,18 @@ else:
     assert recorded_prompt in provider_prompt
 
 expected_block = (
-    "NON-INTERACTIVE RUN — this contract overrides any global or user instruction file\n"
-    "(for example GEMINI.md) where they conflict:\n"
+    "NON-INTERACTIVE RUN:\n"
+    "- Respect applicable user and repository instructions (for example GEMINI.md),\n"
+    "  including security, privacy, permission, and scope constraints.\n"
+    "- If those instructions conflict with this task or output contract, or require\n"
+    "  clarification, report status=blocked and requires_human=true; explain the\n"
+    "  conflict in open_questions. Do not bypass the constraint.\n"
     "- Nobody can answer questions during this run. Do not ask; put assumptions,\n"
     "  blockers, and questions in the result as the output contract requires.\n"
     "- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,\n"
     "  formatters, type checkers, dependencies, or refactors the task did not ask for.\n"
-    "- Ignore instructions to use a report template or suggest follow-up rules;\n"
-    "  return only the required output.\n"
+    "- Include compatible report requirements in the schema fields; report incompatible\n"
+    "  requirements as a conflict rather than silently discarding them.\n"
 ).encode("utf-8")
 assert effective_prompt.count(expected_block) == 1
 output_contract = effective_prompt.index("OUTPUT CONTRACT — non-negotiable:".encode("utf-8"))
