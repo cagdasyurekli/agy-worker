@@ -2994,6 +2994,7 @@ required = {
     ),
     "docs/USAGE.md": (
         "Prefer scoped dispatch for bounded jobs",
+        "[worker instruction precedence](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#worker-instruction-precedence)",
         "Whole-worktree dispatch remains an explicit manifest-bound exception",
         "New jobs default to `--provider-isolation session`",
         "--approve-whole-worktree LAUNCH_APPROVAL_SHA256",
@@ -3023,6 +3024,12 @@ required = {
         "session mode uses the existing AGY session; explicit native mode requires supported macOS containment",
     ),
     "skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md": (
+        "### Worker instruction precedence",
+        "The worker prompt instructs the worker to respect applicable user and repository instructions, including security, privacy, permission and scope constraints; conflicts or missing answers needed to satisfy those constraints require `blocked` and `requires_human=true`.",
+        "It explicitly protects secrets, data destinations, destructive actions and required permission to act, and forbids assuming authorization.",
+        "For routine questions that need no protected answer, it instructs the worker to record the question in `open_questions` and a safe assumption in `summary`, then continue.",
+        "Compatible report requirements go inside the schema fields; incompatible templates yield to the run's response format.",
+        "These are prompt instructions; provider compliance still needs independent review and verification.",
         "Prefer scoped dispatch for bounded jobs",
         "Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception",
         "Default `--provider-isolation session` retains the caller's existing HOME/session",
@@ -3032,6 +3039,8 @@ required = {
 for relative, phrases in required.items():
     flattened = " ".join((root / relative).read_text(encoding="utf-8").split())
     assert all(phrase in flattened for phrase in phrases), (relative, phrases)
+    assert "overrides any global or user instruction file" not in flattened, relative
+    assert "report incompatible requirements as a conflict" not in flattened, relative
 
 # Read authority is owned by the usage guide, independently of its write policy.
 usage = " ".join((root / "docs/USAGE.md").read_text(encoding="utf-8").split())

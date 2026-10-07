@@ -22,14 +22,71 @@ ROOT = options.root.resolve()
 WORKER = ROOT / "skills/agy-worker/runtime/agy-worker.sh"
 CURRENT = WORKER.with_name("scripts").joinpath("launch_authority.py").exists()
 
+EXPECTED_POLICY = """NON-INTERACTIVE RUN:
+- Respect applicable user and repository instructions (for example GEMINI.md),
+  including security, privacy, permission, and scope constraints.
+- If a security, privacy, permission, or scope constraint conflicts with this task
+  or output contract, or a missing answer is needed to satisfy it,
+  report status=blocked and requires_human=true; explain in open_questions.
+  Do not bypass the constraint or assume required authorization.
+- Constraints on secrets, data destinations, destructive actions, and required
+  permission to act are protected; do not treat them as routine conversation.
+- Nobody can answer questions during this run. Do not ask; put assumptions,
+  blockers, and questions in the result as the output contract requires.
+- This run's contract governs routine conversational questions and response
+  formatting. If no protected constraint needs the answer, record an unanswered
+  question in open_questions and a safe assumption in summary, then continue.
+- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,
+  formatters, type checkers, dependencies, or refactors the task did not ask for.
+- Include compatible report requirements in the schema fields; use this
+  contract's format when a report template is incompatible.
+
+"""
+
+PREVIOUS_POLICY = """NON-INTERACTIVE RUN:
+- Respect applicable user and repository instructions (for example GEMINI.md),
+  including security, privacy, permission, and scope constraints.
+- If those instructions conflict with this task or output contract, or require
+  clarification, report status=blocked and requires_human=true; explain the
+  conflict in open_questions. Do not bypass the constraint.
+- Nobody can answer questions during this run. Do not ask; put assumptions,
+  blockers, and questions in the result as the output contract requires.
+- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,
+  formatters, type checkers, dependencies, or refactors the task did not ask for.
+- Include compatible report requirements in the schema fields; report incompatible
+  requirements as a conflict rather than silently discarding them.
+
+"""
+
+EXPECTED_OUTPUT_CONTRACT = """OUTPUT CONTRACT — non-negotiable:
+- Your FINAL response must be a single JSON object matching the enforced schema.
+- Do NOT write your answer to a file, artifact, or brain document.
+- Do NOT reply "see the artifact" or reference an external document.
+- Follow the FILE-TOOL ROOT instruction for the files_changed reference point.
+  Report net created, modified, or deleted paths; omit transient touches.
+- __WORKSPACE_DIRECTIVE__ Do NOT run shell or terminal tools or tests.
+  __PROVIDER_EXECUTION_NOTE__ The driver's environment is the only trusted execution
+  context. Leave commands_run and tests_run as empty arrays.
+- If a permission gate, missing tool, or ambiguity blocks you: set
+  status="blocked", requires_human=true, and explain in open_questions.
+  Do not silently work around it.
+
+TASK FOLLOWS:
+"""
+
+
+def authority_module():
+    source = WORKER.with_name("scripts") / "launch_authority.py"
+    spec = importlib.util.spec_from_file_location("policy_prompt_regression", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 class LaunchAuthorityTests(unittest.TestCase):
     def test_worker_prompt_preserves_applicable_policy(self) -> None:
-        source = WORKER.with_name("scripts") / "launch_authority.py"
-        spec = importlib.util.spec_from_file_location("policy_prompt_regression", source)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = authority_module()
         for mode in ("plan", "accept-edits"):
             for isolation in ("session", "native"):
                 with self.subTest(mode=mode, isolation=isolation):
@@ -42,7 +99,65 @@ class LaunchAuthorityTests(unittest.TestCase):
                     self.assertIn(b"report status=blocked and requires_human=true", prompt)
                     self.assertIn(b"Include compatible report requirements in the schema fields", prompt)
                     self.assertIn(b"Leave commands_run and tests_run as empty arrays", prompt)
+                    self.assertIn(EXPECTED_POLICY.encode(), prompt)
+                    self.assertNotIn(b"If those instructions conflict", prompt)
+                    self.assertNotIn(b"requirements as a conflict rather than silently discarding", prompt)
                     self.assertTrue(prompt.endswith(task))
+
+    def test_worker_preamble_exact_policy_and_output_contract(self) -> None:
+        preamble = authority_module()._PREAMBLE
+        prefix, policy_and_output = preamble.split("NON-INTERACTIVE RUN:", 1)
+        policy, output = policy_and_output.split("OUTPUT CONTRACT", 1)
+        self.assertEqual("OUTPUT CONTRACT" + output, EXPECTED_OUTPUT_CONTRACT)
+        self.assertEqual(prefix, "You are a bounded worker. Another agent (the driver) will independently verify\n"
+            "everything you claim, so inaccurate self-reporting is worse than admitting failure.\n\n"
+            "__SELF_VERIFICATION_CHECK_REQUESTS__\n")
+        self.assertEqual("NON-INTERACTIVE RUN:" + policy, EXPECTED_POLICY)
+        self.assertEqual(preamble.count(EXPECTED_POLICY), 1)
+        self.assertEqual(hashlib.sha256(preamble.encode()).hexdigest(),
+                         "0ca4fda6892e644546d4625d3bfea7e4ef1b62d4e5966b595842db028d6da5bc")
+
+    def test_prompt_render_preview_parity(self) -> None:
+        module = authority_module()
+        source = WORKER.with_name("scripts") / "launch_authority.py"
+        for task in (b"normal synthetic task\n\n", "Çağdaş: résumé\r\nsecond line  \r\n\n".encode()):
+            for mode in ("plan", "accept-edits"):
+                for isolation in ("session", "native"):
+                    with self.subTest(task=task, mode=mode, isolation=isolation):
+                        prompt = module.full_prompt(task.rstrip(b"\n"), mode=mode,
+                                                    provider_isolation=isolation)
+                        rendered = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", str(source),
+                            "render", mode, isolation, ""], input=task, capture_output=True)
+                        self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                        self.assertEqual(rendered.stdout, prompt)
+                        _raw, preview = self.preview(task, extra=["--mode", mode,
+                            "--provider-isolation", isolation, "--provider-scope", str(self.scope)])
+                        self.assertEqual(preview["launch_authority"]["full_prompt_sha256"],
+                                         hashlib.sha256(prompt).hexdigest())
+                        self.assertFalse(self.called.exists())
+
+    def test_previous_preamble_approval_is_rejected_before_provider(self) -> None:
+        module = authority_module()
+        task = b"initial synthetic task"
+        _raw, preview = self.preview(task)
+        # Reconstruct exactly the previous policy, keeping the fixed prefix and output contract.
+        prefix, rest = module._PREAMBLE.split("NON-INTERACTIVE RUN:", 1)
+        suffix = "OUTPUT CONTRACT" + rest.split("OUTPUT CONTRACT", 1)[1]
+        with mock.patch.object(module, "_PREAMBLE", prefix + PREVIOUS_POLICY + suffix):
+            old_prompt = module.full_prompt(task, mode="accept-edits", provider_isolation="session")
+        old_authority = dict(preview["launch_authority"],
+                             full_prompt_sha256=hashlib.sha256(old_prompt).hexdigest())
+        old_digest = module.approval_sha256(old_authority)
+        old_record = dict(preview, launch_authority=old_authority, launch_approval_sha256=old_digest)
+        rejected = self.launch(json.dumps(old_record).encode(), old_digest, task=task)
+        self.assertEqual(rejected.returncode, 64, rejected.stderr)
+        self.assertIn(b"full_prompt_sha256", rejected.stderr)
+        self.assertFalse(self.called.exists())
+        self.assertNotEqual(old_authority["full_prompt_sha256"], preview["launch_authority"]["full_prompt_sha256"])
+        self.assertNotEqual(old_digest, preview["launch_approval_sha256"])
+        self.assertEqual({key: value for key, value in old_authority.items() if key != "full_prompt_sha256"},
+                         {key: value for key, value in preview["launch_authority"].items()
+                          if key != "full_prompt_sha256"})
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agy-authority-regression-")

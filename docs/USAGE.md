@@ -10,6 +10,9 @@ A worker report is input, never acceptance evidence.
 Complete the [installation and host permission setup](INSTALLATION.md) first. Installation
 does not authorize provider dispatch or repository transmission.
 
+See [worker instruction precedence](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#worker-instruction-precedence)
+for protected constraints, routine questions and response formatting.
+
 ## Before the first provider dispatch
 
 Check the repository branch and dirty state, then compare it with a freshly fetched
