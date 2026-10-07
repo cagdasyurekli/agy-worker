@@ -51,8 +51,8 @@ launches stop without falling back to session mode. See the
 [exact containment limits](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md)
 for the writable stage, non-recipient network rule, and process-group cleanup scope.
 Operators remain responsible for credentials, network access, review, testing, and
-access control in each target repository. The skill supports the OpenAI Codex CLI; it
-does not support Claude or Claude Code hosts.
+access control in each target repository. The skill supports both Codex CLI and
+Claude Code hosts.
 
 Provider children, dispatch-time provider-interface probes, and driver verifiers
 receive a closed baseline environment. Verification requires at least one driver-owned

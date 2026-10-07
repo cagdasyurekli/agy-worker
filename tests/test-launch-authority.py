@@ -24,6 +24,26 @@ CURRENT = WORKER.with_name("scripts").joinpath("launch_authority.py").exists()
 
 
 class LaunchAuthorityTests(unittest.TestCase):
+    def test_worker_prompt_preserves_applicable_policy(self) -> None:
+        source = WORKER.with_name("scripts") / "launch_authority.py"
+        spec = importlib.util.spec_from_file_location("policy_prompt_regression", source)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for mode in ("plan", "accept-edits"):
+            for isolation in ("session", "native"):
+                with self.subTest(mode=mode, isolation=isolation):
+                    task = b"Follow GEMINI.md; do not disclose private files."
+                    prompt = module.full_prompt(task, mode=mode, provider_isolation=isolation)
+                    self.assertNotIn(b"overrides any global or user instruction file", prompt)
+                    self.assertNotIn(b"Ignore instructions to use a report template", prompt)
+                    self.assertIn(b"Respect applicable user and repository instructions", prompt)
+                    self.assertIn(b"security, privacy, permission, and scope constraints", prompt)
+                    self.assertIn(b"report status=blocked and requires_human=true", prompt)
+                    self.assertIn(b"Include compatible report requirements in the schema fields", prompt)
+                    self.assertIn(b"Leave commands_run and tests_run as empty arrays", prompt)
+                    self.assertTrue(prompt.endswith(task))
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="agy-authority-regression-")
         self.root = Path(self.temporary.name).resolve()
