@@ -1,6 +1,6 @@
 {
   "name": "agy-worker",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "description": "Use Antigravity CLI for exploration, feature work, and project-scale implementation, with the driver independently verifying results.",
   "author": {
     "name": "cagdasyurekli",
