@@ -1583,6 +1583,7 @@ for preamble_workflow in explore task project; do
         if [[ "$preamble_rc" == 0 ]] && python3 -I -S -B - \
                 "$TMP" "$preamble_job" "$preamble_workflow" "$preamble_mode" \
                 "$preamble_self_verify" <<'PY'
+import hashlib
 import json
 import re
 import sys
@@ -1614,21 +1615,37 @@ if pointer is not None:
     effective_prompt = staged_path.read_bytes()
     assert effective_prompt == recorded_prompt
 else:
-    assert recorded_prompt in provider_prompt
+    assert provider_prompt.endswith(recorded_prompt)
+
+canonical_prompt = effective_prompt[-len(recorded_prompt):]
+assert canonical_prompt == recorded_prompt
+prompt_sha = hashlib.sha256(canonical_prompt).hexdigest()
+preview = json.loads((job_dir / "launch-preview.json").read_bytes())
+assert prompt_sha == preview["launch_authority"]["full_prompt_sha256"]
+assert prompt_sha == command["launch_authority"]["full_prompt_sha256"]
+assert preview["launch_authority"] == command["launch_authority"]
+assert preview["launch_approval_sha256"] == command["launch_approval_sha256"]
 
 expected_block = (
     "NON-INTERACTIVE RUN:\n"
     "- Respect applicable user and repository instructions (for example GEMINI.md),\n"
     "  including security, privacy, permission, and scope constraints.\n"
-    "- If those instructions conflict with this task or output contract, or require\n"
-    "  clarification, report status=blocked and requires_human=true; explain the\n"
-    "  conflict in open_questions. Do not bypass the constraint.\n"
+    "- If a security, privacy, permission, or scope constraint conflicts with this task\n"
+    "  or output contract, or a missing answer is needed to satisfy it,\n"
+    "  report status=blocked and requires_human=true; explain in open_questions.\n"
+    "  Do not bypass the constraint or assume required authorization.\n"
+    "- Constraints on secrets, data destinations, destructive actions, and required\n"
+    "  permission to act are protected; do not treat them as routine conversation.\n"
     "- Nobody can answer questions during this run. Do not ask; put assumptions,\n"
     "  blockers, and questions in the result as the output contract requires.\n"
+    "- This run's contract governs routine conversational questions and response\n"
+    "  formatting. If no protected constraint needs the answer, record an unanswered\n"
+    "  question in open_questions and a safe assumption in summary, then continue.\n"
     "- Stay within the task's scope and allowed paths. Do not add CI, hooks, linters,\n"
     "  formatters, type checkers, dependencies, or refactors the task did not ask for.\n"
-    "- Include compatible report requirements in the schema fields; report incompatible\n"
-    "  requirements as a conflict rather than silently discarding them.\n"
+    "- Include compatible report requirements in the schema fields; use this\n"
+    "  contract's format when a report template is incompatible.\n"
+    "\n"
 ).encode("utf-8")
 assert effective_prompt.count(expected_block) == 1
 output_contract = effective_prompt.index("OUTPUT CONTRACT — non-negotiable:".encode("utf-8"))
