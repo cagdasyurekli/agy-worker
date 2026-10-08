@@ -59,7 +59,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 125
+EXPECTED_CHECKS = 143
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -69,7 +69,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 76, "runtime": 1, "recovery": 48}
+GROUP_CHECKS = {"core": 76, "runtime": 19, "recovery": 48}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -5184,6 +5184,7 @@ with tempfile.TemporaryDirectory() as temporary:
             state.update({
                 "status": status, "reason": reason, "exit_code": 25 if status == "failed" else 22,
                 "finished_epoch": 1.0, "attempt_origin": origin, "attempt": attempt, "cycle": attempt,
+                "source_checkout_guard": MODULE._pending_source_guard(attempt),
                 "conversation_id": "result-conversation", "result_path": str(current),
                 "result_sha256": MODULE.digest(current_raw), "result_identity": list(MODULE._identity(current_info)),
                 "candidate_recognized": True, "candidate_source": source_name, "result_available": True,

@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     def check(label: str, action: Callable[[], object]) -> None: ...
     def current_command_fixture(values: dict, *, bind_launch: bool=True) -> dict: ...
     import copy
+    import importlib.util
+    import stat
     import fcntl
     import io
     import json
@@ -405,7 +407,7 @@ def run(context: dict[str, object]) -> None:
                 ownership_index = arguments.index("--ownership-fd") + 1
                 job_index = arguments.index("--job-dir") + 1
                 arguments = [
-                    sys.executable, str(slow_controller), str(SOURCE),
+                    sys.executable, "-B", str(slow_controller), str(SOURCE),
                     arguments[job_index], arguments[ownership_index],
                 ]
             return real_spawn_popen(arguments, *popen_args, **popen_kwargs)
@@ -489,7 +491,7 @@ def run(context: dict[str, object]) -> None:
                 ownership_index = arguments.index("--ownership-fd") + 1
                 job_index = arguments.index("--job-dir") + 1
                 arguments = [
-                    sys.executable, str(claim_controller), str(SOURCE),
+                    sys.executable, "-B", str(claim_controller), str(SOURCE),
                     arguments[job_index], arguments[ownership_index],
                 ]
             return real_claim_popen(arguments, *popen_args, **popen_kwargs)
@@ -2073,3 +2075,449 @@ def run(context: dict[str, object]) -> None:
         assert not under_calls.exists(), "stale extension contacted a provider"
 
     check("direct selections bind public startup, launch replacement windows, and provider runtime boundaries", direct_selection_reprobes_every_controller_attempt)
+
+    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False):
+        origin = (root / f"source-guard-{label}-origin").resolve()
+        candidate = (root / f"source-guard-{label}-candidate").resolve()
+        origin.mkdir()
+        subprocess.run(["/usr/bin/git", "init", "-q", str(origin)], check=True)
+        (origin / "tracked.txt").write_text("base\n")
+        (origin / "candidate.txt").write_text("base\n")
+        (origin / ".gitignore").write_text("ignored/\n")
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "add", "."], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "-c", "user.name=Fixture", "-c",
+                        "user.email=fixture@example.invalid", "commit", "-qm", "base"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "worktree", "add", "-q", "-b", label, str(candidate)], check=True)
+        job = (root / f"source-guard-{label}-job").resolve(); job.mkdir(mode=0o700)
+        bin_dir = root / f"source-guard-{label}-bin"; bin_dir.mkdir()
+        calls = root / f"source-guard-{label}-calls"
+        schema = root / f"source-guard-{label}-schema.json"; provider_schema(schema)
+        fake = bin_dir / "agy"
+        fake.write_text(
+            "#!/usr/bin/env python3\nimport json, pathlib, subprocess, sys, time\n"
+            + f"origin = pathlib.Path({str(origin)!r})\ncalls = pathlib.Path({str(calls)!r})\n"
+            + "calls.write_text(calls.read_text() + 'call\\n' if calls.exists() else 'call\\n')\n"
+            + "def git(*args, payload=None):\n    return subprocess.check_output(['/usr/bin/git', '-C', str(origin), *args], input=payload).decode().strip()\n"
+            + mutation + "\n"
+            + ("" if terminal in {"permission", "timeout", "model"} else
+               "print(json.dumps({'event':'init','init':{},'conversation_id':'source-guard'}), flush=True)\n")
+            + ("print('permission that headless mode cannot prompt for', file=sys.stderr); raise SystemExit(6)\n" if terminal == "permission" else
+               "print('[agy] print timeout after 30s with turn in progress; returning partial output', file=sys.stderr); raise SystemExit(17)\n" if terminal == "timeout" else
+               "print('error: invalid model selection (fixture)', file=sys.stderr); raise SystemExit(1)\n" if terminal == "model" else
+               "time.sleep(20)\n" if terminal == "wait" else "")
+            + "(pathlib.Path.cwd() / 'candidate.txt').write_text('candidate\\n')\n"
+            + f"report = {report(files_changed=[{'path': 'candidate.txt', 'change': 'modified'}])!r}\n"
+            + "print(json.dumps({'event':'result','result':{'conversation_id':'source-guard','status':'SUCCESS','structured_output':report}}))\n"
+        )
+        fake.chmod(0o755)
+        values = {"job_id": label, "workdir": str(candidate),
+                  "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
+                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": 2}
+        if native:
+            values["provider_isolation"] = "native"
+            values["argv"].insert(1, "--sandbox")
+        if scoped:
+            scope_path = job / "scope.json"
+            raw = MODULE.canonical({"schema_version": 1, "kind": "agy-worker-provider-scope",
+                                    "read": [{"kind": "file", "path": "candidate.txt"}, {"kind": "file", "path": "tracked.txt"}],
+                                    "write": [{"kind": "file", "path": "candidate.txt"}]})
+            scope_path.write_bytes(raw); scope_path.chmod(0o600)
+            values.update(provider_scope_path=str(scope_path), provider_scope_sha256=MODULE.digest(raw),
+                          provider_scope_identity=list(MODULE._identity(scope_path.stat())), allow_scoped_repair=True)
+        command = current_command_fixture(values)
+        MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+        MODULE.create_state(job, "initial", resume=False)
+        return origin, candidate, job, bin_dir, calls
+
+    def assert_source_veto(job: Path, expected: str = "source_checkout_changed") -> dict:
+        state, _raw, sha = MODULE.load_state(job)
+        assert state["reason"] == expected, state
+        assert state["status"] == "failed" and state["phase"] == state["assurance"] == "blocked", state
+        assert not any(state[key] for key in ("candidate_recognized", "result_available", "resume_available", "continue_available"))
+        assert state["candidate_source"] == "none"
+        assert all(state[key] is None for key in ("result_path", "result_sha256", "candidate_worktree_sha256",
+                                                 "last_success_path", "verification_path", "repair_lineage_sha256"))
+        public = MODULE.public_status(state, sha)
+        assert public["available_actions"] == [] and public["reason_message"]
+        assert public["assurance"] == "blocked" and public["controller_phase"] == "blocked"
+        for origin, resume in (("fresh-restart", False), ("conversation-resume", True), ("conversation-continue", True)):
+            try:
+                MODULE.create_state(job, origin, resume=resume, approve_sha=sha)
+            except MODULE.DispatchError:
+                pass
+            else:
+                raise AssertionError("guard failure authorized another attempt")
+        assert MODULE.load_state(job)[2] == sha
+        return state
+
+    mutations = {
+        "untracked": "(origin / 'escape.txt').write_text('escape\\n')",
+        "tracked": "(origin / 'tracked.txt').write_text('changed\\n')",
+        "staging": "oid = git('hash-object', '-w', '--stdin', payload=b'index only\\n')\ngit('update-index', '--cacheinfo', '100644', oid, 'tracked.txt')",
+        "head": "tree = git('rev-parse', 'HEAD^{tree}')\nhead = git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit-tree', tree, '-p', 'HEAD', payload=b'same tree\\n')\ngit('update-ref', 'HEAD', head)",
+    }
+    for kind, mutation in mutations.items():
+        for scoped in (False, True):
+            def mutation_case(kind=kind, mutation=mutation, scoped=scoped) -> None:
+                _origin, candidate, job, bin_dir, calls = source_fixture(f"{kind}-{scoped}", mutation, scoped=scoped)
+                assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+                state = assert_source_veto(job)
+                assert state["source_checkout_guard"]["status"] == "changed"
+                assert state["source_checkout_guard"]["before_sha256"] != state["source_checkout_guard"]["after_sha256"]
+                assert calls.read_text() == "call\n"
+                if scoped:
+                    assert (candidate / "candidate.txt").read_text() == "base\n", "suspect stage reconciled"
+                    assert not (job / "stage-001").exists()
+            check(f"source guard rejects {kind} changes in {'scoped' if scoped else 'whole'} attempts", mutation_case)
+
+    def source_budget_closed_before_spawn() -> None:
+        for scoped in (False, True):
+            origin, _candidate, job, bin_dir, calls = source_fixture(f"oversized-{scoped}", scoped=scoped)
+            with (origin / "oversized.bin").open("wb") as handle:
+                handle.truncate(64 * 1024 * 1024 + 1)
+            assert run_controller(job, bin_dir) == 29
+            state = assert_source_veto(job, "source_checkout_guard_unavailable")
+            assert not calls.exists()
+            assert "smaller dedicated source checkout" in MODULE.public_status(state, MODULE.load_state(job)[2])["reason_message"]
+        origin, _candidate, job, bin_dir, calls = source_fixture("oversized-dirty")
+        with (origin / "tracked.txt").open("wb") as handle:
+            handle.truncate(64 * 1024 * 1024 + 1)
+        assert run_controller(job, bin_dir) == 29
+        assert_source_veto(job, "source_checkout_guard_unavailable")
+        assert not calls.exists()
+        _origin, candidate, job, bin_dir, calls = source_fixture("oversized-post", "with (origin / 'huge.bin').open('wb') as handle: handle.truncate(64 * 1024 * 1024 + 1)", scoped=True)
+        assert run_controller(job, bin_dir) == 29
+        assert_source_veto(job, "source_checkout_guard_unavailable")
+        assert calls.read_text() == "call\n" and (candidate / "candidate.txt").read_text() == "base\n"
+    check("source guard budget exhaustion blocks provider spawn with actionable status", source_budget_closed_before_spawn)
+
+    def unchanged_source_controls() -> None:
+        for scoped in (False, True):
+            origin, candidate, job, bin_dir, _calls = source_fixture(f"control-{scoped}", scoped=scoped)
+            (origin / "tracked.txt").write_text("preexisting dirty\n")
+            (origin / "dirty-untracked.txt").write_text("preexisting\n")
+            ignored = origin / "ignored"; ignored.mkdir(); (ignored / "data").write_text("old")
+            fake = bin_dir / "agy"
+            fake.write_text(fake.read_text().replace("print(json.dumps({'event':'init'", "(origin / 'ignored' / 'data').write_text('new')\nprint(json.dumps({'event':'init'"))
+            assert run_controller(job, bin_dir) == 0
+            state, _raw, _sha = MODULE.load_state(job)
+            assert state["candidate_recognized"] and state["result_available"]
+            assert (candidate / "candidate.txt").read_text() == "candidate\n"
+            if hasattr(MODULE, "_observe_source_checkout"):
+                assert state["source_checkout_guard"]["status"] == "unchanged"
+    check("source guard preserves stage workdir dirty-source and ignored-output controls", unchanged_source_controls)
+
+    def main_workdir_skip() -> None:
+        origin, _candidate, _job, _bin_dir, _calls = source_fixture("main-skip")
+        before = MODULE._worktree_snapshot(str(origin))["sha256"]
+        if hasattr(MODULE, "_observe_source_checkout"):
+            assert MODULE._observe_source_checkout(str(origin))["status"] == "skipped_main_worktree"
+            binding = MODULE._ControllerBinding(state={"attempt": 1, "workdir": str(origin)}, command={"workdir": str(origin)})
+            execution = MODULE._ProviderExecution()
+            guard = MODULE._prepare_controller_source(binding, execution)
+            assert guard["status"] == "skipped_main_worktree"
+        (origin / "candidate.txt").write_text("candidate\n")
+        assert MODULE._worktree_snapshot(str(origin))["sha256"] != before
+        if hasattr(MODULE, "_observe_source_checkout"):
+            MODULE._check_controller_source(binding, execution)
+            assert execution.source_guard_result == guard
+            assert MODULE._source_guard_reason({"source_checkout_guard": guard}) is None
+    check("source guard helper skips a verified main workdir without changing write behavior", main_workdir_skip)
+
+    def source_reason_precedence() -> None:
+        for terminal in ("permission", "timeout", "model", "cancel", "interrupt"):
+            if terminal in {"permission", "timeout", "model"}:
+                _origin, _candidate, control_job, control_bin, _calls = source_fixture(f"precedence-control-{terminal}", terminal=terminal)
+                expected_reason = {"permission": "permission_required", "timeout": "provider_timeout", "model": "model_selection_rejected"}[terminal]
+                assert run_controller(control_job, control_bin) == {"permission": 6, "timeout": 17, "model": 26}[terminal]
+                assert MODULE.load_state(control_job)[0]["reason"] == expected_reason
+            origin, _candidate, job, bin_dir, calls = source_fixture(f"precedence-{terminal}", mutations["untracked"], terminal=terminal if terminal not in {"cancel", "interrupt"} else "wait")
+            if terminal in {"cancel", "interrupt"}:
+                def request_stop(origin=origin, terminal=terminal, job=job):
+                    deadline = time.monotonic() + 10
+                    while not (origin / "escape.txt").exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    if terminal == "cancel":
+                        state, raw, _sha = MODULE.load_state(job)
+                        MODULE.transition(job, state, raw, {"cancel_requested": True, "status": "cancel-requested"})
+                    else:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                thread = threading.Thread(target=request_stop); thread.start()
+                try:
+                    assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+                finally:
+                    thread.join(10)
+            else:
+                assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+            assert_source_veto(job)
+            assert calls.read_text() == "call\n"
+    check("source guard changes dominate provider failures cancellation and interrupt", source_reason_precedence)
+
+    def native_attempt_detects_independent_owner_change() -> None:
+        from unittest import mock
+        origin, candidate, job, bin_dir, _calls = source_fixture("native-owner", scoped=True, native=True)
+        fake = bin_dir / "agy"
+        # A contained provider must not write the external invocation marker.
+        fake.write_text(fake.read_text().replace("calls.write_text(calls.read_text() + 'call\\n' if calls.exists() else 'call\\n')\n", ""))
+        monitor = MODULE._monitor_controller_provider
+        def edit_after_native_spawn(*args):
+            (origin / "tracked.txt").write_text("independent owner edit\n")
+            return monitor(*args)
+        with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=edit_after_native_spawn):
+            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+        state = assert_source_veto(job)
+        assert state["provider_isolation"] == "native" and state["agy_returncode"] == 0
+        events = [json.loads(line) for line in Path(state["stream_path"]).read_text().splitlines()]
+        assert sum(event.get("event") == "result" for event in events) == 1
+        assert (candidate / "candidate.txt").read_text() == "base\n"
+    check("source guard detects an independent owner edit during native containment", native_attempt_detects_independent_owner_change)
+
+    def source_repair_attempt_is_fresh_and_terminal() -> None:
+        _origin, _candidate, job, bin_dir, calls = source_fixture("repair", scoped=True)
+        assert run_controller(job, bin_dir) == 0
+        state, _raw, sha = MODULE.load_state(job)
+        assert state["continue_available"]
+        first_guard = state.get("source_checkout_guard")
+        verification = {"schema_version": 2, "summary": "repair", "passed_checks": [], "failed_checks": ["fixture"],
+                        "advisory_checks": 0, "missing_checks": 0, "candidate_sha256": state["result_sha256"],
+                        "coverage": "partial", "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True}
+        fake = bin_dir / "agy"
+        fake.write_text(fake.read_text().replace("print(json.dumps({'event':'init'", mutations["tracked"] + "\nprint(json.dumps({'event':'init'"))
+        MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=verification)
+        pending, _raw, _sha = MODULE.load_state(job)
+        if first_guard is not None:
+            assert pending["source_checkout_guard"]["status"] == "pending" and pending["source_checkout_guard"]["attempt"] == 2
+        assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+        final = assert_source_veto(job)
+        assert final["source_checkout_guard"]["attempt"] == 2 and final["source_checkout_guard"] != first_guard
+        assert calls.read_text() == "call\ncall\n"
+    check("source guard resamples repairs and clears inherited candidate authority", source_repair_attempt_is_fresh_and_terminal)
+
+    def source_exception_orphan_and_transplant() -> None:
+        from unittest import mock
+        origin, candidate, job, bin_dir, _calls = source_fixture("exception", mutations["untracked"], scoped=True, terminal="wait")
+        def fail_after_write(*_args):
+            deadline = time.monotonic() + 5
+            while not (origin / "escape.txt").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            raise RuntimeError("synthetic controller failure")
+        with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=fail_after_write):
+            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+        assert_source_veto(job)
+        assert not (job / "stage-001").exists(), "scoped exception guard left owned provider stage behind"
+        assert (candidate / "candidate.txt").read_text() == "base\n"
+        origin, candidate, job, bin_dir, _calls = source_fixture("exception-replaced-stage", mutations["untracked"], scoped=True, terminal="wait")
+        def replace_stage_after_write(_job, _binding, _execution, _streams, scoped_launch, _outcome):
+            deadline = time.monotonic() + 5
+            while not (origin / "escape.txt").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            scoped_launch.stage_dir.rename(job / "stage-held")
+            scoped_launch.stage_dir.mkdir(mode=0o700)
+            (scoped_launch.stage_dir / "replacement-marker").write_text("preserve\n")
+            raise RuntimeError("synthetic exception after stage replacement")
+        with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=replace_stage_after_write):
+            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+        assert_source_veto(job)
+        assert (job / "stage-001" / "replacement-marker").read_text() == "preserve\n"
+        assert (job / "stage-held").is_dir()
+        assert (candidate / "candidate.txt").read_text() == "base\n"
+        origin, _candidate, job, _bin, _calls = source_fixture("orphan")
+        observed = MODULE._observe_source_checkout(MODULE.load_state(job)[0]["workdir"])
+        state, raw, _sha = MODULE.load_state(job)
+        guard = {"algorithm": "source-checkout-v1", "attempt": 1, "status": "armed", "before_sha256": observed["sha256"], "after_sha256": None,
+                 **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
+        MODULE.transition(job, state, raw, {"status": "running", "controller_pid": 123, "source_checkout_guard": guard})
+        with mock.patch.object(MODULE, "print_control_status"):
+            assert MODULE.command_status(job, "text") == 0
+        assert_source_veto(job, "source_checkout_guard_unavailable")
+        _origin, _candidate, job, bin_dir, _calls = source_fixture("transplant")
+        original_check = MODULE._check_controller_source
+        def transplant(binding, execution):
+            state, raw, _sha = MODULE.load_state(job)
+            altered = dict(state["source_checkout_guard"]); altered["before_sha256"] = "f" * 64
+            MODULE.transition(job, state, raw, {"source_checkout_guard": altered})
+            original_check(binding, execution)
+        with mock.patch.object(MODULE, "_check_controller_source", side_effect=transplant):
+            assert run_controller(job, bin_dir) == 29
+        assert_source_veto(job, "source_checkout_guard_unavailable")
+        _origin, _candidate, job, bin_dir, _calls = source_fixture("authority-replaced", "origin.rename(origin.with_name(origin.name + '-moved'))", scoped=True)
+        assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+        assert_source_veto(job)
+        # An unconfirmed process-group exit cannot authorize a post observation.
+        observed = MODULE._observe_source_checkout(MODULE.load_state(root / "source-guard-transplant-job")[0]["workdir"])
+        binding = MODULE._ControllerBinding(state={"attempt": 1}, command={"workdir": str(root / "source-guard-transplant-candidate")})
+        baseline = {"algorithm": "source-checkout-v1", "attempt": 1, "status": "armed", "before_sha256": observed["sha256"], "after_sha256": None,
+                    **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
+        execution = MODULE._ProviderExecution(started_mono=1.0, process=mock.Mock(), source_guard_baseline=baseline)
+        with mock.patch.object(MODULE, "_observe_source_checkout", side_effect=AssertionError("unreaped provider scanned")):
+            MODULE._check_controller_source(binding, execution)
+        assert execution.source_guard_result["status"] == "unavailable"
+        live_stage = root / "unreaped-stage"; live_stage.mkdir(mode=0o700)
+        (live_stage / "marker").write_text("preserve\n")
+        binding.state.update(elapsed_seconds=0.0, attempt_base_elapsed=0.0)
+        launch = MODULE._ScopedLaunch(stage_dir=live_stage, stage_identity=MODULE._identity(live_stage.stat()))
+        with mock.patch.object(MODULE, "_terminate_provider_process", side_effect=MODULE.DispatchError("unconfirmed reap")), \
+             mock.patch.object(MODULE, "_freeze_reaped_runtime", return_value=(binding.state, b"", "0" * 64, None)), \
+             mock.patch.object(MODULE, "_terminalize_owned", return_value=({"exit_code": 29}, b"", "0" * 64)), \
+             mock.patch.object(MODULE.WORKTREE, "_cleanup_stage", side_effect=AssertionError("unreaped stage removed")) as cleanup:
+            assert MODULE._recover_controller_failure(job, binding, execution, launch) == 29
+            cleanup.assert_not_called()
+        assert (live_stage / "marker").read_text() == "preserve\n"
+    check("source guard checks exception reaps and blocks orphan or transplanted baselines", source_exception_orphan_and_transplant)
+
+    def source_hardened_git_and_paths() -> None:
+        from unittest import mock
+        origin, candidate, _job, bin_dir, _calls = source_fixture("hardening")
+        expected = MODULE._observe_source_checkout(str(candidate))["sha256"]
+        marker = root / "source-guard-helper-ran"
+        helper = bin_dir / "hostile-helper"
+        helper.write_text(f"#!/bin/sh\nprintf ran > {shlex.quote(str(marker))}\n"); helper.chmod(0o755)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "config", "core.fsmonitor", str(helper)], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "config", "core.hooksPath", str(bin_dir)], check=True)
+        (bin_dir / "git").write_text(f"#!/bin/sh\nprintf ran > {shlex.quote(str(marker))}\n"); (bin_dir / "git").chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": str(bin_dir), "GIT_DIR": str(origin / "wrong"), "GIT_WORK_TREE": str(origin / "wrong"), "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.fsmonitor", "GIT_CONFIG_VALUE_0": str(helper)}):
+            assert MODULE._observe_source_checkout(str(candidate))["sha256"] == expected
+        assert not marker.exists()
+        include = root / "source-guard-filter-include"; include.write_text(f'[filter "evil"]\n clean = {helper}\n')
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "config", "include.path", str(include)], check=True)
+        try:
+            MODULE._observe_source_checkout(str(candidate))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("effective content filter accepted")
+        assert not marker.exists()
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "config", "--unset", "include.path"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "config", "core.fsmonitor", "false"], check=True)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "config", "core.autocrlf", "true"], check=True)
+        normalized_before = MODULE._observe_source_checkout(str(candidate))["sha256"]
+        tracked_info = (origin / "tracked.txt").stat()
+        (origin / "tracked.txt").write_bytes(b"base\r\n")
+        os.utime(origin / "tracked.txt", ns=(tracked_info.st_atime_ns, tracked_info.st_mtime_ns))
+        normalized = subprocess.check_output(["/usr/bin/git", "-C", str(origin), "diff", "--name-only", "--", "tracked.txt"])
+        assert not normalized, normalized
+        assert MODULE._observe_source_checkout(str(candidate))["sha256"] != normalized_before
+        (origin / "link").symlink_to("tracked.txt")
+        before = MODULE._observe_source_checkout(str(candidate))["sha256"]
+        (origin / "link").unlink(); (origin / "link").symlink_to("missing")
+        assert MODULE._observe_source_checkout(str(candidate))["sha256"] != before
+        (origin / "link").unlink()
+        directory = origin / "folder"; directory.mkdir(); (directory / "file").write_text("base")
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "add", "folder/file"], check=True)
+        (directory / "file").unlink(); directory.rmdir(); directory.symlink_to(root)
+        try:
+            MODULE._observe_source_checkout(str(candidate))
+        except (ValueError, OSError):
+            pass
+        else:
+            raise AssertionError("symlink parent followed")
+    check("source guard uses fixed hardened Git rejects effective filters and never follows content parents", source_hardened_git_and_paths)
+
+    def source_scale_and_race_boundaries() -> None:
+        from unittest import mock
+        origin, candidate, _job, _bin, _calls = source_fixture("scale")
+        with (origin / "large.bin").open("wb") as handle:
+            handle.truncate(65 * 1024 * 1024)
+        subprocess.run(["/usr/bin/git", "-C", str(origin), "add", "large.bin"], check=True)
+        real_read = os.read
+        total = 0
+        def count_read(fd, size):
+            nonlocal total
+            payload = real_read(fd, size); total += len(payload); return payload
+        with mock.patch.object(MODULE.CANDIDATE_STATE.os, "read", side_effect=count_read):
+            MODULE._observe_source_checkout(str(candidate))
+        assert total < 1024 * 1024, total
+        with mock.patch.object(MODULE.CANDIDATE_STATE, "SOURCE_CHECKOUT_PATH_LIMIT", 1):
+            try:
+                MODULE._observe_source_checkout(str(candidate))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("path count budget ignored")
+        with mock.patch.object(MODULE.CANDIDATE_STATE, "SOURCE_CHECKOUT_LIST_TOTAL", 1):
+            try:
+                MODULE._observe_source_checkout(str(candidate))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("listing budget ignored")
+        real_reader = MODULE.WORKTREE._bounded_git_read
+        deadlines = []
+        def capture(*args, **kwargs):
+            deadlines.append(kwargs["deadline"])
+            return real_reader(*args, **kwargs)
+        with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", side_effect=capture):
+            MODULE._observe_source_checkout(str(candidate))
+        assert len(deadlines) > 10 and len(set(deadlines)) == 1
+        original_binding = MODULE.CANDIDATE_STATE._source_binding
+        count = 0
+        def replace_authority(*args):
+            nonlocal count
+            result = original_binding(*args); count += 1
+            if count == 2:
+                result["source_identity"] = [0, 0, stat.S_IFDIR, 0]
+            return result
+        with mock.patch.object(MODULE.CANDIDATE_STATE, "_source_binding", side_effect=replace_authority):
+            try:
+                MODULE._observe_source_checkout(str(candidate))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("authority race accepted")
+        # Exercise the same source adapter against real hanging/oversized Git
+        # child groups. The fixed executable binder is replaced only in this fixture.
+        for label, program in (("hang", "sleep 20"), ("overflow", "/usr/bin/head -c 8388609 /dev/zero")):
+            fake_git = root / f"source-guard-{label}-git"
+            fake_git.write_text("#!/bin/sh\n" + program + "\n"); fake_git.chmod(0o700)
+            binding = MODULE.WORKTREE._safe_git_executable(str(fake_git))
+            assert binding is not None
+            started = time.monotonic()
+            with mock.patch.object(MODULE.WORKTREE, "_safe_git_executable", return_value=binding), mock.patch.object(MODULE.CANDIDATE_STATE, "SOURCE_CHECKOUT_SECONDS", 0.2):
+                try:
+                    MODULE._observe_source_checkout(str(candidate))
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("hanging or oversized source Git accepted")
+            assert time.monotonic() - started < 3.0
+    check("source guard bounds metadata and listings without rereading clean large tracked bytes", source_scale_and_race_boundaries)
+
+    def source_schema_veto_and_old_state() -> None:
+        _origin, _candidate, job, bin_dir, _calls = source_fixture("schema", mutations["untracked"])
+        assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+        state = assert_source_veto(job)
+        for updates in ({"resume_available": True}, {"next_action": "restart"}, {"continue_available": True},
+                        {"assurance": "verified"}, {"last_success_path": "/tmp/forged", "last_success_sha256": "a" * 64, "last_success_identity": [0, 0, 0, 0, 0]}):
+            try:
+                MODULE.validate_state({**state, **updates})
+            except MODULE.DispatchError:
+                pass
+            else:
+                raise AssertionError("forged guard candidate/action state accepted")
+        for update in ({"extra": None}, {"attempt": 2}, {"status": "unchanged"}, {"after_sha256": "z" * 64}):
+            try:
+                MODULE.validate_state({**state, "source_checkout_guard": {**state["source_checkout_guard"], **update}})
+            except MODULE.DispatchError:
+                pass
+            else:
+                raise AssertionError("forged guard observation accepted")
+        old = {**state, "schema_version": 18}; old.pop("source_checkout_guard")
+        (job / MODULE.STATE_NAME).write_bytes(MODULE.canonical(old)); (job / MODULE.STATE_NAME).chmod(0o600)
+        before = {path.name: path.read_bytes() for path in job.iterdir() if path.is_file()}
+        try:
+            MODULE.command_status(job)
+        except MODULE.UnsupportedSchemaError:
+            pass
+        else:
+            raise AssertionError("old state accepted")
+        assert {path.name: path.read_bytes() for path in job.iterdir() if path.is_file()} == before
+        # The facade reads these fixed reasons through its existing reason plumbing.
+        facade_spec = importlib.util.spec_from_file_location("source_guard_facade", SOURCE.with_name("workflow.py"))
+        facade = importlib.util.module_from_spec(facade_spec)
+        sys.modules[facade_spec.name] = facade; facade_spec.loader.exec_module(facade)
+        for reason in ("source_checkout_changed", "source_checkout_guard_unavailable"):
+            facts = {"state_sha256": "a" * 64, "status": "failed", "reason": reason, "workflow": "task", "attempt": 1, "max_cycles": 2, "result_available": False}
+            decision = facade._delegation_from_dispatch(facts, approval_bound=True)
+            assert decision["state"] == "evaluated" and decision["decision"]["decision"] == "blocked", decision
+            assert decision["decision"]["reason_code"] == "hard-stop-active", decision
+    check("source guard schema veto rejects forged authority and old state without recovery writes", source_schema_veto_and_old_state)

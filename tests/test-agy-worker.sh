@@ -4445,7 +4445,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 18
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 19
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -5107,13 +5107,18 @@ printf 'project marker drift\n' | AGY_TEST_WORKDIR="$TMP/project-worktree" \
 project_marker_rc=$?
 cp "$TMP/project-marker.saved" "$TMP/project-worktree/.git"
 control_worker status project-marker-drift > "$TMP/project-marker-drift.status"
-if [[ "$project_marker_rc" == 20 ]] && python3 - "$TMP/project-marker-drift.status" <<'PY'
+if [[ "$project_marker_rc" == 29 ]] && python3 - "$TMP/project-marker-drift.status" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert value["status"] == "failed"
 assert value["phase"] == "blocked"
-assert value["assurance"] is None
+assert value["assurance"] == "blocked"
+assert value["reason"] == "source_checkout_guard_unavailable"
+assert value["result_available"] is False
+assert value["resume_available"] is False
 assert value["continue_available"] is False
+assert value["available_actions"] == []
+assert value["has_prior_candidate"] is False
 PY
 then
     ok "project workflow binds the linked-worktree marker before and after provider execution"
@@ -5131,13 +5136,18 @@ project_marker_sparse_post_rc=$?
 cp "$TMP/project-marker-sparse-post.saved" "$TMP/project-worktree/.git"
 control_worker status project-marker-sparse-post > "$TMP/project-marker-sparse-post.status"
 project_marker_sparse_post_calls="$(wc -l < "$TMP/project-marker-sparse-post.worker-calls" | tr -d ' ')"
-if [[ "$project_marker_sparse_post_rc" == 20 && "$project_marker_sparse_post_calls" == 1 ]] \
+if [[ "$project_marker_sparse_post_rc" == 29 && "$project_marker_sparse_post_calls" == 1 ]] \
         && python3 - "$TMP/project-marker-sparse-post.status" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert value["status"] == "failed"
 assert value["phase"] == "blocked"
-assert value["assurance"] is None
+assert value["assurance"] == "blocked"
+assert value["reason"] == "source_checkout_guard_unavailable"
+assert value["result_available"] is False
+assert value["resume_available"] is False
+assert value["continue_available"] is False
+assert value["available_actions"] == []
 assert value["has_prior_candidate"] is False
 PY
 then

@@ -55,6 +55,12 @@ in [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFIC
 commands, IDs and limits; keep that manifest out of the provider preview and prompt.
 Retired dispatch and workflow job formats are rejected; finish or discard them with their creating release, without migration.
 Default `--provider-isolation session` uses the existing AGY session. AGY has normal user filesystem/network authority; staging and reconciliation are not host isolation.
+Each provider attempt compares a bounded observation of the verified main source
+checkout before and after execution. A detected change blocks the candidate; ignored
+untracked files and writes elsewhere on the host are outside this check. The
+main-workdir helper skips this comparison, while public launch preview still requires
+a linked disposable worktree. See
+[Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md#session-and-native-modes).
 Explicit `--provider-isolation native` requires supported macOS scoped containment; it never falls back to session mode. Preserve the recorded isolation mode and grant profile across repairs.
 Provider-scope approval grants neither provider execution, Git action, driver acceptance, nor publication.
 Exclude secrets, denied paths and unrelated private content from every approved entry; telling the worker not to read an approved entry is not a control.

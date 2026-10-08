@@ -323,6 +323,209 @@ def git_commit_state(
     return {"branch": branch, "head": head, "entries": entries}
 
 
+
+SOURCE_CHECKOUT_ALGORITHM = "source-checkout-v1"
+SOURCE_CHECKOUT_SECONDS = 5.0
+SOURCE_CHECKOUT_PATH_LIMIT = 100000
+SOURCE_CHECKOUT_LIST_LIMIT = 8 * 1024 * 1024
+SOURCE_CHECKOUT_LIST_TOTAL = 32 * 1024 * 1024
+SOURCE_CHECKOUT_CONTENT_LIMIT = 64 * 1024 * 1024
+
+
+def source_directory_identity(path: Path) -> list[int]:
+    """Bind a canonical, no-follow directory without volatile Git timestamps."""
+    if not path.is_absolute() or Path(os.path.realpath(path)) != path:
+        raise CandidateStateError("source authority is not canonical")
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise CandidateStateError("source authority is not a directory")
+    return [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid]
+
+
+def _source_binding(workdir: Path, reader: Callable[..., bytes]) -> dict[str, object]:
+    """Resolve the verified main registration, including separate Git dirs."""
+    source_directory_identity(workdir)
+
+    def marker(root: Path) -> None:
+        info = (root / ".git").lstat()
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            raise CandidateStateError("source Git marker is unsupported")
+
+    marker(workdir)
+
+    def path_read(root: Path, *arguments: str) -> Path:
+        raw = reader(root, *arguments)
+        if not raw.endswith(b"\n") or b"\0" in raw:
+            raise CandidateStateError("source Git path is invalid")
+        path = Path(raw[:-1].decode("utf-8", "strict"))
+        if not path.is_absolute():
+            path = root / path
+        path = Path(os.path.abspath(path))
+        source_directory_identity(path)
+        return path
+
+    if path_read(workdir, "rev-parse", "--show-toplevel") != workdir:
+        raise CandidateStateError("source workdir is redirected")
+    work_git = path_read(workdir, "rev-parse", "--absolute-git-dir")
+    common = path_read(workdir, "rev-parse", "--git-common-dir")
+    records = reader(workdir, "worktree", "list", "--porcelain", "-z")
+    if not records.endswith(b"\0\0"):
+        raise CandidateStateError("source registrations are incomplete")
+    registrations: list[Path] = []
+    for record in records[:-2].split(b"\0\0"):
+        fields = record.split(b"\0")
+        if (not fields or not fields[0].startswith(b"worktree ")
+                or any(field == b"bare" or field.startswith(b"prunable") for field in fields)):
+            raise CandidateStateError("source registration is unsupported")
+        root = Path(fields[0][9:].decode("utf-8", "strict"))
+        source_directory_identity(root)
+        registrations.append(root)
+    if not registrations or len(set(registrations)) != len(registrations) or workdir not in registrations:
+        raise CandidateStateError("source registration is ambiguous")
+    source = registrations[0]
+    marker(source)
+    if (path_read(source, "rev-parse", "--show-toplevel") != source
+            or path_read(source, "rev-parse", "--absolute-git-dir") != common
+            or path_read(source, "rev-parse", "--git-common-dir") != common
+            or (workdir == source) != (work_git == common)):
+        raise CandidateStateError("source main authority is redirected")
+    return {"source_path": str(source), "source_identity": source_directory_identity(source),
+            "common_dir": str(common), "common_identity": source_directory_identity(common)}
+
+
+def source_checkout_observation(
+    workdir: Path, *, git_reader: Callable[..., bytes], deadline: float,
+) -> dict[str, object]:
+    """Observe bounded Git-visible source state; ignored untracked bytes are excluded.
+
+    Clean tracked content uses its index OID and no-follow stat binding. Dirty
+    tracked/untracked bytes are streamed; no repository helper or filter runs.
+    The caller owns one deadline and the bounded Git process-group transport.
+    """
+    listed_bytes = 0
+
+    def read(root: Path, *arguments: str, **_limits: object) -> bytes:
+        nonlocal listed_bytes
+        if time.monotonic() >= deadline:
+            raise CandidateStateLimitError("source observation deadline")
+        raw = git_reader(root, *arguments)
+        listed_bytes += len(raw)
+        if len(raw) > SOURCE_CHECKOUT_LIST_LIMIT or listed_bytes > SOURCE_CHECKOUT_LIST_TOTAL:
+            raise CandidateStateLimitError("source observation listing budget")
+        return raw
+
+    binding = _source_binding(workdir, read)
+    if binding["source_path"] == str(workdir):
+        return {**binding, "status": "skipped_main_worktree", "sha256": None}
+    source = Path(str(binding["source_path"]))
+    commit = git_commit_state(source, git_reader=read)
+
+    def paths(*arguments: str) -> set[bytes]:
+        raw = read(source, *arguments)
+        if raw and not raw.endswith(b"\0"):
+            raise CandidateStateError("source path listing is incomplete")
+        return set(raw.split(b"\0")) - {b""}
+
+    untracked = paths("ls-files", "-z", "--others", "--exclude-standard")
+    suspect = paths("-c", "core.trustctime=true", "-c", "core.checkStat=default",
+                    "-c", "core.ignoreStat=false", "-c", "core.filemode=true",
+                    "-c", "core.symlinks=true", "diff-files", "--no-ext-diff",
+                    "--no-textconv", "--name-only", "-z", "--")
+    tracked: set[bytes] = set()
+    for relative, header in commit["entries"]:
+        mode, oid, stage = header.split(" ")
+        if stage != "0" or mode not in {"100644", "100755", "120000"} or COMMIT_RE.fullmatch(oid) is None:
+            raise CandidateStateError("source index entry is unsupported")
+        tracked.add(os.fsencode(relative))
+    all_paths = tracked | untracked
+    if len(all_paths) > SOURCE_CHECKOUT_PATH_LIMIT or not suspect <= tracked:
+        raise CandidateStateLimitError("source observation path budget")
+    digest = hashlib.sha256()
+    digest.update(SOURCE_CHECKOUT_ALGORITHM.encode("ascii") + b"\0")
+    digest.update(json.dumps(binding, sort_keys=True, separators=(",", ":")).encode())
+    digest.update(json.dumps(commit, sort_keys=True, separators=(",", ":")).encode())
+    content_bytes = 0
+
+    def facts(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    observations: dict[bytes, tuple[int, ...] | None] = {}
+    root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+    def inspect(raw_path: bytes, *, hash_content: bool, recheck: bool = False) -> tuple[int, ...] | None:
+        nonlocal content_bytes
+        if time.monotonic() >= deadline:
+            raise CandidateStateLimitError("source observation deadline")
+        parts = raw_path.split(b"/")
+        if any(part in {b"", b".", b"..", b".git"} for part in parts):
+            raise CandidateStateError("source content path is invalid")
+        parent_fd = os.dup(root_fd)
+        try:
+            for part in parts[:-1]:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                os.close(parent_fd)
+                parent_fd = child
+            before = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+            if not (stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)):
+                raise CandidateStateError("source content kind is unsupported")
+            payload_digest = hashlib.sha256()
+            if not recheck and (hash_content or stat.S_ISLNK(before.st_mode)):
+                if content_bytes + before.st_size > SOURCE_CHECKOUT_CONTENT_LIMIT:
+                    raise CandidateStateLimitError("source observation content budget")
+                if stat.S_ISLNK(before.st_mode):
+                    payload = os.fsencode(os.readlink(parts[-1], dir_fd=parent_fd))
+                    content_bytes += len(payload)
+                    payload_digest.update(payload)
+                else:
+                    descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                         dir_fd=parent_fd)
+                    try:
+                        if facts(os.fstat(descriptor)) != facts(before):
+                            raise CandidateStateError("source file changed while opening")
+                        while chunk := os.read(descriptor, 65536):
+                            content_bytes += len(chunk)
+                            if content_bytes > SOURCE_CHECKOUT_CONTENT_LIMIT or time.monotonic() >= deadline:
+                                raise CandidateStateLimitError("source observation content budget")
+                            payload_digest.update(chunk)
+                        if facts(os.fstat(descriptor)) != facts(before):
+                            raise CandidateStateError("source file changed while reading")
+                    finally:
+                        os.close(descriptor)
+                if content_bytes > SOURCE_CHECKOUT_CONTENT_LIMIT:
+                    raise CandidateStateLimitError("source observation content budget")
+                digest.update(payload_digest.digest())
+            if facts(os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)) != facts(before):
+                raise CandidateStateError("source file changed while observing")
+            return facts(before)
+        except FileNotFoundError:
+            if raw_path in untracked:
+                raise CandidateStateError("source untracked file disappeared") from None
+            return None
+        finally:
+            os.close(parent_fd)
+
+    try:
+        for raw_path in sorted(all_paths):
+            digest.update(len(raw_path).to_bytes(8, "big") + raw_path)
+            observation = inspect(raw_path, hash_content=raw_path in untracked or raw_path in suspect)
+            observations[raw_path] = observation
+            digest.update(json.dumps(observation, separators=(",", ":")).encode())
+        # Revalidate all named paths and the semantic lists before accepting a
+        # sample. Stat-only checks do not charge content twice or rehash bytes.
+        for raw_path, observation in observations.items():
+            if inspect(raw_path, hash_content=False, recheck=True) != observation:
+                raise CandidateStateError("source sample raced")
+        if (git_commit_state(source, git_reader=read) != commit
+                or paths("ls-files", "-z", "--others", "--exclude-standard") != untracked
+                or _source_binding(workdir, read) != binding
+                or source_directory_identity(source) != [os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino,
+                                                        stat.S_IFMT(os.fstat(root_fd).st_mode), os.fstat(root_fd).st_uid]):
+            raise CandidateStateError("source sample authority changed")
+    finally:
+        os.close(root_fd)
+    return {**binding, "status": "observed", "sha256": digest.hexdigest()}
+
 def candidate_state_is_empty(repo: Path, base: str) -> bool:
     """Check that neither the index nor working tree adds a committable change."""
     try:

@@ -755,7 +755,7 @@ def _delegation_from_dispatch(
         preflight_passed, provider_state = False, "unverified"
     elif reason == "provider_quota_exhausted":
         preflight_passed, provider_state = True, "quota_exhausted"
-    elif reason == "native_host_sandbox_unavailable":
+    elif reason in {"native_host_sandbox_unavailable", "source_checkout_changed", "source_checkout_guard_unavailable"}:
         preflight_passed, provider_state = True, "unverified"
     elif reason in {
         "provider_terminal_error", "provider_timeout", "agy_failed_unclassified",
@@ -801,8 +801,8 @@ def _delegation_from_dispatch(
         "user_opt_in": True, "transmission_approved": True,
         "scope_path_approved": True, "preflight_passed": preflight_passed,
         "provider_state": provider_state,
-        "hard_stop_triggered": reason in {"permission_required", "native_host_sandbox_unavailable"},
-        "hard_stop_reasons": [reason] if reason in {"permission_required", "native_host_sandbox_unavailable"} else [],
+        "hard_stop_triggered": reason in {"permission_required", "native_host_sandbox_unavailable", "source_checkout_changed", "source_checkout_guard_unavailable"},
+        "hard_stop_reasons": [reason] if reason in {"permission_required", "native_host_sandbox_unavailable", "source_checkout_changed", "source_checkout_guard_unavailable"} else [],
         "cycle_budget_exhausted": status == "failed" and attempt >= max_cycles,
         "attempt_count": attempt, "max_cycles": max_cycles,
         "prior_candidate_available": facts.get("result_available") is True,
@@ -1701,8 +1701,8 @@ def _workflow_status(args: argparse.Namespace) -> int:
             dispatch_raw = dispatch_facts.get("state_sha256") if dispatch_facts else None
             dispatch_sha = dispatch_raw if isinstance(dispatch_raw, str) else "none"
             line2 = f"dispatch: status={disp} phase={phase} state={dispatch_sha[:12] if dispatch_sha != 'none' else 'none'} candidate={cand[:12] if cand != 'none' else 'none'}"
-            if dispatch_facts and dispatch_facts.get("reason") == "model_selection_rejected":
-                line2 += " " + DISPATCH.MODEL_SELECTION_REJECTED_MESSAGE
+            if dispatch_facts and dispatch_facts.get("reason_message"):
+                line2 += " " + dispatch_facts["reason_message"]
             verdict = verification_facts.get("verdict", "unverified") if verification_facts else "unverified"
             assurance = dispatch_facts.get("assurance") if dispatch_facts else "none"
             line3 = f"verification: verdict={verdict} assurance={assurance or 'none'}"
@@ -1801,10 +1801,7 @@ def _dispatcher_status(
         "source_kind": "dispatcher",
         "job_id": job_id,
         "reason": facts.get("reason"),
-        "reason_message": (
-            DISPATCH.MODEL_SELECTION_REJECTED_MESSAGE
-            if facts.get("reason") == "model_selection_rejected" else None
-        ),
+        "reason_message": facts.get("reason_message"),
         "phase": facts.get("phase"),
         "controller_phase": facts.get("controller_phase"),
         "available_actions": facts.get("available_actions", []),

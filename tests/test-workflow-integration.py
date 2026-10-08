@@ -152,6 +152,8 @@ candidate = Path.cwd() / "candidate.txt"
 candidate.write_text("synthetic candidate\\n", encoding="utf-8")
 if behavior == "escape":
     Path({str(self.outside)!r}).write_text("synthetic escape\\n", encoding="utf-8")
+elif behavior == "source":
+    Path({str(self.repo / "notes.txt")!r}).write_text("synthetic source write\\n", encoding="utf-8")
 elif behavior == "undeclared":
     (Path.cwd() / "undeclared.txt").write_text("undeclared\\n", encoding="utf-8")
 
@@ -356,6 +358,43 @@ class InstalledWorkflowIntegrationTests(unittest.TestCase):
                 "PHASE0_GAP_DETECTED: synthetic worker wrote outside its disposable "
                 "worktree; this is characterization evidence, not containment acceptance"
             )
+        finally:
+            fixture.clean()
+
+    def test_source_guard_protects_main_checkout_when_facade_caller_is_linked(self) -> None:
+        fixture = InstalledWorkflowFixture("source")
+        try:
+            main = fixture.repo
+            caller = fixture.root / "caller"
+            fixture.git("worktree", "add", "-q", "-b", "caller", str(caller))
+            fixture.repo = caller
+            arguments = ("--repo", str(caller), "--job-id", fixture.job_id,
+                         "--model", MODEL, "--effort", EFFORT, "--task", "Create candidate.txt")
+            preview = fixture.run_cli("run", *arguments, "--preview")
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            approval = json.loads(preview.stdout)["launch_approval_sha256"]
+            result = fixture.run_cli("run", *arguments, "--approve-whole-worktree", approval)
+            self.assertEqual(result.returncode, 28, result.stderr)
+            self.assertTrue((main / "notes.txt").exists())
+            self.assertFalse((caller / "notes.txt").exists())
+            states = list(fixture.state_home.glob(f"agy-worker/workflows/*/{fixture.job_id}/workflow.json"))
+            self.assertEqual(len(states), 1)
+            status = fixture.run_cli("status", "--state", str(states[0]), "--format", "json")
+            self.assertEqual(status.returncode, 0, status.stderr)
+            value = json.loads(status.stdout)
+            dispatch = value["dispatch"]
+            self.assertEqual(dispatch["reason"], "source_checkout_changed")
+            self.assertEqual(dispatch["source_checkout_guard"]["source_path"], str(main))
+            self.assertFalse(dispatch["candidate_recognized"])
+            self.assertFalse(dispatch["result_available"])
+            self.assertFalse(dispatch["resume_available"])
+            self.assertFalse(dispatch["continue_available"])
+            self.assertEqual(dispatch["available_actions"], [])
+            self.assertEqual(value["delegation_policy"]["decision"]["reason_code"], "hard-stop-active")
+            text = fixture.run_cli("status", "--state", str(states[0]), "--format", "text")
+            self.assertIn("by the provider or another process; inspect it before retrying", text.stdout.decode())
+            calls = [json.loads(line) for line in fixture.calls.read_text().splitlines()]
+            self.assertEqual(sum(call["kind"] == "worker" for call in calls), 1)
         finally:
             fixture.clean()
 

@@ -1380,9 +1380,9 @@ def _safe_git_owner_mode(metadata: os.stat_result, *, directory: bool) -> bool:
     )
 
 
-def _safe_git_executable() -> tuple[str, dict[str, Any]] | None:
+def _safe_git_executable(candidate: str | None = None) -> tuple[str, dict[str, Any]] | None:
     """Resolve Git through a bounded safe ownership and symlink-chain check."""
-    candidate = shutil.which("git")
+    candidate = shutil.which("git") if candidate is None else candidate
     if not candidate:
         return None
 
@@ -1586,6 +1586,14 @@ _FIXED_GIT_READ_ARGV = {
     ("ls-files", "-z", "--others", "--exclude-standard"),
     ("ls-files", "-z", "--others", "--ignored", "--exclude-standard"),
     ("cat-file", "--batch"),
+    ("worktree", "list", "--porcelain", "-z"),
+    ("rev-parse", "--symbolic-full-name", "HEAD"),
+    ("rev-parse", "--verify", "HEAD^{commit}"),
+    ("config", "--includes", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process|required)$"),
+    ("-c", "core.trustctime=true", "-c", "core.checkStat=default",
+     "-c", "core.ignoreStat=false", "-c", "core.filemode=true",
+     "-c", "core.symlinks=true", "diff-files", "--no-ext-diff",
+     "--no-textconv", "--name-only", "-z", "--"),
 }
 
 
@@ -1652,6 +1660,7 @@ def _bounded_git_read(
     executable: str, executable_authority: dict[str, Any], root: str,
     arguments: list[str], *, deadline: float, payload: bytes = b"",
     allowed: tuple[int, ...] = (0,), stdout_limit: int | None = None,
+    fixed_executable: bool = False,
 ) -> tuple[int, bytes] | None:
     """Run one allowlisted Git read under a bounded, owned process group.
 
@@ -1689,7 +1698,8 @@ def _bounded_git_read(
     def executable_is_bound() -> bool:
         try:
             return bool(
-                _confirm_safe_git_executable(executable, executable_authority)
+                (_safe_git_executable("/usr/bin/git") == (executable, executable_authority)
+                 if fixed_executable else _confirm_safe_git_executable(executable, executable_authority))
                 and _full_stat_binding(os.lstat(executable)) == target_binding
             )
         except OSError:
@@ -1740,7 +1750,11 @@ def _bounded_git_read(
                 "/bin/sh", "-c", supervisor, "bounded-git-supervisor",
                 str(status_write), str(control_read), str(payload_read),
                 executable, "-C", root, "-c", "core.fsmonitor=false",
-                "-c", "core.hooksPath=/dev/null", *git_options, *arguments,
+                "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false",
+                "-c", "color.ui=false", "-c", "core.pager=cat",
+                "-c", "credential.helper=", "-c", "protocol.allow=never",
+                "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false",
+                *git_options, *arguments,
             ],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, env=environment,
