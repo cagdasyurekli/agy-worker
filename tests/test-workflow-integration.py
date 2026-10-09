@@ -392,7 +392,7 @@ class InstalledWorkflowIntegrationTests(unittest.TestCase):
             self.assertEqual(dispatch["available_actions"], [])
             self.assertEqual(value["delegation_policy"]["decision"]["reason_code"], "hard-stop-active")
             text = fixture.run_cli("status", "--state", str(states[0]), "--format", "text")
-            self.assertIn("by the provider or another process; inspect it before retrying", text.stdout.decode())
+            self.assertIn("by the provider or another process; inspect it and start a new job.", text.stdout.decode())
             calls = [json.loads(line) for line in fixture.calls.read_text().splitlines()]
             self.assertEqual(sum(call["kind"] == "worker" for call in calls), 1)
         finally:

@@ -2076,11 +2076,14 @@ def run(context: dict[str, object]) -> None:
 
     check("direct selections bind public startup, launch replacement windows, and provider runtime boundaries", direct_selection_reprobes_every_controller_attempt)
 
-    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False):
+    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False):
         origin = (root / f"source-guard-{label}-origin").resolve()
         candidate = (root / f"source-guard-{label}-candidate").resolve()
         origin.mkdir()
-        subprocess.run(["/usr/bin/git", "init", "-q", str(origin)], check=True)
+        git_init = ["/usr/bin/git", "init", "-q"]
+        if separate_git:
+            git_init += ["--separate-git-dir", str(root / f"source-guard-{label}-git")]
+        subprocess.run([*git_init, str(origin)], check=True)
         (origin / "tracked.txt").write_text("base\n")
         (origin / "candidate.txt").write_text("base\n")
         (origin / ".gitignore").write_text("ignored/\n")
@@ -2192,6 +2195,29 @@ def run(context: dict[str, object]) -> None:
     check("source guard budget exhaustion blocks provider spawn with actionable status", source_budget_closed_before_spawn)
 
     def unchanged_source_controls() -> None:
+        # Every bound terminal report requires proof regardless of its outer
+        # disposition. These are admissible controls and mutation vetoes.
+        for terminal in ("SUCCESS", "ERROR", "CANCELLED", "timeout"):
+            for mutated in (False, True):
+                _origin, _candidate, job, bin_dir, _calls = source_fixture(
+                    f"report-{terminal}-{mutated}", mutations["untracked"] if mutated else "",
+                )
+                fake = bin_dir / "agy"
+                text = fake.read_text()
+                if terminal == "timeout":
+                    text += "print('[agy] print timeout after 30s with turn in progress; returning partial output', file=sys.stderr)\n"
+                else:
+                    text = text.replace("'status':'SUCCESS'", f"'status':{terminal!r}")
+                fake.write_text(text)
+                code = run_controller(job, bin_dir)
+                if mutated:
+                    assert code == 28
+                    assert_source_veto(job)
+                else:
+                    state, _raw, _sha = MODULE.load_state(job)
+                    assert state["candidate_recognized"] and state["result_available"], state
+                    assert state["source_checkout_guard"]["status"] == "unchanged"
+
         for scoped in (False, True):
             origin, candidate, job, bin_dir, _calls = source_fixture(f"control-{scoped}", scoped=scoped)
             (origin / "tracked.txt").write_text("preexisting dirty\n")
@@ -2212,7 +2238,7 @@ def run(context: dict[str, object]) -> None:
         before = MODULE._worktree_snapshot(str(origin))["sha256"]
         if hasattr(MODULE, "_observe_source_checkout"):
             assert MODULE._observe_source_checkout(str(origin))["status"] == "skipped_main_worktree"
-            binding = MODULE._ControllerBinding(state={"attempt": 1, "workdir": str(origin)}, command={"workdir": str(origin)})
+            binding = MODULE._ControllerBinding(state={"attempt": 1, "workdir": str(origin), "source_checkout_guard": MODULE._pending_source_guard(1)}, command={"workdir": str(origin)})
             execution = MODULE._ProviderExecution()
             guard = MODULE._prepare_controller_source(binding, execution)
             assert guard["status"] == "skipped_main_worktree"
@@ -2225,13 +2251,15 @@ def run(context: dict[str, object]) -> None:
     check("source guard helper skips a verified main workdir without changing write behavior", main_workdir_skip)
 
     def source_reason_precedence() -> None:
+        from unittest import mock
         for terminal in ("permission", "timeout", "model", "cancel", "interrupt"):
-            if terminal in {"permission", "timeout", "model"}:
-                _origin, _candidate, control_job, control_bin, _calls = source_fixture(f"precedence-control-{terminal}", terminal=terminal)
-                expected_reason = {"permission": "permission_required", "timeout": "provider_timeout", "model": "model_selection_rejected"}[terminal]
-                assert run_controller(control_job, control_bin) == {"permission": 6, "timeout": 17, "model": 26}[terminal]
-                assert MODULE.load_state(control_job)[0]["reason"] == expected_reason
             origin, _candidate, job, bin_dir, calls = source_fixture(f"precedence-{terminal}", mutations["untracked"], terminal=terminal if terminal not in {"cancel", "interrupt"} else "wait")
+            expected = {"permission": 6, "timeout": 17, "model": 26, "cancel": 22, "interrupt": 143}[terminal]
+            observations = []
+            observe = MODULE._observe_source_checkout
+            def counted(workdir, observations=observations, observe=observe):
+                observations.append(workdir)
+                return observe(workdir)
             if terminal in {"cancel", "interrupt"}:
                 def request_stop(origin=origin, terminal=terminal, job=job):
                     deadline = time.monotonic() + 10
@@ -2244,14 +2272,44 @@ def run(context: dict[str, object]) -> None:
                         os.kill(os.getpid(), signal.SIGTERM)
                 thread = threading.Thread(target=request_stop); thread.start()
                 try:
-                    assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+                    with mock.patch.object(MODULE, "_observe_source_checkout", side_effect=counted):
+                        assert run_controller(job, bin_dir) == expected, MODULE.load_state(job)[0]
                 finally:
                     thread.join(10)
             else:
-                assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+                with mock.patch.object(MODULE, "_observe_source_checkout", side_effect=counted):
+                    assert run_controller(job, bin_dir) == expected, MODULE.load_state(job)[0]
+            state, _raw, sha = MODULE.load_state(job)
+            assert len(observations) == 1, "no-candidate attempt re-digested after reap"
+            assert state["source_checkout_guard"]["status"] == "deferred"
+            assert state["source_checkout_guard"]["after_sha256"] is None
+            assert not state["candidate_recognized"] and not state["result_available"]
+            MODULE.validate_state(state)
+            for updates in ({"candidate_recognized": True}, {"result_available": True},
+                            {"result_path": "/tmp/forged"}, {"last_success_path": "/tmp/forged"}):
+                try:
+                    MODULE.validate_state({**state, **updates})
+                except MODULE.DispatchError:
+                    pass
+                else:
+                    raise AssertionError("deferred state accepted candidate authority")
+            assert MODULE.public_status(state, sha)["source_checkout_guard"]["status"] == "deferred"
+            if state["resume_available"]:
+                MODULE.create_state(job, "conversation-resume", resume=True, approve_sha=sha)
+            else:
+                # These provider failures emit no conversation; a resume stays
+                # unavailable, but the eligible fresh restart must compare too.
+                try:
+                    MODULE.create_state(job, "conversation-resume", resume=True, approve_sha=sha)
+                except MODULE.DispatchError:
+                    pass
+                else:
+                    raise AssertionError("unavailable resume became eligible")
+                MODULE.create_state(job, "fresh-restart", resume=True, approve_sha=sha)
+            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
             assert_source_veto(job)
-            assert calls.read_text() == "call\n"
-    check("source guard changes dominate provider failures cancellation and interrupt", source_reason_precedence)
+            assert calls.read_text() == "call\n", "changed source started another fake provider"
+    check("source guard defers no-candidate failures cancellation and interrupt until relaunch", source_reason_precedence)
 
     def native_attempt_detects_independent_owner_change() -> None:
         from unittest import mock
@@ -2273,6 +2331,97 @@ def run(context: dict[str, object]) -> None:
     check("source guard detects an independent owner edit during native containment", native_attempt_detects_independent_owner_change)
 
     def source_repair_attempt_is_fresh_and_terminal() -> None:
+        from unittest import mock
+        def feedback(state):
+            return {"schema_version": 2, "summary": "repair", "passed_checks": [], "failed_checks": ["fixture"],
+                    "advisory_checks": 0, "missing_checks": 0, "candidate_sha256": state["result_sha256"],
+                    "coverage": "partial", "verified_findings": 1, "unresolved_gaps": 1, "diff_review_complete": True}
+        for edited in (False, True):
+            origin, _candidate, job, bin_dir, calls = source_fixture(f"baseline-{edited}", scoped=True)
+            assert run_controller(job, bin_dir) == 0
+            state, _raw, sha = MODULE.load_state(job)
+            baseline = state["source_checkout_guard"]["before_sha256"]
+            fake = bin_dir / "agy"
+            fake.write_text(fake.read_text().replace("write_text('candidate\\n')", "write_text('repair\\n')"))
+            MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
+            if edited:
+                (origin / "tracked.txt").write_text("between attempts\n")
+                assert run_controller(job, bin_dir) == 28
+                assert_source_veto(job)
+                assert calls.read_text() == "call\n", "source edit launched repair"
+            else:
+                assert run_controller(job, bin_dir) == 0, MODULE.load_state(job)[0]
+                final = MODULE.load_state(job)[0]
+                assert final["source_checkout_guard"]["before_sha256"] == baseline
+                assert final["source_checkout_guard"]["after_sha256"] == baseline
+                assert calls.read_text() == "call\ncall\n"
+        # A completed prelaunch veto must survive a stop arriving after the
+        # observation, including a concurrently substituted persisted baseline.
+        prepare = MODULE._prepare_controller_source
+        for proof in ("changed", "unavailable", "transplant"):
+            for stop in ("cancel", "interrupt", "max-runtime", "hard"):
+                origin, _candidate, job, bin_dir, calls = source_fixture(
+                    f"prelaunch-{proof}-{stop}", scoped=True,
+                )
+                assert run_controller(job, bin_dir) == 0
+                state, _raw, sha = MODULE.load_state(job)
+                MODULE.create_state(job, "conversation-continue", resume=True,
+                                    approve_sha=sha, verification=feedback(state))
+                if proof == "changed":
+                    (origin / "tracked.txt").write_text("between attempts\n")
+
+                def stop_after_proof(binding, execution, proof=proof, stop=stop, job=job):
+                    if proof == "unavailable":
+                        with mock.patch.object(MODULE, "_observe_source_checkout",
+                                               side_effect=ValueError("incomplete proof")):
+                            guard = prepare(binding, execution)
+                    else:
+                        guard = prepare(binding, execution)
+                    current, raw, _sha = MODULE.load_state(job)
+                    updates = {}
+                    if proof == "transplant":
+                        updates["source_checkout_guard"] = {
+                            **guard, "before_sha256": "f" * 64,
+                        }
+                        MODULE._validate_source_guard({**current, **updates})
+                    if stop == "cancel":
+                        updates.update(cancel_requested=True, status="cancel-requested")
+                    elif stop == "interrupt":
+                        execution.stop_signal = signal.SIGTERM
+                    elif stop == "max-runtime":
+                        execution.elapsed = MODULE._provider_max_seconds(binding.state)
+                    else:
+                        execution.elapsed = float(binding.state["hard_seconds"])
+                    if updates:
+                        MODULE.transition(job, current, raw, updates)
+                    return guard
+
+                expected = "source_checkout_changed" if proof == "changed" else "source_checkout_guard_unavailable"
+                with mock.patch.object(MODULE, "_prepare_controller_source", side_effect=stop_after_proof):
+                    assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON[expected], MODULE.load_state(job)[0]
+                assert_source_veto(job, expected)
+                assert calls.read_text() == "call\n", "prelaunch stop/veto race started a provider"
+
+        # A no-report repair cancellation still owns an inherited candidate,
+        # and therefore cannot defer its source proof.
+        origin, _candidate, job, bin_dir, calls = source_fixture("inherited-cancel", scoped=True)
+        assert run_controller(job, bin_dir) == 0
+        state, _raw, sha = MODULE.load_state(job)
+        fake = bin_dir / "agy"
+        fake.write_text(fake.read_text().replace("print(json.dumps({'event':'init'", mutations["untracked"] + "\ntime.sleep(20)\nprint(json.dumps({'event':'init'"))
+        MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
+        monitor = MODULE._monitor_controller_provider
+        def cancel_inherited(*args):
+            deadline = time.monotonic() + 5
+            while not (origin / "escape.txt").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            current, raw, _sha = MODULE.load_state(job)
+            MODULE.transition(job, current, raw, {"cancel_requested": True, "status": "cancel-requested"})
+            return monitor(*args)
+        with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=cancel_inherited):
+            assert run_controller(job, bin_dir) == 28
+        assert_source_veto(job)
+        assert calls.read_text() == "call\ncall\n"
         _origin, _candidate, job, bin_dir, calls = source_fixture("repair", scoped=True)
         assert run_controller(job, bin_dir) == 0
         state, _raw, sha = MODULE.load_state(job)
@@ -2286,12 +2435,12 @@ def run(context: dict[str, object]) -> None:
         MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=verification)
         pending, _raw, _sha = MODULE.load_state(job)
         if first_guard is not None:
-            assert pending["source_checkout_guard"]["status"] == "pending" and pending["source_checkout_guard"]["attempt"] == 2
+            assert pending["source_checkout_guard"] == {**first_guard, "attempt": 2}
         assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
         final = assert_source_veto(job)
         assert final["source_checkout_guard"]["attempt"] == 2 and final["source_checkout_guard"] != first_guard
         assert calls.read_text() == "call\ncall\n"
-    check("source guard resamples repairs and clears inherited candidate authority", source_repair_attempt_is_fresh_and_terminal)
+    check("source guard preserves the job baseline across repairs and clears inherited candidate authority", source_repair_attempt_is_fresh_and_terminal)
 
     def source_exception_orphan_and_transplant() -> None:
         from unittest import mock
@@ -2302,8 +2451,8 @@ def run(context: dict[str, object]) -> None:
                 time.sleep(0.01)
             raise RuntimeError("synthetic controller failure")
         with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=fail_after_write):
-            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
-        assert_source_veto(job)
+            assert run_controller(job, bin_dir) == 20, MODULE.load_state(job)[0]
+        assert MODULE.load_state(job)[0]["source_checkout_guard"]["status"] == "deferred"
         assert not (job / "stage-001").exists(), "scoped exception guard left owned provider stage behind"
         assert (candidate / "candidate.txt").read_text() == "base\n"
         origin, candidate, job, bin_dir, _calls = source_fixture("exception-replaced-stage", mutations["untracked"], scoped=True, terminal="wait")
@@ -2316,8 +2465,8 @@ def run(context: dict[str, object]) -> None:
             (scoped_launch.stage_dir / "replacement-marker").write_text("preserve\n")
             raise RuntimeError("synthetic exception after stage replacement")
         with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=replace_stage_after_write):
-            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
-        assert_source_veto(job)
+            assert run_controller(job, bin_dir) == 20, MODULE.load_state(job)[0]
+        assert MODULE.load_state(job)[0]["source_checkout_guard"]["status"] == "deferred"
         assert (job / "stage-001" / "replacement-marker").read_text() == "preserve\n"
         assert (job / "stage-held").is_dir()
         assert (candidate / "candidate.txt").read_text() == "base\n"
@@ -2340,6 +2489,17 @@ def run(context: dict[str, object]) -> None:
         with mock.patch.object(MODULE, "_check_controller_source", side_effect=transplant):
             assert run_controller(job, bin_dir) == 29
         assert_source_veto(job, "source_checkout_guard_unavailable")
+        _origin, _candidate, job, bin_dir, calls = source_fixture("prelaunch-transplant")
+        original_prepare = MODULE._prepare_controller_source
+        def prelaunch_transplant(binding, execution):
+            guard = original_prepare(binding, execution)
+            state, raw, _sha = MODULE.load_state(job)
+            MODULE.transition(job, state, raw, {"source_checkout_guard": {**guard, "before_sha256": "f" * 64}})
+            return guard
+        with mock.patch.object(MODULE, "_prepare_controller_source", side_effect=prelaunch_transplant):
+            assert run_controller(job, bin_dir) == 29
+        assert_source_veto(job, "source_checkout_guard_unavailable")
+        assert not calls.exists(), "transplanted baseline launched a provider"
         _origin, _candidate, job, bin_dir, _calls = source_fixture("authority-replaced", "origin.rename(origin.with_name(origin.name + '-moved'))", scoped=True)
         assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
         assert_source_veto(job)
@@ -2369,6 +2529,85 @@ def run(context: dict[str, object]) -> None:
         from unittest import mock
         origin, candidate, _job, bin_dir, _calls = source_fixture("hardening")
         expected = MODULE._observe_source_checkout(str(candidate))["sha256"]
+        combined_paths = ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"]
+        assert MODULE.WORKTREE._fixed_git_read_argv(combined_paths)
+        for near_miss in (combined_paths[:-1], [*combined_paths, "HEAD"],
+                          [combined_paths[0], *reversed(combined_paths[1:])]):
+            assert not MODULE.WORKTREE._fixed_git_read_argv(near_miss)
+        real_reader = MODULE.WORKTREE._bounded_git_read
+        filter_shape = ["config", "--includes", "--name-only", "--get-regexp",
+                        r"^filter\..*\.(clean|process|required)$"]
+        for reject in (False, True):
+            _barrier_origin, barrier_candidate, barrier_job, barrier_bin, barrier_calls = source_fixture(
+                f"filter-barrier-{reject}",
+            )
+            discovery_seen = {}
+            filter_done = set()
+            sampled = []
+            def filter_barrier(*args, discovery_seen=discovery_seen, filter_done=filter_done,
+                               sampled=sampled, reject=reject, **kwargs):
+                read_root, shape = args[2], args[3]
+                event = discovery_seen.setdefault(read_root, threading.Event())
+                if shape == filter_shape:
+                    assert event.wait(1.0), "safe discovery was serialized behind filter inspection"
+                    time.sleep(0.01)
+                    if not reject:
+                        filter_done.add(read_root)
+                    return (0, b"filter.evil.clean\n") if reject else (1, b"")
+                if shape == combined_paths or shape == ["worktree", "list", "--porcelain", "-z"]:
+                    event.set()
+                else:
+                    assert read_root in filter_done, "content sampling preceded filter verdict"
+                    sampled.append(shape)
+                return real_reader(*args, **kwargs)
+            # Discovery may run under a blocked filter proof, but an unsuccessful
+            # verdict must prevent every content/index read and provider start.
+            original_observe = MODULE._observe_source_checkout
+            def guarded_observe(workdir, original_observe=original_observe, filter_barrier=filter_barrier):
+                with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", side_effect=filter_barrier):
+                    return original_observe(workdir)
+            with mock.patch.object(MODULE, "_observe_source_checkout", side_effect=guarded_observe):
+                if reject:
+                    assert run_controller(barrier_job, barrier_bin) == 29
+                    assert_source_veto(barrier_job, "source_checkout_guard_unavailable")
+                else:
+                    MODULE._observe_source_checkout(str(barrier_candidate))
+            if reject:
+                assert not sampled and not barrier_calls.exists()
+            else:
+                assert sampled and len(filter_done) == 2
+        for malformed in (b"one\ntwo\n", b"one\ntwo\nthree", b"one\ntwo\nthree\nfour\n",
+                          b"one\n\nthree\n", b"one\ntwo\nthree\0\n", b"\xff\ntwo\nthree\n"):
+            def malformed_paths(*args, malformed=malformed, **kwargs):
+                return (0, malformed) if args[3] == combined_paths else real_reader(*args, **kwargs)
+            with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", side_effect=malformed_paths):
+                try:
+                    MODULE._observe_source_checkout(str(candidate))
+                except (ValueError, UnicodeError):
+                    pass
+                else:
+                    raise AssertionError("ambiguous combined path output accepted")
+        def relative_common(*args, **kwargs):
+            result = real_reader(*args, **kwargs)
+            if args[3] == combined_paths and result is not None:
+                code, raw = result
+                fields = raw.split(b"\n")
+                common_path = Path(os.fsdecode(fields[2]))
+                if not common_path.is_absolute():
+                    common_path = Path(args[2]) / common_path
+                fields[2] = os.fsencode(os.path.relpath(common_path, args[2]))
+                return code, b"\n".join(fields)
+            return result
+        with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", side_effect=relative_common):
+            assert MODULE._observe_source_checkout(str(candidate))["sha256"] == expected
+        _separate_origin, _separate_candidate, separate_job, separate_bin, separate_calls = source_fixture(
+            "separate-git", separate_git=True,
+        )
+        # Git registers the external Git dir as the main worktree here, so
+        # no verified main registration exists. Preserve unavailable, not skip.
+        assert run_controller(separate_job, separate_bin) == 29
+        assert_source_veto(separate_job, "source_checkout_guard_unavailable")
+        assert not separate_calls.exists()
         marker = root / "source-guard-helper-ran"
         helper = bin_dir / "hostile-helper"
         helper.write_text(f"#!/bin/sh\nprintf ran > {shlex.quote(str(marker))}\n"); helper.chmod(0o755)
@@ -2449,6 +2688,33 @@ def run(context: dict[str, object]) -> None:
         with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", side_effect=capture):
             MODULE._observe_source_checkout(str(candidate))
         assert len(deadlines) > 10 and len(set(deadlines)) == 1
+        # A failed sibling cannot return while another owned Git read runs.
+        lock = threading.Lock()
+        active = maximum_active = finished = 0
+        def sibling_failure(*args, **kwargs):
+            nonlocal active, maximum_active, finished
+            if args[3][0] == "config":
+                return real_reader(*args, **kwargs)
+            with lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                time.sleep(0.03)
+                if args[3] == ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"]:
+                    return None
+                return real_reader(*args, **kwargs)
+            finally:
+                with lock:
+                    active -= 1
+                    finished += 1
+        with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", side_effect=sibling_failure):
+            try:
+                MODULE._observe_source_checkout(str(candidate))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("failed source sibling accepted")
+        assert maximum_active >= 2 and active == 0 and finished == 2
         original_binding = MODULE.CANDIDATE_STATE._source_binding
         count = 0
         def replace_authority(*args):
@@ -2501,7 +2767,7 @@ def run(context: dict[str, object]) -> None:
                 pass
             else:
                 raise AssertionError("forged guard observation accepted")
-        old = {**state, "schema_version": 18}; old.pop("source_checkout_guard")
+        old = {**state, "schema_version": 19}
         (job / MODULE.STATE_NAME).write_bytes(MODULE.canonical(old)); (job / MODULE.STATE_NAME).chmod(0o600)
         before = {path.name: path.read_bytes() for path in job.iterdir() if path.is_file()}
         try:

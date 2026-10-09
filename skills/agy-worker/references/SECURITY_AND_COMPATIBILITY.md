@@ -87,12 +87,14 @@ Default `--provider-isolation session` retains the caller's existing HOME/sessio
 and normal filesystem/network authority. Environment filtering and selected staging
 cannot prevent or exhaustively observe host access.
 For each attempt, the controller derives the owning main worktree from the bound
-workdir's Git common directory and compares a bounded source observation around
-provider execution. The observation binds HEAD, index, tracked paths, and non-ignored
+workdir's Git common directory and compares a bounded source observation against
+one immutable baseline per job, before later launches and before admitting a report
+or retaining an inherited candidate. No-candidate cancellations and failures record
+`deferred`; their next resume/continue/repair/restart must pass the comparison. The observation binds HEAD, index, tracked paths, and non-ignored
 untracked paths. Clean tracked files use Git object IDs plus metadata; dirty tracked
 and non-ignored untracked files are hashed from bytes. Ignored untracked files and
 other host paths are excluded. A detected change, including an owner edit, blocks
-candidate recognition and reuse; inspect the source before retrying. The finite
+candidate recognition and reuse; inspect the source and start a new job. The finite
 before/after observations do not detect changes wholly reverted between them and do
 not confine writes. A verified main-workdir helper skips the comparison; public
 transmission preview still requires a linked disposable worktree.

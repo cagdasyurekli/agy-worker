@@ -342,7 +342,10 @@ def source_directory_identity(path: Path) -> list[int]:
     return [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid]
 
 
-def _source_binding(workdir: Path, reader: Callable[..., bytes]) -> dict[str, object]:
+def _source_binding(
+    workdir: Path,
+    batch_reader: Callable[[Path, tuple[tuple[str, ...], ...]], list[bytes]],
+) -> dict[str, object]:
     """Resolve the verified main registration, including separate Git dirs."""
     source_directory_identity(workdir)
 
@@ -353,8 +356,7 @@ def _source_binding(workdir: Path, reader: Callable[..., bytes]) -> dict[str, ob
 
     marker(workdir)
 
-    def path_read(root: Path, *arguments: str) -> Path:
-        raw = reader(root, *arguments)
+    def path_read(root: Path, raw: bytes) -> Path:
         if not raw.endswith(b"\n") or b"\0" in raw:
             raise CandidateStateError("source Git path is invalid")
         path = Path(raw[:-1].decode("utf-8", "strict"))
@@ -364,11 +366,24 @@ def _source_binding(workdir: Path, reader: Callable[..., bytes]) -> dict[str, ob
         source_directory_identity(path)
         return path
 
-    if path_read(workdir, "rev-parse", "--show-toplevel") != workdir:
+    path_command = ("rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+
+    def path_values(raw: bytes) -> tuple[bytes, bytes, bytes]:
+        # Fixed LF framing is deliberately unavailable for LF-bearing paths.
+        # Keep CR/whitespace bytes and relative-common resolution unchanged.
+        parts = raw.split(b"\n")
+        if len(parts) != 4 or parts[-1] or not all(parts[:3]) or b"\0" in raw:
+            raise CandidateStateError("source Git paths are ambiguous")
+        return parts[0] + b"\n", parts[1] + b"\n", parts[2] + b"\n"
+
+    raw_paths, records = batch_reader(
+        workdir, (path_command, ("worktree", "list", "--porcelain", "-z")),
+    )
+    top_raw, git_raw, common_raw = path_values(raw_paths)
+    if path_read(workdir, top_raw) != workdir:
         raise CandidateStateError("source workdir is redirected")
-    work_git = path_read(workdir, "rev-parse", "--absolute-git-dir")
-    common = path_read(workdir, "rev-parse", "--git-common-dir")
-    records = reader(workdir, "worktree", "list", "--porcelain", "-z")
+    work_git = path_read(workdir, git_raw)
+    common = path_read(workdir, common_raw)
     if not records.endswith(b"\0\0"):
         raise CandidateStateError("source registrations are incomplete")
     registrations: list[Path] = []
@@ -384,9 +399,10 @@ def _source_binding(workdir: Path, reader: Callable[..., bytes]) -> dict[str, ob
         raise CandidateStateError("source registration is ambiguous")
     source = registrations[0]
     marker(source)
-    if (path_read(source, "rev-parse", "--show-toplevel") != source
-            or path_read(source, "rev-parse", "--absolute-git-dir") != common
-            or path_read(source, "rev-parse", "--git-common-dir") != common
+    top_raw, git_raw, common_raw = path_values(batch_reader(source, (path_command,))[0])
+    if (path_read(source, top_raw) != source
+            or path_read(source, git_raw) != common
+            or path_read(source, common_raw) != common
             or (workdir == source) != (work_git == common)):
         raise CandidateStateError("source main authority is redirected")
     return {"source_path": str(source), "source_identity": source_directory_identity(source),
@@ -395,6 +411,7 @@ def _source_binding(workdir: Path, reader: Callable[..., bytes]) -> dict[str, ob
 
 def source_checkout_observation(
     workdir: Path, *, git_reader: Callable[..., bytes], deadline: float,
+    git_batch_reader: Callable[[Path, tuple[tuple[str, ...], ...]], list[bytes]] | None = None,
 ) -> dict[str, object]:
     """Observe bounded Git-visible source state; ignored untracked bytes are excluded.
 
@@ -414,23 +431,53 @@ def source_checkout_observation(
             raise CandidateStateLimitError("source observation listing budget")
         return raw
 
-    binding = _source_binding(workdir, read)
-    if binding["source_path"] == str(workdir):
-        return {**binding, "status": "skipped_main_worktree", "sha256": None}
-    source = Path(str(binding["source_path"]))
-    commit = git_commit_state(source, git_reader=read)
+    def batch(root: Path, arguments: tuple[tuple[str, ...], ...]) -> list[bytes]:
+        nonlocal listed_bytes
+        if git_batch_reader is None:
+            return [read(root, *item) for item in arguments]
+        if time.monotonic() >= deadline:
+            raise CandidateStateLimitError("source observation deadline")
+        outputs = git_batch_reader(root, arguments)
+        if len(outputs) != len(arguments):
+            raise CandidateStateError("source Git batch is incomplete")
+        for raw in outputs:
+            listed_bytes += len(raw)
+            if len(raw) > SOURCE_CHECKOUT_LIST_LIMIT or listed_bytes > SOURCE_CHECKOUT_LIST_TOTAL:
+                raise CandidateStateLimitError("source observation listing budget")
+        return outputs
 
-    def paths(*arguments: str) -> set[bytes]:
-        raw = read(source, *arguments)
+    commit_commands: tuple[tuple[str, ...], ...] = (
+        ("ls-files", "--stage", "-z"), ("ls-files", "-v", "-z"),
+        ("rev-parse", "--symbolic-full-name", "HEAD"),
+        ("rev-parse", "--verify", "HEAD^{commit}"),
+    )
+
+    def commit_sample(outputs: list[bytes]) -> GitCommitState:
+        sampled_outputs = dict(zip(commit_commands, outputs))
+        def sampled(_root: Path, *arguments: str, **_limits: object) -> bytes:
+            return sampled_outputs[arguments]
+        return git_commit_state(source, git_reader=sampled)
+
+    def paths(raw: bytes) -> set[bytes]:
         if raw and not raw.endswith(b"\0"):
             raise CandidateStateError("source path listing is incomplete")
         return set(raw.split(b"\0")) - {b""}
 
-    untracked = paths("ls-files", "-z", "--others", "--exclude-standard")
-    suspect = paths("-c", "core.trustctime=true", "-c", "core.checkStat=default",
-                    "-c", "core.ignoreStat=false", "-c", "core.filemode=true",
-                    "-c", "core.symlinks=true", "diff-files", "--no-ext-diff",
-                    "--no-textconv", "--name-only", "-z", "--")
+    binding = _source_binding(workdir, batch)
+    if binding["source_path"] == str(workdir):
+        return {**binding, "status": "skipped_main_worktree", "sha256": None}
+    source = Path(str(binding["source_path"]))
+    untracked_command = ("ls-files", "-z", "--others", "--exclude-standard")
+    suspect_command = ("-c", "core.trustctime=true", "-c", "core.checkStat=default",
+                       "-c", "core.ignoreStat=false", "-c", "core.filemode=true",
+                       "-c", "core.symlinks=true", "diff-files", "--no-ext-diff",
+                       "--no-textconv", "--name-only", "-z", "--")
+    # Fixed reads within a sample are independent; begin and end samples
+    # remain separate, with every content/stat observation between them.
+    initial_outputs = batch(source, (*commit_commands, untracked_command, suspect_command))
+    commit = commit_sample(initial_outputs[:4])
+    untracked_raw, suspect_raw = initial_outputs[4:]
+    untracked, suspect = paths(untracked_raw), paths(suspect_raw)
     tracked: set[bytes] = set()
     for relative, header in commit["entries"]:
         mode, oid, stage = header.split(" ")
@@ -516,9 +563,10 @@ def source_checkout_observation(
         for raw_path, observation in observations.items():
             if inspect(raw_path, hash_content=False, recheck=True) != observation:
                 raise CandidateStateError("source sample raced")
-        if (git_commit_state(source, git_reader=read) != commit
-                or paths("ls-files", "-z", "--others", "--exclude-standard") != untracked
-                or _source_binding(workdir, read) != binding
+        final_outputs = batch(source, (*commit_commands, untracked_command))
+        if (commit_sample(final_outputs[:4]) != commit
+                or paths(final_outputs[4]) != untracked
+                or _source_binding(workdir, batch) != binding
                 or source_directory_identity(source) != [os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino,
                                                         stat.S_IFMT(os.fstat(root_fd).st_mode), os.fstat(root_fd).st_uid]):
             raise CandidateStateError("source sample authority changed")

@@ -1572,6 +1572,7 @@ _FIXED_GIT_READ_ARGV = {
     ("rev-parse", "--show-object-format"),
     ("rev-parse", "--absolute-git-dir"),
     ("rev-parse", "--git-common-dir"),
+    ("rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"),
     ("rev-parse", "--git-path", "index"),
     ("rev-parse", "--verify", "-q", "HEAD^{tree}"),
     (
