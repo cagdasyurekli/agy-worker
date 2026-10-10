@@ -15,7 +15,7 @@ body:
       options:
         - agy-worker dispatcher
         - QA gate
-        - Codex skill or installer
+        - Skill, plugin or installer (Codex or Claude Code)
         - Updater or compatibility check
         - Documentation
         - Other
@@ -51,8 +51,8 @@ body:
     id: versions
     attributes:
       label: Sanitized versions
-      description: agy-worker tag/commit, agy version, OS name and architecture only.
-      placeholder: "tool v1.2.3; agy 1.1.9; macOS arm64"
+      description: agy-worker tag/commit, driver host (Codex or Claude Code), agy version, OS name and architecture only.
+      placeholder: "tool v1.2.3; Claude Code; agy 1.3.3; macOS arm64"
     validations:
       required: true
   - type: checkboxes

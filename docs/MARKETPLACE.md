@@ -19,8 +19,8 @@ installed runtime bytes. `install.sh` remains the explicit local skill-installat
 path; its copied skill bundle must remain byte-identical to the source bundle (apart
 from the local `.pipeline-root` marker).
 
-After the new identity is published, review the repository source, add its Git-backed
-Codex marketplace, and install the plugin with:
+Review the repository source, then add its Git-backed Codex marketplace and install
+the plugin with:
 
 ```bash
 codex plugin marketplace add cagdasyurekli/agy-worker
