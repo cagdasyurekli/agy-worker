@@ -251,8 +251,10 @@ cost, availability, or quality. No selector leaves AGY's default unchanged. See
 [model and effort selection](USAGE.md#model-and-effort-selection).
 
 Bounded synthetic live runs exercised AGY **1.3.0** from Claude Code, including a
-headless denial, print timeout, and rejected model/effort combination. The latest
-Codex-host live run exercised AGY **1.2.12**. These observations are informational;
+headless denial, print timeout, and rejected model/effort combination. Smoke runs of
+the installed v0.24.3 plugin exercised AGY **1.3.2** from both Claude Code and Codex:
+one scoped task dispatch per host, accepted by the driver gate after independent
+verification. These observations are informational;
 they do not gate launches or qualify future versions, authentication or task quality.
 
 ## agy interface cautions
