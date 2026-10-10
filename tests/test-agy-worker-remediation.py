@@ -258,8 +258,16 @@ def run_controller(job: Path, bin_dir: Path) -> int:
     watched = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
     prior_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, watched)
     os.environ["PATH"] = f"{bin_dir}{os.pathsep}{prior_path}"
+    def fixture_keychain():
+        # Bind fake native providers to private, stable Keychain metadata.
+        keychain = bin_dir / "synthetic-default.keychain-db"
+        if not keychain.exists():
+            keychain.write_bytes(b"synthetic Keychain metadata fixture\n")
+            keychain.chmod(0o600)
+        return MODULE.CONTAINMENT._bind_keychain(keychain)
     try:
-        result = MODULE.controller(job, descriptor)
+        with mock.patch.object(MODULE.CONTAINMENT, "_discover_default_keychain", side_effect=fixture_keychain):
+            result = MODULE.controller(job, descriptor)
         descriptor = -1
         return result
     finally:

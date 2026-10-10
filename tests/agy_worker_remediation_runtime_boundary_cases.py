@@ -2096,8 +2096,10 @@ def run(context: dict[str, object]) -> None:
         calls = root / f"source-guard-{label}-calls"
         schema = root / f"source-guard-{label}-schema.json"; provider_schema(schema)
         fake = bin_dir / "agy"
+        # Native fixtures must bypass the developer-selected Xcode launcher.
+        shebang = "#!/Library/Developer/CommandLineTools/usr/bin/python3\n" if native else "#!/usr/bin/env python3\n"
         fake.write_text(
-            "#!/usr/bin/env python3\nimport json, pathlib, subprocess, sys, time\n"
+            shebang + "import json, pathlib, subprocess, sys, time\n"
             + f"origin = pathlib.Path({str(origin)!r})\ncalls = pathlib.Path({str(calls)!r})\n"
             + "calls.write_text(calls.read_text() + 'call\\n' if calls.exists() else 'call\\n')\n"
             + "def git(*args, payload=None):\n    return subprocess.check_output(['/usr/bin/git', '-C', str(origin), *args], input=payload).decode().strip()\n"
@@ -2266,8 +2268,9 @@ def run(context: dict[str, object]) -> None:
                     while not (origin / "escape.txt").exists() and time.monotonic() < deadline:
                         time.sleep(0.01)
                     if terminal == "cancel":
-                        state, raw, _sha = MODULE.load_state(job)
-                        MODULE.transition(job, state, raw, {"cancel_requested": True, "status": "cancel-requested"})
+                        with MODULE.state_lock(job):
+                            state, raw, _sha = MODULE.load_state(job)
+                            MODULE._transition_locked(job, state, raw, {"cancel_requested": True, "status": "cancel-requested"})
                     else:
                         os.kill(os.getpid(), signal.SIGTERM)
                 thread = threading.Thread(target=request_stop); thread.start()
@@ -2322,7 +2325,9 @@ def run(context: dict[str, object]) -> None:
             (origin / "tracked.txt").write_text("independent owner edit\n")
             return monitor(*args)
         with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=edit_after_native_spawn):
-            assert run_controller(job, bin_dir) == 28, MODULE.load_state(job)[0]
+            code = run_controller(job, bin_dir)
+            stderr = job / "stderr.txt"
+            assert code == 28, (MODULE.load_state(job)[0], stderr.read_text() if stderr.exists() else "")
         state = assert_source_veto(job)
         assert state["provider_isolation"] == "native" and state["agy_returncode"] == 0
         events = [json.loads(line) for line in Path(state["stream_path"]).read_text().splitlines()]
