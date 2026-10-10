@@ -181,12 +181,8 @@ state machine, infer assurance, choose retry or Git actions, or conceal a finali
 failure. See [Operate and verify a local project](PROJECT_WORKFLOW.md) for the binding
 details and advanced recovery surfaces.
 
-If a reviewed version-drift report identifies a specific raw agy help SHA, an explicit
-model may proceed through that observed drift by pairing `--model MODEL_SLUG` with
-`--compatibility-disposition proceed --approve-help-sha REVIEWED_RAW_HELP_SHA256` on
-`workflow.sh run`. These flags must be supplied together; this records a caller's
-model-specific drift decision and does not qualify that model or establish live AGY
-compatibility.
+Version drift needs no approval flag: each launch checks the required AGY capabilities
+(see [Installation](INSTALLATION.md#agy-capability-requirements)).
 
 The facade flags `--approve-preview-sha` and `--legacy-preview-approval` were removed
 after v0.22.0. Use one of the two canonical transmission

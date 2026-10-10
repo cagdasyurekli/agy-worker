@@ -1,7 +1,7 @@
 # Product roadmap
 
-Package metadata declares **0.24.1**. This page describes the checked-out product;
-a version string does not prove publication or installation.
+This page describes the checked-out product; package metadata carries the version,
+and a version string does not prove publication or installation.
 Release history lives in [git tags](https://github.com/cagdasyurekli/agy-worker/tags)
 and [GitHub releases](https://github.com/cagdasyurekli/agy-worker/releases).
 
