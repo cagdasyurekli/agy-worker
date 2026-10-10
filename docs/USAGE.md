@@ -36,8 +36,30 @@ entries. Read [PRIVACY.md](../PRIVACY.md) before use.
 
 New jobs default to `--provider-isolation session` and use the existing AGY session.
 The controller validates local worktree paths and reconciles only approved writes,
-but AGY retains normal user filesystem/network authority. Include this mode with the
-task and selected content in the initial approval; no extra approval step is needed.
+but AGY retains normal user filesystem/network authority. The controller compares a
+bounded observation of the verified main source checkout against one immutable job baseline.
+It compares before every subsequent provider launch and before admitting a current report
+or retaining an inherited candidate. No-candidate cancellations and failures defer the
+post-exit observation; status records `source_checkout_guard.status=deferred`, and any
+change is caught before the next resume, continue, repair, or restart launch.
+If it changed, status blocks the candidate and any reuse; inspect the source before
+retrying. If the prelaunch observation cannot be completed within its limits, the
+provider is not started. If the post-exit observation cannot be completed, status
+blocks the candidate and reuse. Status advises inspecting the source/Git configuration,
+reducing large dirty or non-ignored untracked content, or using a smaller dedicated
+source checkout. These checks do not confine host writes or detect changes fully
+reverted between observations. Include this mode with the task and selected content in
+the initial approval; no extra approval step is needed.
+
+Source-checkout controller reasons and normal result exit codes:
+
+| Reason | Exit | Status and next step |
+|---|---:|---|
+| `source_checkout_changed` | 28 | The source checkout changed since the job baseline, by the provider or another process. No candidate or repair reuse is available; inspect the source and start a new job. |
+| `source_checkout_guard_unavailable` | 29 | The source observation or binding could not be verified within its limits. Inspect the source checkout and Git configuration, reduce large dirty or non-ignored untracked content, or use a smaller dedicated source checkout before starting a new job. |
+
+Dispatch state schema is 20; command schema remains 16. Older jobs are rejected;
+finish or discard them with the release that created them, without migration.
 
 Use `--provider-isolation native` explicitly for scoped macOS containment with
 private HOME/TMP. Native mode never falls back to session mode. Include its bound agy

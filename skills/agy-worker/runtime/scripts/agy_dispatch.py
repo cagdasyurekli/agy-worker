@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import fcntl
 import hashlib
@@ -166,6 +167,7 @@ SCOPED_REPAIR_POLICY_SHA256 = hashlib.sha256(
     SCOPED_REPAIR_POLICY_TEXT.encode("utf-8")
 ).hexdigest()
 CURRENT_STATE_FIELDS = {
+    'source_checkout_guard',
     'initial_content_transmission_sha256',
     'agy_returncode',
     'allow_scoped_repair',
@@ -275,7 +277,7 @@ CURRENT_STATE_FIELDS = {
     'worktree_snapshot_algorithm',
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
-CURRENT_STATE_SCHEMA = 18
+CURRENT_STATE_SCHEMA = 20
 CURRENT_COMMAND_SCHEMA = 16
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
@@ -304,6 +306,7 @@ REASONS = {
     "provider_terminal_error", "provider_terminal_cancelled",
     "selection_preflight_failed", "model_selection_rejected", "resolve_undo_present",
     "native_host_sandbox_unavailable",
+    "source_checkout_changed", "source_checkout_guard_unavailable",
 }
 EXIT_BY_REASON = {
     "empty_output": 3,
@@ -324,6 +327,7 @@ EXIT_BY_REASON = {
     "selection_preflight_failed": 26,
     "model_selection_rejected": 26,
     "native_host_sandbox_unavailable": 27,
+    "source_checkout_changed": 28, "source_checkout_guard_unavailable": 29,
     "provider_terminal_cancelled": 22,
     "interrupted": 143,
 }
@@ -332,6 +336,17 @@ MODEL_SELECTION_REJECTED_MESSAGE = (
     "AGY rejected the model/effort selection. Check `agy models` and the "
     "`--model`/`--effort` pair before starting a new job."
 )
+
+SOURCE_GUARD_MESSAGES = {
+    "source_checkout_changed": (
+        "The source checkout changed since the job baseline — by the provider or another process; inspect it and start a new job."
+    ),
+    "source_checkout_guard_unavailable": (
+        "The source checkout guard could not complete within its bounded checks or its source binding is unavailable. "
+        "Inspect the source checkout and its Git configuration; reduce large dirty or non-ignored untracked content, "
+        "or use a smaller dedicated source checkout, then start a new job."
+    ),
+}
 
 MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
@@ -951,6 +966,7 @@ class ProjectBoundary(TypedDict):
 
 
 class DispatchState(TypedDict):
+    source_checkout_guard: dict[str, Any]
     initial_content_transmission_sha256: str | None
     """Fields proven by validate_state; optional values remain explicitly nullable."""
     schema_version: int
@@ -1390,7 +1406,8 @@ def _validate_candidate_lifecycle(value: Mapping[str, Any]) -> None:
         ):
             raise DispatchError("legacy candidate lifecycle is invalid")
         if not active and not value["candidate_recognized"] and (
-            value["phase"] != "attempt-failed" or value["assurance"] != "pending"
+            (value["phase"] != "attempt-failed" or value["assurance"] != "pending")
+            and _source_guard_reason(value) is None
         ):
             raise DispatchError("failed legacy lifecycle is invalid")
 
@@ -1563,6 +1580,259 @@ def _validate_attempt_state(value: Mapping[str, Any]) -> None:
         raise DispatchError("dispatch selection state binding is invalid")
 
 
+
+_SOURCE_BINDING_KEYS = ("source_path", "source_identity", "common_dir", "common_identity")
+
+
+def _pending_source_guard(attempt: int) -> dict[str, Any]:
+    return {"algorithm": CANDIDATE_STATE.SOURCE_CHECKOUT_ALGORITHM,
+            "attempt": attempt, "status": "pending", "before_sha256": None,
+            "after_sha256": None, **dict.fromkeys(_SOURCE_BINDING_KEYS)}
+
+
+def _source_guard_reason(value: Mapping[str, Any]) -> str | None:
+    status = value.get("source_checkout_guard", {}).get("status")
+    if status == "changed" or value.get("reason") == "source_checkout_changed":
+        return "source_checkout_changed"
+    if status == "unavailable" or value.get("reason") == "source_checkout_guard_unavailable":
+        return "source_checkout_guard_unavailable"
+    return None
+
+
+def _source_guard_veto(value: Mapping[str, Any]) -> dict[str, Any]:
+    """One terminal projection clears current and inherited candidate authority."""
+    reason = _source_guard_reason(value)
+    if reason is None:
+        return {}
+    return {
+        "status": "failed", "reason": reason, "exit_code": EXIT_BY_REASON[reason],
+        "controller_pid": None, "finished_epoch": time.time(),
+        "phase": "blocked", "assurance": "blocked", "candidate_recognized": False,
+        "candidate_source": "none", "result_available": False,
+        "resume_available": False, "continue_available": False,
+        "driver_disposition": "not_applicable", "failure_stage": None,
+        "next_action": "none", "next_action_command": None,
+        "worktree_reconciliation": "unavailable", "worktree_changes_present": None,
+        "worktree_changed_since_dispatch": None, "limit_kind": None,
+        "provider_retry_after_seconds": None, "provider_retry_observed_epoch": None,
+        "check_summary": None, "check_counts": dict.fromkeys(("passed", "failed", "advisory", "missing"), 0),
+        "self_verification_started_epoch": None, "self_verification_return_phase": None,
+        **dict.fromkeys((
+            "result_path", "result_sha256", "result_identity", "candidate_worktree_sha256",
+            "candidate_worktree_entries", "candidate_worktree_path_facts", "verification_path",
+            "verification_sha256", "verification_identity", "last_success_path", "last_success_sha256",
+            "last_success_identity", "repair_lineage_sha256", "repair_parent_result_sha256",
+            "repair_parent_worktree_sha256", "repair_lineage_attempt", "reconciliation_manifest_sha256",
+        )),
+    }
+
+
+def _validate_source_guard(value: Mapping[str, Any]) -> None:
+    guard = value["source_checkout_guard"]
+    if (not isinstance(guard, dict)
+            or set(guard) != {"algorithm", "attempt", "status", "before_sha256", "after_sha256", *_SOURCE_BINDING_KEYS}
+            or guard["algorithm"] != CANDIDATE_STATE.SOURCE_CHECKOUT_ALGORITHM
+            or type(guard["attempt"]) is not int or guard["attempt"] != value["attempt"]
+            or guard["status"] not in {"pending", "skipped_main_worktree", "armed", "deferred", "unchanged", "changed", "unavailable"}):
+        raise DispatchError("source checkout guard is invalid")
+    bound = [guard[key] is not None for key in _SOURCE_BINDING_KEYS]
+    if any(bound) != all(bound):
+        raise DispatchError("source checkout guard authority is incomplete")
+    if all(bound):
+        for key in ("source_path", "common_dir"):
+            path = guard[key]
+            if type(path) is not str or not path or not os.path.isabs(path) or "\0" in path or os.path.normpath(path) != path:
+                raise DispatchError("source checkout guard path is invalid")
+        for key in ("source_identity", "common_identity"):
+            identity = guard[key]
+            if (type(identity) is not list or len(identity) != 4
+                    or any(type(item) is not int or item < 0 for item in identity)
+                    or identity[2] != stat.S_IFDIR):
+                raise DispatchError("source checkout guard identity is invalid")
+    before, after = guard["before_sha256"], guard["after_sha256"]
+    for sha in (before, after):
+        if sha is not None and (type(sha) is not str or SHA_RE.fullmatch(sha) is None):
+            raise DispatchError("source checkout guard digest is invalid")
+    status = guard["status"]
+    if (status == "pending" and (any(bound) or before is not None or after is not None)
+            or status == "skipped_main_worktree" and (not all(bound) or guard["source_path"] != value["workdir"] or before is not None or after is not None)
+            or status in {"armed", "deferred", "unchanged", "changed"} and (not all(bound) or before is None)
+            or status in {"armed", "deferred"} and after is not None
+            or status == "unchanged" and (after is None or before != after)
+            or status == "changed" and after is not None and before == after
+            or status == "unavailable" and after is not None
+            or not all(bound) and (before is not None or after is not None)):
+        raise DispatchError("source checkout guard observations are inconsistent")
+    if status == "deferred" and any(value[key] for key in (
+        "candidate_recognized", "result_available", "result_path", "result_sha256",
+        "result_identity", "candidate_worktree_sha256", "candidate_worktree_entries",
+        "candidate_worktree_path_facts", "last_success_path",
+        "last_success_sha256", "last_success_identity",
+    )):
+        raise DispatchError("deferred source checkout guard cannot authorize a candidate")
+    reason = _source_guard_reason(value)
+    if status == "armed" and value["status"] in TERMINAL:
+        raise DispatchError("source checkout guard has no terminal observation")
+    if reason is not None and value["status"] in TERMINAL:
+        required = _source_guard_veto(value)
+        # Time is refreshed by projection; validation only requires terminal completeness.
+        required.pop("finished_epoch")
+        if any(value[key] != item for key, item in required.items()):
+            raise DispatchError("source checkout guard failure cannot authorize a candidate or recovery")
+    if value["reason"] in SOURCE_GUARD_MESSAGES and value["reason"] != (
+        "source_checkout_changed" if status == "changed" else
+        "source_checkout_guard_unavailable" if status == "unavailable" else None
+    ):
+        raise DispatchError("source checkout guard reason is inconsistent")
+
+
+def _observe_source_checkout(workdir: str) -> dict[str, object]:
+    deadline = time.monotonic() + CANDIDATE_STATE.SOURCE_CHECKOUT_SECONDS
+    executable = WORKTREE._safe_git_executable("/usr/bin/git")
+    if executable is None:
+        raise CANDIDATE_STATE.CandidateStateError("source Git authority unavailable")
+    inspected: set[Path] = set()
+
+    def bounded(root: Path, arguments: tuple[str, ...], allowed: tuple[int, ...] = (0,)) -> tuple[int, bytes]:
+        result = WORKTREE._bounded_git_read(
+            *executable, str(root), list(arguments), deadline=deadline,
+            allowed=allowed, stdout_limit=CANDIDATE_STATE.SOURCE_CHECKOUT_LIST_LIMIT,
+            fixed_executable=True,
+        )
+        if result is None:
+            raise CANDIDATE_STATE.CandidateStateLimitError("source Git proof unavailable")
+        return result
+
+    filter_arguments = ("config", "--includes", "--name-only", "--get-regexp",
+                        r"^filter\..*\.(clean|process|required)$")
+
+    def accept_filters(root: Path, result: tuple[int, bytes]) -> None:
+        if result[0] != 1:
+            raise CANDIDATE_STATE.CandidateStateError("source filters unsupported")
+        inspected.add(root)
+
+    def inspect_filters(root: Path) -> None:
+        if root not in inspected:
+            accept_filters(root, bounded(root, filter_arguments, (0, 1)))
+
+    def reader(root: Path, *arguments: str) -> bytes:
+        inspect_filters(root)
+        return bounded(root, arguments)[1]
+
+    # Independent fixed reads share the deadline, never the sample. The executor
+    # drains every sibling (whose supervisor reaps its group) even on failure.
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        def batch(root: Path, arguments: tuple[tuple[str, ...], ...]) -> list[bytes]:
+            paths = ("rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir")
+            discovery = arguments in {(paths,), (paths, ("worktree", "list", "--porcelain", "-z"))}
+            # Only fixed metadata discovery can overlap filter inspection.
+            # No returned authority or content sample precedes its verdict.
+            filter_future = None
+            if root not in inspected and discovery:
+                filter_future = executor.submit(bounded, root, filter_arguments, (0, 1))
+            else:
+                inspect_filters(root)
+            futures = [executor.submit(bounded, root, item) for item in arguments]
+            if filter_future is not None:
+                accept_filters(root, filter_future.result())
+            return [future.result()[1] for future in futures]
+
+        return CANDIDATE_STATE.source_checkout_observation(
+            Path(workdir), git_reader=reader, git_batch_reader=batch, deadline=deadline,
+        )
+
+
+def _prepare_controller_source(binding: _ControllerBinding, execution: _ProviderExecution) -> dict[str, Any]:
+    # Snapshot the exact approved predecessor before scanning outside the lock.
+    prior = dict(binding.state["source_checkout_guard"])
+    execution.source_guard_expected = prior
+    guard = {**prior, "after_sha256": None}
+    try:
+        observed = _observe_source_checkout(binding.command["workdir"])
+        if prior["status"] == "pending":
+            guard.update({key: observed[key] for key in _SOURCE_BINDING_KEYS})
+            guard.update(status=("skipped_main_worktree" if observed["status"] == "skipped_main_worktree" else "armed"),
+                         before_sha256=observed["sha256"])
+        elif any(observed[key] != prior[key] for key in _SOURCE_BINDING_KEYS):
+            guard["status"] = "changed"
+        elif observed["sha256"] != prior["before_sha256"]:
+            guard.update(status="changed", after_sha256=observed["sha256"])
+        else:
+            guard["status"] = "skipped_main_worktree" if observed["status"] == "skipped_main_worktree" else "armed"
+    except (OSError, ValueError, UnicodeError):
+        guard["status"] = "unavailable"
+    execution.source_guard_baseline = guard.copy()
+    return guard
+
+
+def _has_source_candidate(state: Mapping[str, Any]) -> bool:
+    # Include inherited bindings even when an exceptional projection may recover them.
+    return any(state.get(key) for key in (
+        "candidate_recognized", "result_available", "result_path", "last_success_path",
+    ))
+
+
+def _finish_controller_source(binding: _ControllerBinding, execution: _ProviderExecution, *, report: bool = False) -> None:
+    baseline = execution.source_guard_baseline
+    if (baseline is not None and baseline["status"] == "armed"
+            and execution.started_mono is not None and execution.runtime_end_mono is not None
+            and execution.process is None and not report and not _has_source_candidate(binding.state)):
+        # Reap is proven and no candidate can survive; the next launch must compare
+        # this same immutable baseline. This is not an unchanged observation.
+        if execution.source_guard_result is None:
+            execution.source_guard_result = {**baseline, "status": "deferred", "after_sha256": None}
+    else:
+        _check_controller_source(binding, execution)
+
+
+def _check_controller_source(binding: _ControllerBinding, execution: _ProviderExecution) -> None:
+    """Idempotent after-reap proof; a failed completed proof is never replaced."""
+    if execution.source_guard_result is not None:
+        return
+    baseline = execution.source_guard_baseline
+    if baseline is None:
+        return
+    result = baseline.copy()
+    if baseline["status"] == "armed" and execution.started_mono is None and execution.process is None:
+        execution.source_guard_result = dict(execution.source_guard_expected or _pending_source_guard(binding.state["attempt"]))
+        return
+    if baseline["status"] == "armed":
+        result["status"] = "unavailable"
+        if execution.started_mono is not None and execution.runtime_end_mono is not None and execution.process is None:
+            try:
+                for path_key, identity_key in (("source_path", "source_identity"), ("common_dir", "common_identity")):
+                    path = Path(baseline[path_key])
+                    try:
+                        info = path.lstat()
+                        identity = [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid]
+                    except FileNotFoundError:
+                        result["status"] = "changed"
+                        break
+                    if identity != baseline[identity_key] or Path(os.path.realpath(path)) != path:
+                        result["status"] = "changed"
+                        break
+                if result["status"] != "changed":
+                    observed = _observe_source_checkout(binding.command["workdir"])
+                    if any(observed[key] != baseline[key] for key in _SOURCE_BINDING_KEYS):
+                        result["status"] = "changed"
+                    else:
+                        result["after_sha256"] = observed["sha256"]
+                        result["status"] = "unchanged" if observed["sha256"] == baseline["before_sha256"] else "changed"
+            except (OSError, ValueError, UnicodeError):
+                pass
+    execution.source_guard_result = result
+
+
+def _checked_controller_source(current: Mapping[str, Any], execution: _ProviderExecution) -> dict[str, Any]:
+    guard = execution.source_guard_result or execution.source_guard_baseline
+    if guard is None:
+        return dict(current["source_checkout_guard"])
+    if current["source_checkout_guard"] != execution.source_guard_baseline:
+        # The in-memory baseline belongs to this attempt; never trust a
+        # valid-looking transplanted persisted digest. Positive change wins.
+        guard = {**guard, "status": "changed" if guard["status"] == "changed" else "unavailable", "after_sha256": None}
+    return guard
+
 def validate_state(value: Any) -> DispatchState:
     _require_supported_schema(value, label="dispatch state", supported=(CURRENT_STATE_SCHEMA,))
     if not isinstance(value, dict) or set(value) != CURRENT_STATE_FIELDS:
@@ -1608,6 +1878,7 @@ def validate_state(value: Any) -> DispatchState:
     _validate_attempt_state(value)
     _validate_scope_state(value)
     _validate_self_verification_state(value)
+    _validate_source_guard(value)
     _validate_candidate_lifecycle(value)
     _validate_verification_state(value)
     # Exact shape and every field/cross-field rule have passed; preserve input identity.
@@ -1642,6 +1913,7 @@ def initial_state(
         "status": "queued",
         "attempt": attempt,
         "attempt_origin": origin,
+        "source_checkout_guard": _pending_source_guard(attempt),
         "reason": None,
         "exit_code": None,
         "controller_pid": None,
@@ -1930,6 +2202,7 @@ def _resume_is_eligible(value: Mapping[str, Any], now: float) -> bool:
     return bool(
         value["status"] == "failed"
         and not value["candidate_recognized"]
+        and _source_guard_reason(value) is None
         and value.get("reason") not in {"selection_preflight_failed", "model_selection_rejected", "permission_required"}
         and value["resume_available"]
         and isinstance(value["conversation_id"], str)
@@ -1952,6 +2225,7 @@ def _continue_from_facts(value: Mapping[str, Any], now: float) -> bool:
         # another same-conversation continuation.
         # A provider-reported permission denial likewise preserves the candidate
         # for review, but is not authority for an automatic continuation.
+        and _source_guard_reason(value) is None
         and value["reason"] not in {"selection_preflight_failed", "model_selection_rejected", "permission_required"}
         and value["candidate_recognized"]
         and value["result_available"]
@@ -1993,6 +2267,8 @@ def _verification_copy_is_eligible(value: Mapping[str, Any]) -> bool:
 
 def _controller_phase(value: Mapping[str, Any]) -> str | None:
     """Project controller-owned mechanics from the current bound state."""
+    if _source_guard_reason(value) is not None:
+        return "blocked"
     if value.get("phase") == "self-verifying":
         return "self-verifying"
     if value["driver_disposition"] in {"verified", "partially_verified", "rejected"}:
@@ -2122,6 +2398,8 @@ def _available_actions(
     revalidated only when it could make a result, continue, or finalize action
     visible, and uses the same binder the command paths require.
     """
+    if _source_guard_reason(value) is not None:
+        return []
     job_id = value["job_id"]
     actions: list[dict[str, Any]] = []
     if value.get("phase") == "self-verifying":
@@ -2369,6 +2647,7 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
     )
     next_action, next_action_command = _public_next_action(available_actions)
     public_assurance = (
+        "blocked" if _source_guard_reason(value) is not None else
         value["driver_disposition"]
         if value["driver_disposition"] in {"verified", "partially_verified", "rejected", "blocked"}
         else None
@@ -2438,9 +2717,10 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         ),
         "migration_binding_sha256": None,
         "reason": value["reason"],
+        "source_checkout_guard": value["source_checkout_guard"],
         "reason_message": (
             MODEL_SELECTION_REJECTED_MESSAGE
-            if value["reason"] == "model_selection_rejected" else None
+            if value["reason"] == "model_selection_rejected" else SOURCE_GUARD_MESSAGES.get(value["reason"])
         ),
         "retry_after_seconds": retry_remaining,
         "remote_cancel_unverified": value["remote_cancel_unverified"],
@@ -3581,6 +3861,7 @@ def _restart_guard_accepts(
         # executable/version/help proof cannot become launch authority by
         # creating another attempt.  Keep that local evidence for Codex, but
         # reject recovery before it can stage or mutate the job.
+        and _source_guard_reason(state) is None
         and state["reason"] != "selection_preflight_failed"
         and elapsed < _provider_max_seconds(state)
         and state.get("phase") != "self-verifying"
@@ -4354,6 +4635,9 @@ class _ProviderExecution:
     started_mono: float | None = None
     runtime_end_mono: float | None = None
     runtime_frozen: bool = False
+    source_guard_expected: dict[str, Any] | None = None
+    source_guard_baseline: dict[str, Any] | None = None
+    source_guard_result: dict[str, Any] | None = None
     idle_timeout_with_exited_provider: bool = False
     elapsed: float = 0.0
     heartbeat_mono: float = 0.0
@@ -4406,6 +4690,7 @@ class _ControllerOutcome:
     outer_status: str | None = None
     provider_retry_after: int | None = None
     provider_retry_observed: float | None = None
+    source_guard_failed: bool = False
     boundary_failed: bool = False
     cleanup_failed: bool = False
     final_status: str = "failed"
@@ -4812,106 +5097,122 @@ def _spawn_controller_provider(
     # in which a child can schedule work beyond the hard limit.
     # The final executable confirmation remains immediately
     # adjacent to the provider-causing call.
-    if execution.stop_signal is not None:
-        outcome.reason = "interrupted"
-        execution.returncode = 128 + execution.stop_signal
-    elif execution.elapsed >= _provider_max_seconds(binding.state):
-        outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", "max-runtime"
-        execution.returncode = EXIT_BY_REASON[outcome.reason]
-    elif execution.elapsed >= float(binding.state["hard_seconds"]):
-        outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", "hard"
-        execution.returncode = EXIT_BY_REASON[outcome.reason]
-    else:
-        # Linearize cancellation against the provider-causing
-        # operation.  The final executable confirmation and Popen
-        # stay in this same short critical section: cancellation
-        # before it wins without a provider; cancellation after
-        # it is necessarily a post-launch request.
-        with state_lock(job):
-            current, current_raw, _current_sha = load_state(job)
-            if (
-                current["attempt"] != binding.state["attempt"]
-                or current["controller_pid"] != os.getpid()
-                or current["status"] in TERMINAL
-            ):
-                raise DispatchError("dispatch changed before provider launch")
-            binding.state, binding.prior_raw = current, current_raw
-            if binding.state["cancel_requested"]:
-                outcome.reason = "cancelled"
-                execution.returncode = EXIT_BY_REASON[outcome.reason]
-            else:
-                running_updates = {
-                    "status": "running", "controller_pid": os.getpid(),
-                    "started_epoch": None, "last_progress_epoch": None,
-                    "stream_path": str(streams.stream_path), "stderr_path": str(streams.stderr_path),
-                    "next_action": "wait",
-                }
-                if launch.stage_dir is not None:
-                    running_updates.update({
-                        "provider_stage_path": str(launch.stage_dir),
-                        "provider_stage_identity": list(launch.stage_identity) if launch.stage_identity is not None else None,
-                        "provider_stage_manifest_sha256": launch.stage_manifest_sha,
-                    })
-                binding.state, binding.prior_raw, _sha = _transition_locked(job, binding.state, binding.prior_raw, running_updates)
-                exact_executable = None
-                if launch.executable_binding is not None:
-                    try:
-                        exact_executable = MODEL_SELECTION.confirm_executable_binding(
-                            *launch.executable_binding,
-                        )
-                    except MODEL_SELECTION.EvidenceUnavailable as exc:
-                        raise SelectionPreflightError(
-                            "dispatch direct selection launch binding changed",
-                        ) from exc
-                provider_argv: list[str] | tuple[str, ...] = launch.argv
-                provider_cwd = launch.launch_cwd
-                provider_environment = _provider_environment(binding.command)
-                if launch.prepared_containment is not None:
-                    if (
-                        launch.stage_dir is None
-                        or launch.scope is None
-                        or launch.selected_manifest is None
-                        or launch.stage_identity is None
-                        or launch.stage_manifest_sha is None
-                    ):
-                        raise DispatchError("scoped provider launch binding is incomplete")
-                    _revalidate_scoped_provider_stage(
-                        launch.stage_dir, launch.scope, launch.selected_manifest,
-                        launch.stage_identity, launch.stage_manifest_sha,
+    source_guard = _prepare_controller_source(binding, execution)
+    # Linearize cancellation against the provider-causing
+    # operation.  The final executable confirmation and Popen
+    # stay in this same short critical section: cancellation
+    # before it wins without a provider; cancellation after
+    # it is necessarily a post-launch request.
+    with state_lock(job):
+        current, current_raw, _current_sha = load_state(job)
+        if (
+            current["attempt"] != binding.state["attempt"]
+            or current["controller_pid"] != os.getpid()
+            or current["status"] in TERMINAL
+        ):
+            raise DispatchError("dispatch changed before provider launch")
+        binding.state, binding.prior_raw = current, current_raw
+        if current["source_checkout_guard"] != execution.source_guard_expected:
+            source_guard = {**source_guard, "status": "changed" if source_guard["status"] == "changed" else "unavailable", "after_sha256": None}
+            execution.source_guard_baseline = source_guard.copy()
+        # A completed failed proof wins over every ordinary prelaunch stop.
+        # Publish it after the same authority/transplant check even when a
+        # signal or deadline arrived while the observation was in progress.
+        if source_guard["status"] in {"changed", "unavailable"}:
+            binding.state, binding.prior_raw, _sha = _transition_locked(
+                job, current, current_raw, {"source_checkout_guard": source_guard},
+            )
+            outcome.reason = cast(str, _source_guard_reason({"source_checkout_guard": source_guard}))
+            execution.returncode = EXIT_BY_REASON[outcome.reason]
+        elif execution.stop_signal is not None:
+            execution.source_guard_baseline = None
+            outcome.reason = "interrupted"
+            execution.returncode = 128 + execution.stop_signal
+        elif binding.state["cancel_requested"]:
+            outcome.reason = "cancelled"
+            execution.returncode = EXIT_BY_REASON[outcome.reason]
+            execution.source_guard_baseline = None
+        elif execution.elapsed >= _provider_max_seconds(binding.state):
+            execution.source_guard_baseline = None
+            outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", "max-runtime"
+            execution.returncode = EXIT_BY_REASON[outcome.reason]
+        elif execution.elapsed >= float(binding.state["hard_seconds"]):
+            execution.source_guard_baseline = None
+            outcome.reason, outcome.limit_kind = "hard_deadline_exceeded", "hard"
+            execution.returncode = EXIT_BY_REASON[outcome.reason]
+        else:
+            running_updates = {"source_checkout_guard": source_guard,
+                "status": "running", "controller_pid": os.getpid(),
+                "started_epoch": None, "last_progress_epoch": None,
+                "stream_path": str(streams.stream_path), "stderr_path": str(streams.stderr_path),
+                "next_action": "wait",
+            }
+            if launch.stage_dir is not None:
+                running_updates.update({
+                    "provider_stage_path": str(launch.stage_dir),
+                    "provider_stage_identity": list(launch.stage_identity) if launch.stage_identity is not None else None,
+                    "provider_stage_manifest_sha256": launch.stage_manifest_sha,
+                })
+            binding.state, binding.prior_raw, _sha = _transition_locked(job, binding.state, binding.prior_raw, running_updates)
+            exact_executable = None
+            if launch.executable_binding is not None:
+                try:
+                    exact_executable = MODEL_SELECTION.confirm_executable_binding(
+                        *launch.executable_binding,
                     )
-                    confirmed_containment = CONTAINMENT.confirm_contained_launch(
-                        launch.prepared_containment,
-                    )
-                    provider_argv = confirmed_containment.argv
-                    exact_executable = confirmed_containment.executable
-                    provider_cwd = confirmed_containment.cwd
-                    provider_environment = confirmed_containment.environment
-                if (launch.expected_print is None or provider_argv.count("--print") != 1
-                        or provider_argv[provider_argv.index("--print") + 1] != launch.expected_print):
-                    raise DispatchError("dispatch final transport prompt changed")
-                launch_mono = time.monotonic()
-                execution.process = subprocess.Popen(
-                    provider_argv,
-                    executable=exact_executable,
-                    cwd=provider_cwd,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=provider_environment,
-                    start_new_session=True,
-                    close_fds=True,
-                    preexec_fn=lambda: os.umask(int(binding.command["child_umask"], 8)),
+                except MODEL_SELECTION.EvidenceUnavailable as exc:
+                    raise SelectionPreflightError(
+                        "dispatch direct selection launch binding changed",
+                    ) from exc
+            provider_argv: list[str] | tuple[str, ...] = launch.argv
+            provider_cwd = launch.launch_cwd
+            provider_environment = _provider_environment(binding.command)
+            if launch.prepared_containment is not None:
+                if (
+                    launch.stage_dir is None
+                    or launch.scope is None
+                    or launch.selected_manifest is None
+                    or launch.stage_identity is None
+                    or launch.stage_manifest_sha is None
+                ):
+                    raise DispatchError("scoped provider launch binding is incomplete")
+                _revalidate_scoped_provider_stage(
+                    launch.stage_dir, launch.scope, launch.selected_manifest,
+                    launch.stage_identity, launch.stage_manifest_sha,
                 )
-                execution.started_mono = launch_mono
-                execution.heartbeat_mono = execution.started_mono
-                execution.next_notice = execution.started_mono + float(binding.command["notice_seconds"])
-                if launch.prepared_containment is not None:
-                    launch.contained_root = CONTAINMENT.bind_new_process_group(
-                        execution.process.pid,
-                    )
-                binding.state, binding.prior_raw, _sha = _transition_locked(
-                    job, binding.state, binding.prior_raw, {"started_epoch": time.time()},
+                confirmed_containment = CONTAINMENT.confirm_contained_launch(
+                    launch.prepared_containment,
                 )
+                provider_argv = confirmed_containment.argv
+                exact_executable = confirmed_containment.executable
+                provider_cwd = confirmed_containment.cwd
+                provider_environment = confirmed_containment.environment
+            if (launch.expected_print is None or provider_argv.count("--print") != 1
+                    or provider_argv[provider_argv.index("--print") + 1] != launch.expected_print):
+                raise DispatchError("dispatch final transport prompt changed")
+            launch_mono = time.monotonic()
+            execution.process = subprocess.Popen(
+                provider_argv,
+                executable=exact_executable,
+                cwd=provider_cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=provider_environment,
+                start_new_session=True,
+                close_fds=True,
+                preexec_fn=lambda: os.umask(int(binding.command["child_umask"], 8)),
+            )
+            execution.started_mono = launch_mono
+            execution.heartbeat_mono = execution.started_mono
+            execution.next_notice = execution.started_mono + float(binding.command["notice_seconds"])
+            if launch.prepared_containment is not None:
+                launch.contained_root = CONTAINMENT.bind_new_process_group(
+                    execution.process.pid,
+                )
+            binding.state, binding.prior_raw, _sha = _transition_locked(
+                job, binding.state, binding.prior_raw, {"started_epoch": time.time()},
+            )
 
 
 def _confirm_launch_authority(job: Path, command: dict[str, Any], state: Mapping[str, Any]) -> None:
@@ -5483,36 +5784,37 @@ def _cleanup_controller_stage(
 ) -> None:
     if launch.stage_dir is not None and launch.stage_dir.exists():
         try:
-            if (
-                launch.narrow_source_snapshot is None
-                or WORKTREE._worktree_snapshot(binding.command["workdir"]) != launch.narrow_source_snapshot
-            ):
-                raise DispatchError(
-                    "source worktree changed while the narrow provider stage was active"
-                )
-            mutations, op_manifest = WORKTREE._scan_stage_mutations(launch.stage_dir, cast(dict[str, Any], launch.scope), cast(list[dict[str, Any]], launch.selected_manifest))
-            if outcome.result_binding is not None and not _declared_scoped_mutations_match(
-                streams.envelope_path, outcome.result_binding, mutations, launch.stage_dir,
-            ):
-                raise DispatchError(
-                    "worker files_changed does not match scoped stage mutations"
-                )
-            if outcome.result_binding is not None and outcome.outer_status in {
-                "SUCCESS", "ERROR", "CANCELLED",
-            }:
-                candidate_data.reconciliation_manifest_sha = WORKTREE._reconcile_stage_to_source(
-                    binding.command["workdir"], launch.stage_dir, mutations, job,
-                )
-                if WORKTREE._build_selected_content_manifest(
-                    binding.command["workdir"], cast(dict[str, Any], launch.scope),
-                ) != WORKTREE._build_selected_content_manifest(
-                    launch.stage_dir, cast(dict[str, Any], launch.scope), is_stage=True,
+            if not outcome.source_guard_failed:
+                if (
+                    launch.narrow_source_snapshot is None
+                    or WORKTREE._worktree_snapshot(binding.command["workdir"]) != launch.narrow_source_snapshot
                 ):
                     raise DispatchError(
-                        "source reconciliation does not match the provider stage"
+                        "source worktree changed while the narrow provider stage was active"
                     )
-            else:
-                candidate_data.reconciliation_manifest_sha = WORKTREE._selected_content_digest([])
+                mutations, op_manifest = WORKTREE._scan_stage_mutations(launch.stage_dir, cast(dict[str, Any], launch.scope), cast(list[dict[str, Any]], launch.selected_manifest))
+                if outcome.result_binding is not None and not _declared_scoped_mutations_match(
+                    streams.envelope_path, outcome.result_binding, mutations, launch.stage_dir,
+                ):
+                    raise DispatchError(
+                        "worker files_changed does not match scoped stage mutations"
+                    )
+                if outcome.result_binding is not None and outcome.outer_status in {
+                    "SUCCESS", "ERROR", "CANCELLED",
+                }:
+                    candidate_data.reconciliation_manifest_sha = WORKTREE._reconcile_stage_to_source(
+                        binding.command["workdir"], launch.stage_dir, mutations, job,
+                    )
+                    if WORKTREE._build_selected_content_manifest(
+                        binding.command["workdir"], cast(dict[str, Any], launch.scope),
+                    ) != WORKTREE._build_selected_content_manifest(
+                        launch.stage_dir, cast(dict[str, Any], launch.scope), is_stage=True,
+                    ):
+                        raise DispatchError(
+                            "source reconciliation does not match the provider stage"
+                        )
+                else:
+                    candidate_data.reconciliation_manifest_sha = WORKTREE._selected_content_digest([])
         except Exception:
             outcome.cleanup_failed = True
         finally:
@@ -5587,7 +5889,7 @@ def _reconcile_controller_candidate(
     # rebind it before use.  A provider-CANCELLED report still has a
     # current result_binding and retains the reconciliation path.
     skip_cancel_reconciliation = bool(
-        outcome.reason in {"cancelled", "interrupted"}
+        outcome.source_guard_failed or outcome.reason in {"cancelled", "interrupted"}
         and outcome.result_binding is None
     )
     if skip_cancel_reconciliation:
@@ -5945,6 +6247,9 @@ def _publish_controller_terminal(
         outcome, disposition = _classify_controller_candidate(outcome, candidate_data, current)
         repair_lineage_updates = _controller_repair_lineage(outcome, candidate_data, current)
         updates = _controller_terminal_updates(execution, streams, outcome, candidate_data, disposition, current, repair_lineage_updates)
+        updates["source_checkout_guard"] = _checked_controller_source(current, execution)
+        updates.update(_source_guard_veto({**current, **updates}))
+        outcome.exit_code = updates["exit_code"]
         binding.state, binding.prior_raw, _sha = _transition_locked(job, current, current_raw, updates)
     return outcome.exit_code
 
@@ -5962,7 +6267,7 @@ def _cleanup_controller_resources(
         # time from this reap boundary.  If termination itself raises,
         # keep ``process`` live so the outer recovery retains the one
         # retry opportunity instead of assuming the group is gone.
-        _terminate_provider_process(
+        execution.returncode = _terminate_provider_process(
             execution.process, launch.contained_root,
             contained=launch.prepared_containment is not None,
         )
@@ -5989,13 +6294,16 @@ def _recover_controller_failure(
     # belongs to this controller, then publish one fail-closed terminal
     # projection.  Pre-launch errors retain their narrower existing paths.
     if execution.process is not None:
-        with contextlib.suppress(Exception):
-            _terminate_provider_process(
+        try:
+            execution.returncode = _terminate_provider_process(
                 execution.process, launch.contained_root,
                 contained=launch.prepared_containment is not None,
             )
-        execution.process = None
-        execution.runtime_end_mono = time.monotonic()
+        except Exception:
+            pass
+        else:
+            execution.process = None
+            execution.runtime_end_mono = time.monotonic()
     frozen_elapsed = float(binding.state["elapsed_seconds"])
     if not execution.runtime_frozen:
         frozen_elapsed = float(binding.state["attempt_base_elapsed"])
@@ -6012,12 +6320,25 @@ def _recover_controller_failure(
             # record; preserve the largest local elapsed observation if the
             # dedicated freeze CAS itself could not complete.
             pass
+    _finish_controller_source(binding, execution)
+    if (
+        execution.process is None and execution.runtime_end_mono is not None
+        and (
+            _source_guard_reason({"source_checkout_guard": execution.source_guard_result or {}})
+            or (execution.source_guard_result or {}).get("status") == "deferred"
+        )
+        and launch.stage_dir is not None and launch.stage_identity is not None
+    ):
+        # A failed source proof authorizes only disposal of the exact owned
+        # stage after reap; never reconcile or remove a replacement path.
+        with contextlib.suppress(OSError, DispatchError):
+            WORKTREE._cleanup_stage(launch.stage_dir, launch.stage_identity)
     try:
         terminal, _raw, _sha = _terminalize_owned(
             job, binding.state, status="failed", reason="status_unavailable",
             exit_code=EXIT_BY_REASON["status_unavailable"],
             failure_stage="binding_failure", expected_controller_pid=os.getpid(),
-            elapsed_seconds=frozen_elapsed, postlaunch_cancel=True,
+            elapsed_seconds=frozen_elapsed, postlaunch_cancel=True, source_execution=execution,
         )
         # Terminal validation guarantees an integer exit code.
         assert terminal["exit_code"] is not None
@@ -6065,6 +6386,14 @@ def controller(job: Path, ownership_fd: int) -> int:
                 _reap_controller_provider(job, binding, execution, streams, launch, outcome)
                 _observe_controller_terminal(binding, execution, streams, launch, outcome)
                 _begin_controller_completion(execution, streams, outcome, candidate_data, prior_handlers)
+                _finish_controller_source(binding, execution, report=outcome.result_binding is not None)
+                source_reason = _source_guard_reason({"source_checkout_guard": execution.source_guard_result or {}})
+                if source_reason is not None:
+                    outcome.reason = source_reason
+                    outcome.result_binding = None
+                    outcome.result_path = None
+                    outcome.final_status, outcome.exit_code = _controller_terminal_status(source_reason, execution.stop_signal)
+                outcome.source_guard_failed = _source_guard_reason({"source_checkout_guard": execution.source_guard_result or {}}) is not None
                 _cleanup_controller_stage(job, binding, streams, launch, outcome, candidate_data)
                 _observe_controller_cancel(job, binding, outcome)
                 _reconcile_controller_candidate(binding, launch, outcome, candidate_data)
@@ -6156,6 +6485,7 @@ def create_state(
                         state if origin == "conversation-continue" else None
                     ),
                 )
+                next_state["source_checkout_guard"] = {**state["source_checkout_guard"], "attempt": next_state["attempt"]}
                 next_state["sequence"] = state["sequence"] + 1
                 next_state["previous_state_sha256"] = sha
                 next_state["conversation_id"] = conversation
@@ -6350,6 +6680,12 @@ def _terminal_projection(
     candidate to review is safer than treating a local controller failure as a
     provider repair result.
     """
+    guard = dict(state["source_checkout_guard"])
+    if guard["status"] == "armed":
+        guard.update(status="unavailable", after_sha256=None)
+    veto = _source_guard_veto({**state, "source_checkout_guard": guard})
+    if veto:
+        return {**veto, "source_checkout_guard": guard}
     candidate = bool(state["candidate_recognized"])
     candidate_unavailable = bool(candidate and failure_stage == "binding_failure")
     continuation = candidate and state["attempt_origin"] == "conversation-continue"
@@ -6409,16 +6745,20 @@ def _terminalize_owned(
     job: Path, state: Mapping[str, Any], *, status: str, reason: str, exit_code: int,
     failure_stage: str | None = None, expected_controller_pid: int | None = None,
     elapsed_seconds: float | None = None, postlaunch_cancel: bool = False,
+    source_execution: _ProviderExecution | None = None,
 ) -> tuple[DispatchState, bytes, str]:
     """Publish one owned terminal state without holding a lock across scans."""
     projection_unavailable = False
+    projection_state = state if source_execution is None else {
+        **state, "source_checkout_guard": _checked_controller_source(state, source_execution),
+    }
     try:
         primary = _terminal_projection(
-            state, status=status, reason=reason, exit_code=exit_code,
+            projection_state, status=status, reason=reason, exit_code=exit_code,
             failure_stage=failure_stage, allow_continue=False,
         )
         cancelled = _terminal_projection(
-            state, status="cancelled", reason="cancelled",
+            projection_state, status="cancelled", reason="cancelled",
             exit_code=EXIT_BY_REASON["cancelled"],
             remote_cancel_unverified=postlaunch_cancel,
         )
@@ -6468,7 +6808,7 @@ def _terminalize_owned(
                 and (not candidate or prior_candidate_is_bound)
             )
             candidate_unavailable = bool(candidate and not prior_candidate_is_bound)
-            updates = {
+            updates: dict[str, Any] = {
                 "status": "cancelled" if was_cancelled else "failed",
                 "reason": "cancelled" if was_cancelled else "status_unavailable",
                 "exit_code": (
@@ -6506,6 +6846,10 @@ def _terminalize_owned(
                 "elapsed_seconds": max(elapsed_seconds, float(current["elapsed_seconds"])),
                 "started_epoch": None,
             })
+        if source_execution is not None:
+            updates["source_checkout_guard"] = _checked_controller_source(current, source_execution)
+            updates["agy_returncode"] = source_execution.returncode
+        updates.update(_source_guard_veto({**current, **updates}))
         return _transition_locked(job, current, raw, updates)
 
 

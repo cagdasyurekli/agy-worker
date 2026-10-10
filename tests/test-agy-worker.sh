@@ -4178,14 +4178,20 @@ printf 'extend active deadline\n' | FAKE_DISPATCH_MODE=heartbeat-success \
     start_worker extend-active --idle-timeout 20s --hard-timeout 30s --max-runtime 60s \
     > "$TMP/extend-active.start" 2> "$TMP/extend-active.start.err"
 extend_ready=0
+extend_previous_sha=""
 for (( extend_index=0; extend_index<200; extend_index++ )); do
     control_worker status extend-active > "$TMP/extend-active.status"
+    extend_observed_sha="$(status_sha "$TMP/extend-active.status")"
+    # The provider barrier follows init + its first step_update. Init alone can
+    # be visible while that update is pending; wait for both and a stable SHA.
     if [[ -e "$extend_after_first_ready" \
             && "$(status_field "$TMP/extend-active.status" status)" == "running" \
-            && "$(status_field "$TMP/extend-active.status" progress_count)" -ge 1 ]]; then
+            && "$(status_field "$TMP/extend-active.status" progress_count)" -ge 2 \
+            && "$extend_observed_sha" == "$extend_previous_sha" ]]; then
         extend_ready=1
         break
     fi
+    extend_previous_sha="$extend_observed_sha"
     sleep 0.01
 done
 extend_sha="$(status_sha "$TMP/extend-active.status")"
@@ -4445,7 +4451,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 18
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 20
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1
@@ -5100,20 +5106,61 @@ else
     bad "project shell casefold nested Git marker boundary"
 fi
 
+# A no-candidate binding failure defers the source proof, but a corrupted
+# linked marker must still reject every usable result or recovery launch.
+project_corrupt_marker_stays_closed() {
+    local job="$1" action wanted got before_sha after_sha before_calls after_calls
+    before_sha="$(python3 - "$TMP/logs/$job/dispatch-state.json" <<'PY_HASH'
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY_HASH
+)"
+    before_calls="$(wc -l < "$TMP/$job.worker-calls" | tr -d ' ')"
+    for action in result resume restart; do
+        case "$action" in
+            result) wanted=20; control_worker result "$job" > "$TMP/$job.$action-rejected" 2>&1 ;;
+            resume) wanted=21; control_worker resume "$job" --approve-state-sha "$before_sha" > "$TMP/$job.$action-rejected" 2>&1 ;;
+            restart) wanted=64; control_worker restart "$job" --approve-state-sha "$before_sha" > "$TMP/$job.$action-rejected" 2>&1 ;;
+        esac
+        got=$?
+        [[ "$got" == "$wanted" ]] || return 1
+        [[ "$action" == result ]] || grep -Fqx 'agy-dispatch: dispatch worktree root binding changed' "$TMP/$job.$action-rejected" || return 1
+    done
+    after_calls="$(wc -l < "$TMP/$job.worker-calls" | tr -d ' ')"
+    after_sha="$(python3 - "$TMP/logs/$job/dispatch-state.json" <<'PY_HASH'
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())
+PY_HASH
+)"
+    [[ "$before_calls" == 1 && "$after_calls" == "$before_calls" && "$after_sha" == "$before_sha" ]]
+}
+
 cp "$TMP/project-worktree/.git" "$TMP/project-marker.saved"
 printf 'project marker drift\n' | AGY_TEST_WORKDIR="$TMP/project-worktree" \
     FAKE_MUTATE_PROJECT_MARKER="$TMP/project-worktree/.git" run_worker project-marker-drift --workflow project \
     > "$TMP/project-marker-drift.out" 2> "$TMP/project-marker-drift.err"
 project_marker_rc=$?
+project_marker_recovery_closed=0
+project_corrupt_marker_stays_closed project-marker-drift && project_marker_recovery_closed=1
 cp "$TMP/project-marker.saved" "$TMP/project-worktree/.git"
 control_worker status project-marker-drift > "$TMP/project-marker-drift.status"
-if [[ "$project_marker_rc" == 20 ]] && python3 - "$TMP/project-marker-drift.status" <<'PY'
+if [[ "$project_marker_rc" == 20 && "$project_marker_recovery_closed" == 1 ]] && python3 - "$TMP/project-marker-drift.status" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert value["status"] == "failed"
 assert value["phase"] == "blocked"
 assert value["assurance"] is None
+assert value["reason"] == "status_unavailable"
+assert value["failure_stage"] == "binding_failure"
+assert value["source_checkout_guard"]["status"] == "deferred"
+assert value["source_checkout_guard"]["after_sha256"] is None
+assert value["candidate_recognized"] is False
+assert value["candidate_sha256"] is None
+assert value["result_available"] is False
+assert value["resume_available"] is True
 assert value["continue_available"] is False
+assert {action["action"] for action in value["available_actions"]} == {"resume", "restart"}
+assert value["has_prior_candidate"] is False
 PY
 then
     ok "project workflow binds the linked-worktree marker before and after provider execution"
@@ -5128,16 +5175,28 @@ printf 'project sparse marker drift after provider start\n' | \
     run_worker project-marker-sparse-post --workflow project \
     > "$TMP/project-marker-sparse-post.out" 2> "$TMP/project-marker-sparse-post.err"
 project_marker_sparse_post_rc=$?
+project_marker_sparse_recovery_closed=0
+project_corrupt_marker_stays_closed project-marker-sparse-post && project_marker_sparse_recovery_closed=1
 cp "$TMP/project-marker-sparse-post.saved" "$TMP/project-worktree/.git"
 control_worker status project-marker-sparse-post > "$TMP/project-marker-sparse-post.status"
 project_marker_sparse_post_calls="$(wc -l < "$TMP/project-marker-sparse-post.worker-calls" | tr -d ' ')"
-if [[ "$project_marker_sparse_post_rc" == 20 && "$project_marker_sparse_post_calls" == 1 ]] \
+if [[ "$project_marker_sparse_post_rc" == 20 && "$project_marker_sparse_post_calls" == 1 && "$project_marker_sparse_recovery_closed" == 1 ]] \
         && python3 - "$TMP/project-marker-sparse-post.status" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert value["status"] == "failed"
 assert value["phase"] == "blocked"
 assert value["assurance"] is None
+assert value["reason"] == "status_unavailable"
+assert value["failure_stage"] == "binding_failure"
+assert value["source_checkout_guard"]["status"] == "deferred"
+assert value["source_checkout_guard"]["after_sha256"] is None
+assert value["candidate_recognized"] is False
+assert value["candidate_sha256"] is None
+assert value["result_available"] is False
+assert value["resume_available"] is True
+assert value["continue_available"] is False
+assert {action["action"] for action in value["available_actions"]} == {"resume", "restart"}
 assert value["has_prior_candidate"] is False
 PY
 then
