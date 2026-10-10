@@ -58,7 +58,8 @@ Default `--provider-isolation session` uses the existing AGY session. AGY has no
 The controller compares a bounded observation of the verified main source checkout
 against one immutable job baseline before later launches and before candidate
 admission or retention. No-candidate failures and cancellations without a report
-defer the post-exit comparison until the next launch. A detected change blocks
+defer the post-exit comparison until the next launch; a cancelled repair defers it
+until its inherited candidate is next used. A detected change blocks
 the candidate; ignored untracked files and writes elsewhere on the host are outside
 this check. The main-workdir helper skips this comparison, while public launch
 preview still requires a linked disposable worktree. See

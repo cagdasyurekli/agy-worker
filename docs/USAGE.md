@@ -39,9 +39,11 @@ The controller validates local worktree paths and reconciles only approved write
 but AGY retains normal user filesystem/network authority. The controller compares a
 bounded observation of the verified main source checkout against one immutable job baseline.
 It compares before every subsequent provider launch and before admitting a current report
-or retaining an inherited candidate. No-candidate cancellations and failures defer the
-post-exit observation; status records `source_checkout_guard.status=deferred`, and any
-change is caught before the next resume, continue, repair, or restart launch.
+or retaining an inherited candidate. No-candidate cancellations and failures, and a
+cancelled repair that keeps its inherited candidate, defer the post-exit observation;
+status records `source_checkout_guard.status=deferred`. Any change is caught before the
+next resume, continue, repair, or restart launch, and before that inherited candidate's
+result, finalize, verification copy, or self-verification is allowed.
 If it changed, status blocks the candidate and any reuse; inspect the source before
 retrying. If the prelaunch observation cannot be completed within its limits, the
 provider is not started. If the post-exit observation cannot be completed, status
