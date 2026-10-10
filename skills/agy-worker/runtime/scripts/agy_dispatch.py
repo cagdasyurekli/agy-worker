@@ -351,6 +351,14 @@ SOURCE_GUARD_MESSAGES = {
 MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
 
+class SourceGuardError(DispatchError):
+    """A deferred source proof failed when its retained candidate was next used."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(SOURCE_GUARD_MESSAGES[reason])
+        self.reason = reason
+
+
 class SelectionPreflightError(DispatchError):
     """A direct caller selection could not be safely reprobed for one launch."""
 
@@ -1777,14 +1785,6 @@ def _has_source_candidate(state: Mapping[str, Any]) -> bool:
 def _cancelled_repair(state: Mapping[str, Any]) -> bool:
     """A locally cancelled repair can retain only the candidate it inherited."""
     return bool(state["attempt_origin"] == "conversation-continue" and state["cancel_requested"])
-
-
-class SourceGuardError(DispatchError):
-    """A deferred source proof failed when its retained candidate was next used."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(SOURCE_GUARD_MESSAGES[reason])
-        self.reason = reason
 
 
 def _finish_controller_source(binding: _ControllerBinding, execution: _ProviderExecution, *, report: bool = False) -> None:
@@ -6486,7 +6486,11 @@ def create_state(
                     "conversation-continue": "continue",
                 }[origin]
                 raise _state_approval_error(state, sha, action)
-            state, raw, sha = _settle_deferred_source(job, state, raw, sha)
+            # Only an eligible relaunch settles a deferred candidate proof; a
+            # rejected request neither scans nor writes. A cancelled repair is
+            # never continue- or resume-eligible.
+            if origin == "fresh-restart" and _restart_guard_accepts(state):
+                state, raw, sha = _settle_deferred_source(job, state, raw, sha)
             # Reject a semantically unavailable recovery before probing its
             # launch inputs.  This keeps an approved stale-state diagnostic
             # actionable without treating the diagnostic itself as authority
@@ -7131,7 +7135,8 @@ def command_finalize(
         state, raw, sha = load_state(job)
         if sha != approve_sha:
             raise _state_approval_error(state, sha, "finalize")
-        state, raw, sha = _settle_deferred_source(job, state, raw, sha)
+        if _finalize_is_eligible(state):
+            state, raw, sha = _settle_deferred_source(job, state, raw, sha)
         command = _load_bound_command(job, state, stage_readonly=False)
         command, state = _bound_lifecycle_inputs(
             job, state, command, bind_terminal_candidate=True,

@@ -2076,7 +2076,7 @@ def run(context: dict[str, object]) -> None:
 
     check("direct selections bind public startup, launch replacement windows, and provider runtime boundaries", direct_selection_reprobes_every_controller_attempt)
 
-    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False):
+    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False, max_cycles: int = 2, workflow: str = "task"):
         origin = (root / f"source-guard-{label}-origin").resolve()
         candidate = (root / f"source-guard-{label}-candidate").resolve()
         origin.mkdir()
@@ -2117,7 +2117,8 @@ def run(context: dict[str, object]) -> None:
         fake.chmod(0o755)
         values = {"job_id": label, "workdir": str(candidate),
                   "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
-                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": 2}
+                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": max_cycles,
+                  "workflow": workflow}
         if native:
             values["provider_isolation"] = "native"
             values["argv"].insert(1, "--sandbox")
@@ -2410,8 +2411,9 @@ def run(context: dict[str, object]) -> None:
         # A no-report repair cancellation retains only its inherited candidate.
         # The cancel path defers that source proof; every later use settles it
         # against the same immutable baseline before exposing or reusing it.
-        def cancelled_repair(label: str, mutation: str) -> tuple[Path, Path, dict, str]:
-            _origin, _candidate, job, bin_dir, calls = source_fixture(label, scoped=True)
+        def cancelled_repair(label: str, mutation: str, workflow: str = "task") -> tuple[Path, Path, dict, str]:
+            _origin, _candidate, job, bin_dir, calls = source_fixture(
+                label, scoped=True, workflow=workflow, max_cycles=3 if workflow == "project" else 2)
             assert run_controller(job, bin_dir) == 0
             state, _raw, sha = MODULE.load_state(job)
             ready = root / f"source-guard-{label}-ready"
@@ -2450,12 +2452,26 @@ def run(context: dict[str, object]) -> None:
             return subprocess.run([sys.executable, str(SOURCE), arguments[0], "--job-dir", str(job), *arguments[1:]],
                                   input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
-        for use in ("finalize", "conversation-continue", "fresh-restart"):
-            job, calls, state, sha = cancelled_repair(f"inherited-cancel-{use}", mutations["untracked"])
+        for use in ("finalize", "fresh-restart"):
+            # A project's third cycle keeps the fresh restart eligible after the repair.
+            job, calls, state, sha = cancelled_repair(f"inherited-cancel-{use}", mutations["untracked"],
+                                                      workflow="project" if use == "fresh-restart" else "task")
             # Reads fail closed without publishing or rescanning into state.
             assert cli(job, "result").returncode == 28
+            copy_parent = root / f"source-guard-inherited-cancel-{use}-copy"; copy_parent.mkdir(mode=0o700)
+            assert cli(job, "verification-copy", "--destination", str(copy_parent / "copy")).returncode == 28
+            assert not (copy_parent / "copy").exists()
             actions = {item["action"] for item in MODULE.public_status(state, sha, job=job)["available_actions"]}
             assert not actions & {"result", "continue", "finalize", "verification-copy", "self-verify"}, actions
+            # A cancelled repair is never continue-eligible: rejected without a scan or write.
+            try:
+                MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
+            except MODULE.SourceGuardError:
+                raise AssertionError("ineligible continue settled the source proof") from None
+            except MODULE.DispatchError:
+                pass
+            else:
+                raise AssertionError("cancelled repair became continue-eligible")
             assert MODULE.load_state(job)[2] == sha
             if use == "finalize":
                 finalized = cli(job, "finalize", "--approve-state-sha", sha, "--assurance", "partially_verified",
@@ -2463,12 +2479,11 @@ def run(context: dict[str, object]) -> None:
                 assert finalized.returncode == 28, finalized.stderr
             else:
                 try:
-                    MODULE.create_state(job, use, resume=True, approve_sha=sha,
-                                        verification=feedback(state) if use == "conversation-continue" else None)
+                    MODULE.create_state(job, use, resume=True, approve_sha=sha)
                 except MODULE.SourceGuardError as exc:
                     assert exc.reason == "source_checkout_changed"
                 else:
-                    raise AssertionError("changed source reused a deferred candidate")
+                    raise AssertionError("changed source relaunched a deferred candidate")
             assert_source_veto(job)
             assert calls.read_text() == "call\ncall\n", "changed source launched another attempt"
 
