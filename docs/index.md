@@ -129,7 +129,7 @@ runs no provider</code></pre>
     </article>
     <article class="evidence-item">
       <h3>Authority remains separate</h3>
-      <p>Session mode uses the existing AGY session; explicit native mode requires supported macOS containment and fails closed when the driver host's sandbox forbids nested Seatbelt (observed with Codex `workspace-write`). Scope approval alone grants no provider execution, Git, acceptance, or publication authority.</p>
+      <p>Session mode uses the existing AGY session; explicit native mode requires supported macOS containment and fails closed when the driver host's sandbox forbids nested Seatbelt (observed with Codex <code>workspace-write</code>). Scope approval alone grants no provider execution, Git, acceptance, or publication authority.</p>
     </article>
   </div>
 </section>
