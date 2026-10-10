@@ -2461,8 +2461,11 @@ def run(context: dict[str, object]) -> None:
             copy_parent = root / f"source-guard-inherited-cancel-{use}-copy"; copy_parent.mkdir(mode=0o700)
             assert cli(job, "verification-copy", "--destination", str(copy_parent / "copy")).returncode == 28
             assert not (copy_parent / "copy").exists()
-            actions = {item["action"] for item in MODULE.public_status(state, sha, job=job)["available_actions"]}
+            public = MODULE.public_status(state, sha, job=job)
+            actions = {item["action"] for item in public["available_actions"]}
             assert not actions & {"result", "continue", "finalize", "verification-copy", "self-verify"}, actions
+            # Status names the detected change without persisting it.
+            assert public["reason_message"] == MODULE.SOURCE_GUARD_MESSAGES["source_checkout_changed"]
             # A cancelled repair is never continue-eligible: rejected without a scan or write.
             try:
                 MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
@@ -2490,6 +2493,7 @@ def run(context: dict[str, object]) -> None:
         # Unchanged control: the settled proof is recorded and the candidate finalizes.
         job, _calls, state, sha = cancelled_repair("inherited-cancel-unchanged", "")
         assert cli(job, "result").returncode == 0
+        assert MODULE.public_status(state, sha, job=job)["reason_message"] is None
         assert MODULE.load_state(job)[2] == sha
         finalized = cli(job, "finalize", "--approve-state-sha", sha, "--assurance", "partially_verified",
                         payload=json.dumps(feedback(state)).encode())

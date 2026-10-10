@@ -2343,15 +2343,20 @@ def _controller_phase(value: Mapping[str, Any]) -> str | None:
 
 def _candidate_actions_are_bound(job: Path | None, value: Mapping[str, Any]) -> bool:
     """Keep public candidate actions as strict as their mutating commands."""
+    return _candidate_binding_error(job, value) is None
+
+
+def _candidate_binding_error(job: Path | None, value: Mapping[str, Any]) -> Exception | None:
+    """Return why the current candidate cannot be bound, or None when it can."""
     if job is None:
-        return False
+        return DispatchError("job directory is unavailable")
     try:
         _bound_current_candidate(job, value)
     except UnsupportedSchemaError:
         raise
-    except (OSError, DispatchError):
-        return False
-    return True
+    except (OSError, DispatchError) as exc:
+        return exc
+    return None
 
 
 def _post_candidate_selection_binding_drift(job: Path | None, value: Mapping[str, Any]) -> bool:
@@ -2661,8 +2666,13 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         not _is_active(value) and value.get("phase") != "self-verifying" and value["status"] in TERMINAL
         and value["candidate_recognized"] and value["result_available"]
     )
+    # A read-only status never persists a deferred source veto; it only names it.
+    detected_source_reason: str | None = None
     if terminal_candidate:
-        candidate_bound = _candidate_actions_are_bound(job, value)
+        binding_error = _candidate_binding_error(job, value)
+        candidate_bound = binding_error is None
+        if isinstance(binding_error, SourceGuardError):
+            detected_source_reason = binding_error.reason
         # Candidate reconciliation can take meaningful bounded time.  Resample
         # the clocks so an extension that expired during that scan is omitted.
         now = time.time()
@@ -2773,7 +2783,8 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         "source_checkout_guard": value["source_checkout_guard"],
         "reason_message": (
             MODEL_SELECTION_REJECTED_MESSAGE
-            if value["reason"] == "model_selection_rejected" else SOURCE_GUARD_MESSAGES.get(value["reason"])
+            if value["reason"] == "model_selection_rejected"
+            else SOURCE_GUARD_MESSAGES.get(detected_source_reason or value["reason"])
         ),
         "retry_after_seconds": retry_remaining,
         "remote_cancel_unverified": value["remote_cancel_unverified"],
@@ -3872,6 +3883,9 @@ def command_verification_copy(job: Path, destination: Path, output_format: str) 
             # The source candidate is still the final authority.  A verifier
             # copy never reconciles ignored drift into that candidate.
             _bound_current_candidate(job, state)
+        except SourceGuardError:
+            _discard_verification_copy(destination)
+            raise
         except (OSError, DispatchError):
             _discard_verification_copy(destination)
             raise DispatchError("candidate changed while creating verification copy") from None
