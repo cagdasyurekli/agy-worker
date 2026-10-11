@@ -1632,7 +1632,7 @@ skill = (root / "skills/agy-worker/SKILL.md").read_text()
 metadata = (root / "skills/agy-worker/agents/openai.yaml").read_text()
 assert skill.startswith("---\nname: agy-worker\ndescription:")
 assert len(re.search(r"^description: (.+)$", skill, re.M).group(1)) <= 1024
-assert 'display_name: "Verified agy Worker"' in metadata
+assert 'display_name: "agy Worker"' in metadata
 assert 'short_description: "Use when Codex should delegate repository work to agy and verify it"' in metadata
 assert 'default_prompt: "Use $agy-worker when this repository task benefits from delegated exploration or implementation.' in metadata
 assert 'provider transmission approval explicit' in metadata
@@ -3015,7 +3015,7 @@ required = {
         "No initial launch path has an implicit provider-read mode.",
         "<code>--approve-whole-worktree</code> binds current content, file kinds, permissions, symlink targets, and isolation",
         "The recommended bounded-job path is <code>--provider-scope</code> plus the full <code>launch_approval_sha256</code>",
-        "session mode uses the existing AGY session; explicit native mode requires supported macOS containment",
+        "Session mode uses the existing AGY session; explicit native mode requires supported macOS containment",
     ),
     "docs/PROJECT_WORKFLOW.md": (
         "Choose the transmission mode explicitly",

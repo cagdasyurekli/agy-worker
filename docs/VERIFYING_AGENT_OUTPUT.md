@@ -51,7 +51,7 @@ parses those fields as claims; it never executes worker-supplied shell text.
 
 Declare the paths that the task is allowed to change and compare the actual candidate
 against both that policy and the envelope. Run Python/test/build checks in an
-[isolated verification copy](PROJECT_WORKFLOW.md#progress-aware-local-jobs)
+[isolated verification copy](https://github.com/cagdasyurekli/agy-worker/blob/main/docs/PROJECT_WORKFLOW.md#progress-aware-local-jobs)
 with `PYTHONDONTWRITEBYTECODE=1`, then use only a read-only gate verifier against
 the bound candidate:
 
@@ -80,7 +80,7 @@ and validates worktree/scope paths. Default session mode retains normal user acc
 to the host. Explicit native mode adds macOS containment for scoped dispatch;
 ordinary verification copies do not gain that boundary automatically. Scope approval
 alone grants no execution, Git, acceptance, or
-publication authority. See [selected-content dispatch](USAGE.md#optional-selected-content-dispatch).
+publication authority. See [selected-content dispatch](https://github.com/cagdasyurekli/agy-worker/blob/main/docs/USAGE.md#optional-selected-content-dispatch).
 
 ## 4. Let the driver own verification
 
@@ -126,5 +126,5 @@ network and changes neither the checkout nor credentials. These two fixtures are
 fast introduction, not proof about a real coding task.
 
 Continue with the [project README](https://github.com/cagdasyurekli/agy-worker#readme),
-the [bounded gate contract](CONFORMANCE.md), or the
+the [bounded gate contract](https://github.com/cagdasyurekli/agy-worker/blob/main/docs/CONFORMANCE.md), or the
 [privacy disclosure](https://github.com/cagdasyurekli/agy-worker/blob/main/PRIVACY.md).

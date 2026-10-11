@@ -41,7 +41,7 @@ EXACT_BINARY_BLOBS = {
     "docs/assets/brand/logo-micro-light-16.png": "6fd0aad26df0d9aa7de43091eda25ecc3760df0f",
     "docs/assets/brand/logo-micro-light-32.png": "ee9c259b841816371a10c387bbbf00a8290a7260",
     "docs/assets/brand/logo-micro-light-64.png": "9e77d04cfd381acbca620d7e898e2b2299a16b03",
-    "docs/assets/brand/social-preview-1280x640.png": "1bc7a7fe46b24c2d5345409fa9ea5d8c8edb6b30",
+    "docs/assets/brand/social-preview-1280x640.png": "71676e2361d29cd99b4f90d31e085c850d78bd38",
 }
 
 

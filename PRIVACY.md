@@ -10,7 +10,7 @@ The repository does not operate a hosted service, collect analytics, or send
 telemetry on its own. Evidence Receipt v2 creation and validation, and all offline
 test suites run locally without a network or provider.
 Installing the skill copies its public workflow files and a local pointer to
-the checkout; it does not contact a network service or change agy or Codex
+the checkout; it does not contact a network service or change agy, Codex or Claude Code
 configuration.
 
 ## When data can leave the machine
@@ -65,7 +65,7 @@ Scope approval alone grants no provider execution, Git action, acceptance, or pu
 
 Before the initial provider attempt, approve the exact scope transmission digest or
 whole-worktree manifest. Later resume, continue, and restart actions preserve that
-mode and require the exact current controller-state approval. Codex binds those
+mode and require the exact current controller-state approval. The driver binds those
 state values; they do not require another human prompt while the approved task,
 transmission, permissions, and budget still cover the action. Credentials, secrets,
 private keys, regulated or

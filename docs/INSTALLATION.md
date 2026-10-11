@@ -49,7 +49,7 @@ After installation, start a new Codex session so the skill is rediscovered.
 
 The plugin and marketplace identity is `agy-worker`; the canonical repository is
 `cagdasyurekli/agy-worker`. The old installed identity will not migrate itself.
-Only after the new identity is published and available, run:
+To move an existing installation to the current identity, run:
 
 ```bash
 codex plugin remove codex-agy-worker@codex-agy-worker
@@ -81,7 +81,8 @@ their original bytes. The Pages site is
 ### Claude Code
 
 Claude Code uses the same skill and runtime; its host path was exercised with
-synthetic live jobs. To review this candidate locally, from its repository root run:
+synthetic live jobs. To install from a local checkout instead (for example, to review an
+unreleased commit), from its repository root run:
 
 ```bash
 claude plugin validate .
@@ -90,7 +91,7 @@ claude plugin install agy-worker@agy-worker
 ```
 
 Start a new session and invoke `/agy-worker:agy-worker`, or describe a repository
-exploration/implementation task that matches the skill description. Once published,
+exploration/implementation task that matches the skill description. For the published release,
 use the GitHub marketplace commands in the README. See the official
 [plugin installation](https://code.claude.com/docs/en/discover-plugins) and
 [manifest validation](https://code.claude.com/docs/en/plugins-reference) references.
