@@ -351,6 +351,14 @@ SOURCE_GUARD_MESSAGES = {
 MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
 
+class SourceGuardError(DispatchError):
+    """A deferred source proof failed when its retained candidate was next used."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(SOURCE_GUARD_MESSAGES[reason])
+        self.reason = reason
+
+
 class SelectionPreflightError(DispatchError):
     """A direct caller selection could not be safely reprobed for one launch."""
 
@@ -1668,7 +1676,9 @@ def _validate_source_guard(value: Mapping[str, Any]) -> None:
         "result_identity", "candidate_worktree_sha256", "candidate_worktree_entries",
         "candidate_worktree_path_facts", "last_success_path",
         "last_success_sha256", "last_success_identity",
-    )):
+    )) and not (value["status"] in TERMINAL and _cancelled_repair(value)):
+        # The cancelled repair's inherited candidate is unusable until a
+        # command settles this proof (`_bound_current_candidate`).
         raise DispatchError("deferred source checkout guard cannot authorize a candidate")
     reason = _source_guard_reason(value)
     if status == "armed" and value["status"] in TERMINAL:
@@ -1772,13 +1782,21 @@ def _has_source_candidate(state: Mapping[str, Any]) -> bool:
     ))
 
 
+def _cancelled_repair(state: Mapping[str, Any]) -> bool:
+    """A locally cancelled repair can retain only the candidate it inherited."""
+    return bool(state["attempt_origin"] == "conversation-continue" and state["cancel_requested"])
+
+
 def _finish_controller_source(binding: _ControllerBinding, execution: _ProviderExecution, *, report: bool = False) -> None:
     baseline = execution.source_guard_baseline
     if (baseline is not None and baseline["status"] == "armed"
             and execution.started_mono is not None and execution.runtime_end_mono is not None
-            and execution.process is None and not report and not _has_source_candidate(binding.state)):
-        # Reap is proven and no candidate can survive; the next launch must compare
-        # this same immutable baseline. This is not an unchanged observation.
+            and execution.process is None and not report
+            and (not _has_source_candidate(binding.state) or _cancelled_repair(binding.state))):
+        # Reap is proven and no current report can be admitted. Without a
+        # candidate, the next launch compares this immutable baseline. A cancelled
+        # repair keeps only its inherited candidate, which every later use settles
+        # against the same baseline first. This is not an unchanged observation.
         if execution.source_guard_result is None:
             execution.source_guard_result = {**baseline, "status": "deferred", "after_sha256": None}
     else:
@@ -1799,28 +1817,63 @@ def _check_controller_source(binding: _ControllerBinding, execution: _ProviderEx
     if baseline["status"] == "armed":
         result["status"] = "unavailable"
         if execution.started_mono is not None and execution.runtime_end_mono is not None and execution.process is None:
-            try:
-                for path_key, identity_key in (("source_path", "source_identity"), ("common_dir", "common_identity")):
-                    path = Path(baseline[path_key])
-                    try:
-                        info = path.lstat()
-                        identity = [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid]
-                    except FileNotFoundError:
-                        result["status"] = "changed"
-                        break
-                    if identity != baseline[identity_key] or Path(os.path.realpath(path)) != path:
-                        result["status"] = "changed"
-                        break
-                if result["status"] != "changed":
-                    observed = _observe_source_checkout(binding.command["workdir"])
-                    if any(observed[key] != baseline[key] for key in _SOURCE_BINDING_KEYS):
-                        result["status"] = "changed"
-                    else:
-                        result["after_sha256"] = observed["sha256"]
-                        result["status"] = "unchanged" if observed["sha256"] == baseline["before_sha256"] else "changed"
-            except (OSError, ValueError, UnicodeError):
-                pass
+            result = _compare_source_baseline(baseline, binding.command["workdir"])
     execution.source_guard_result = result
+
+
+def _compare_source_baseline(baseline: Mapping[str, Any], workdir: str) -> dict[str, Any]:
+    """Compare the current source checkout with one bound immutable baseline."""
+    result = {**baseline, "status": "unavailable", "after_sha256": None}
+    try:
+        for path_key, identity_key in (("source_path", "source_identity"), ("common_dir", "common_identity")):
+            path = Path(baseline[path_key])
+            try:
+                info = path.lstat()
+                identity = [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_uid]
+            except FileNotFoundError:
+                result["status"] = "changed"
+                return result
+            if identity != baseline[identity_key] or Path(os.path.realpath(path)) != path:
+                result["status"] = "changed"
+                return result
+        observed = _observe_source_checkout(workdir)
+        if any(observed[key] != baseline[key] for key in _SOURCE_BINDING_KEYS):
+            result["status"] = "changed"
+        else:
+            result["after_sha256"] = observed["sha256"]
+            result["status"] = "unchanged" if observed["sha256"] == baseline["before_sha256"] else "changed"
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return result
+
+
+def _deferred_candidate_proof(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the current proof for a retained candidate whose proof was deferred."""
+    guard = state["source_checkout_guard"]
+    if guard["status"] != "deferred" or not _has_source_candidate(state):
+        return None
+    return _compare_source_baseline(guard, state["workdir"])
+
+
+def _settle_deferred_source(
+    job: Path, state: DispatchState, raw: bytes, sha: str,
+) -> tuple[DispatchState, bytes, str]:
+    """Persist a deferred candidate proof under the caller's state lock.
+
+    A changed or unavailable source vetoes the retained candidate and every
+    recovery exactly as the controller would have; an unchanged proof is
+    recorded so later reads do not rescan.
+    """
+    guard = _deferred_candidate_proof(state)
+    if guard is None:
+        return state, raw, sha
+    updates: dict[str, Any] = {"source_checkout_guard": guard}
+    updates.update(_source_guard_veto({**state, **updates}))
+    state, raw, sha = _transition_locked(job, state, raw, updates)
+    reason = _source_guard_reason(state)
+    if reason is not None:
+        raise SourceGuardError(reason)
+    return state, raw, sha
 
 
 def _checked_controller_source(current: Mapping[str, Any], execution: _ProviderExecution) -> dict[str, Any]:
@@ -2290,15 +2343,20 @@ def _controller_phase(value: Mapping[str, Any]) -> str | None:
 
 def _candidate_actions_are_bound(job: Path | None, value: Mapping[str, Any]) -> bool:
     """Keep public candidate actions as strict as their mutating commands."""
+    return _candidate_binding_error(job, value) is None
+
+
+def _candidate_binding_error(job: Path | None, value: Mapping[str, Any]) -> Exception | None:
+    """Return why the current candidate cannot be bound, or None when it can."""
     if job is None:
-        return False
+        return DispatchError("job directory is unavailable")
     try:
         _bound_current_candidate(job, value)
     except UnsupportedSchemaError:
         raise
-    except (OSError, DispatchError):
-        return False
-    return True
+    except (OSError, DispatchError) as exc:
+        return exc
+    return None
 
 
 def _post_candidate_selection_binding_drift(job: Path | None, value: Mapping[str, Any]) -> bool:
@@ -2608,8 +2666,13 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         not _is_active(value) and value.get("phase") != "self-verifying" and value["status"] in TERMINAL
         and value["candidate_recognized"] and value["result_available"]
     )
+    # A read-only status never persists a deferred source veto; it only names it.
+    detected_source_reason: str | None = None
     if terminal_candidate:
-        candidate_bound = _candidate_actions_are_bound(job, value)
+        binding_error = _candidate_binding_error(job, value)
+        candidate_bound = binding_error is None
+        if isinstance(binding_error, SourceGuardError):
+            detected_source_reason = binding_error.reason
         # Candidate reconciliation can take meaningful bounded time.  Resample
         # the clocks so an extension that expired during that scan is omitted.
         now = time.time()
@@ -2720,7 +2783,8 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
         "source_checkout_guard": value["source_checkout_guard"],
         "reason_message": (
             MODEL_SELECTION_REJECTED_MESSAGE
-            if value["reason"] == "model_selection_rejected" else SOURCE_GUARD_MESSAGES.get(value["reason"])
+            if value["reason"] == "model_selection_rejected"
+            else SOURCE_GUARD_MESSAGES.get(detected_source_reason or value["reason"])
         ),
         "retry_after_seconds": retry_remaining,
         "remote_cancel_unverified": value["remote_cancel_unverified"],
@@ -3575,6 +3639,9 @@ def _bound_current_candidate(job: Path, state: Mapping[str, Any]) -> tuple[dict[
         bound_job, state, command,
         bind_terminal_candidate=True,
     )
+    proof = _deferred_candidate_proof(state)
+    if proof is not None and proof["status"] != "unchanged":
+        raise SourceGuardError(cast(str, _source_guard_reason({"source_checkout_guard": proof})))
     schema_paths = _schema_paths(command)
     if schema_paths is None:
         raise DispatchError("dispatch schema argument is unavailable")
@@ -3816,6 +3883,9 @@ def command_verification_copy(job: Path, destination: Path, output_format: str) 
             # The source candidate is still the final authority.  A verifier
             # copy never reconciles ignored drift into that candidate.
             _bound_current_candidate(job, state)
+        except SourceGuardError:
+            _discard_verification_copy(destination)
+            raise
         except (OSError, DispatchError):
             _discard_verification_copy(destination)
             raise DispatchError("candidate changed while creating verification copy") from None
@@ -6430,6 +6500,11 @@ def create_state(
                     "conversation-continue": "continue",
                 }[origin]
                 raise _state_approval_error(state, sha, action)
+            # Only an eligible relaunch settles a deferred candidate proof; a
+            # rejected request neither scans nor writes. A cancelled repair is
+            # never continue- or resume-eligible.
+            if origin == "fresh-restart" and _restart_guard_accepts(state):
+                state, raw, sha = _settle_deferred_source(job, state, raw, sha)
             # Reject a semantically unavailable recovery before probing its
             # launch inputs.  This keeps an approved stale-state diagnostic
             # actionable without treating the diagnostic itself as authority
@@ -6983,6 +7058,8 @@ def command_result(job: Path, output_format: str = "json") -> int:
         and state["phase"] == "completed" and state["assurance"] == "partially_verified"
         and result_path is None
     ):
+        if state["source_checkout_guard"]["status"] == "deferred":
+            raise DispatchError("dispatch result is unavailable until its source proof is settled")
         result_path = state["last_success_path"]
         result_sha = state["last_success_sha256"]
         result_identity = state["last_success_identity"]
@@ -7072,6 +7149,8 @@ def command_finalize(
         state, raw, sha = load_state(job)
         if sha != approve_sha:
             raise _state_approval_error(state, sha, "finalize")
+        if _finalize_is_eligible(state):
+            state, raw, sha = _settle_deferred_source(job, state, raw, sha)
         command = _load_bound_command(job, state, stage_readonly=False)
         command, state = _bound_lifecycle_inputs(
             job, state, command, bind_terminal_candidate=True,
@@ -7258,6 +7337,8 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except DispatchError as exc:
         print(f"agy-dispatch: {exc}", file=sys.stderr)
+        if isinstance(exc, SourceGuardError):
+            raise SystemExit(EXIT_BY_REASON[exc.reason])  # noqa: B904 -- preserve existing exception context and public diagnostics
         command_name = sys.argv[1] if len(sys.argv) > 1 else ""
         if command_name == "resume":
             raise SystemExit(EXIT_BY_REASON["resume_failed"])  # noqa: B904 -- preserve existing exception context and public diagnostics

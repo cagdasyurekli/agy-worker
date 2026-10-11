@@ -2076,7 +2076,7 @@ def run(context: dict[str, object]) -> None:
 
     check("direct selections bind public startup, launch replacement windows, and provider runtime boundaries", direct_selection_reprobes_every_controller_attempt)
 
-    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False):
+    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False, max_cycles: int = 2, workflow: str = "task"):
         origin = (root / f"source-guard-{label}-origin").resolve()
         candidate = (root / f"source-guard-{label}-candidate").resolve()
         origin.mkdir()
@@ -2117,7 +2117,8 @@ def run(context: dict[str, object]) -> None:
         fake.chmod(0o755)
         values = {"job_id": label, "workdir": str(candidate),
                   "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
-                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": 2}
+                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": max_cycles,
+                  "workflow": workflow}
         if native:
             values["provider_isolation"] = "native"
             values["argv"].insert(1, "--sandbox")
@@ -2407,26 +2408,101 @@ def run(context: dict[str, object]) -> None:
                 assert_source_veto(job, expected)
                 assert calls.read_text() == "call\n", "prelaunch stop/veto race started a provider"
 
-        # A no-report repair cancellation still owns an inherited candidate,
-        # and therefore cannot defer its source proof.
-        origin, _candidate, job, bin_dir, calls = source_fixture("inherited-cancel", scoped=True)
-        assert run_controller(job, bin_dir) == 0
-        state, _raw, sha = MODULE.load_state(job)
-        fake = bin_dir / "agy"
-        fake.write_text(fake.read_text().replace("print(json.dumps({'event':'init'", mutations["untracked"] + "\ntime.sleep(20)\nprint(json.dumps({'event':'init'"))
-        MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
-        monitor = MODULE._monitor_controller_provider
-        def cancel_inherited(*args):
-            deadline = time.monotonic() + 5
-            while not (origin / "escape.txt").exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            current, raw, _sha = MODULE.load_state(job)
-            MODULE.transition(job, current, raw, {"cancel_requested": True, "status": "cancel-requested"})
-            return monitor(*args)
-        with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=cancel_inherited):
-            assert run_controller(job, bin_dir) == 28
-        assert_source_veto(job)
-        assert calls.read_text() == "call\ncall\n"
+        # A no-report repair cancellation retains only its inherited candidate.
+        # The cancel path defers that source proof; every later use settles it
+        # against the same immutable baseline before exposing or reusing it.
+        def cancelled_repair(label: str, mutation: str, workflow: str = "task") -> tuple[Path, Path, dict, str]:
+            _origin, _candidate, job, bin_dir, calls = source_fixture(
+                label, scoped=True, workflow=workflow, max_cycles=3 if workflow == "project" else 2)
+            assert run_controller(job, bin_dir) == 0
+            state, _raw, sha = MODULE.load_state(job)
+            ready = root / f"source-guard-{label}-ready"
+            fake = bin_dir / "agy"
+            fake.write_text(fake.read_text().replace(
+                "print(json.dumps({'event':'init'",
+                mutation + f"\npathlib.Path({str(ready)!r}).touch()\ntime.sleep(20)\nprint(json.dumps({{'event':'init'",
+            ))
+            MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
+            monitor = MODULE._monitor_controller_provider
+            def cancel_inherited(*args):
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                current, raw, _sha = MODULE.load_state(job)
+                MODULE.transition(job, current, raw, {"cancel_requested": True, "status": "cancel-requested"})
+                return monitor(*args)
+            observations = []
+            observe = MODULE._observe_source_checkout
+            def counted(workdir):
+                observations.append(workdir)
+                return observe(workdir)
+            with mock.patch.object(MODULE, "_monitor_controller_provider", side_effect=cancel_inherited), \
+                    mock.patch.object(MODULE, "_observe_source_checkout", side_effect=counted):
+                assert run_controller(job, bin_dir) == 22, MODULE.load_state(job)[0]
+            assert len(observations) == 1, "cancelled repair re-digested the source after reap"
+            state, _raw, sha = MODULE.load_state(job)
+            assert (state["status"], state["reason"]) == ("cancelled", "cancelled")
+            assert state["candidate_recognized"] and state["result_available"]
+            assert state["source_checkout_guard"]["status"] == "deferred"
+            assert state["source_checkout_guard"]["after_sha256"] is None
+            assert calls.read_text() == "call\ncall\n"
+            return job, calls, state, sha
+
+        def cli(job: Path, *arguments: str, payload: bytes = b"") -> subprocess.CompletedProcess:
+            return subprocess.run([sys.executable, str(SOURCE), arguments[0], "--job-dir", str(job), *arguments[1:]],
+                                  input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+        for use in ("finalize", "fresh-restart"):
+            # A project's third cycle keeps the fresh restart eligible after the repair.
+            job, calls, state, sha = cancelled_repair(f"inherited-cancel-{use}", mutations["untracked"],
+                                                      workflow="project" if use == "fresh-restart" else "task")
+            # Reads fail closed without publishing or rescanning into state.
+            assert cli(job, "result").returncode == 28
+            copy_parent = root / f"source-guard-inherited-cancel-{use}-copy"; copy_parent.mkdir(mode=0o700)
+            assert cli(job, "verification-copy", "--destination", str(copy_parent / "copy")).returncode == 28
+            assert not (copy_parent / "copy").exists()
+            public = MODULE.public_status(state, sha, job=job)
+            actions = {item["action"] for item in public["available_actions"]}
+            assert not actions & {"result", "continue", "finalize", "verification-copy", "self-verify"}, actions
+            # Status names the detected change without persisting it.
+            assert public["reason_message"] == MODULE.SOURCE_GUARD_MESSAGES["source_checkout_changed"]
+            # A cancelled repair is never continue-eligible: rejected without a scan or write.
+            try:
+                MODULE.create_state(job, "conversation-continue", resume=True, approve_sha=sha, verification=feedback(state))
+            except MODULE.SourceGuardError:
+                raise AssertionError("ineligible continue settled the source proof") from None
+            except MODULE.DispatchError:
+                pass
+            else:
+                raise AssertionError("cancelled repair became continue-eligible")
+            assert MODULE.load_state(job)[2] == sha
+            if use == "finalize":
+                finalized = cli(job, "finalize", "--approve-state-sha", sha, "--assurance", "partially_verified",
+                                payload=json.dumps(feedback(state)).encode())
+                assert finalized.returncode == 28, finalized.stderr
+            else:
+                try:
+                    MODULE.create_state(job, use, resume=True, approve_sha=sha)
+                except MODULE.SourceGuardError as exc:
+                    assert exc.reason == "source_checkout_changed"
+                else:
+                    raise AssertionError("changed source relaunched a deferred candidate")
+            assert_source_veto(job)
+            assert calls.read_text() == "call\ncall\n", "changed source launched another attempt"
+
+        # Unchanged control: the settled proof is recorded and the candidate finalizes.
+        job, _calls, state, sha = cancelled_repair("inherited-cancel-unchanged", "")
+        assert cli(job, "result").returncode == 0
+        assert MODULE.public_status(state, sha, job=job)["reason_message"] is None
+        assert MODULE.load_state(job)[2] == sha
+        finalized = cli(job, "finalize", "--approve-state-sha", sha, "--assurance", "partially_verified",
+                        payload=json.dumps(feedback(state)).encode())
+        assert finalized.returncode == 0, finalized.stderr
+        final = MODULE.load_state(job)[0]
+        assert final["phase"] == "completed" and final["driver_disposition"] == "partially_verified"
+        guard = final["source_checkout_guard"]
+        assert guard["status"] == "unchanged" and guard["after_sha256"] == guard["before_sha256"]
+        assert cli(job, "result").returncode == 0
         _origin, _candidate, job, bin_dir, calls = source_fixture("repair", scoped=True)
         assert run_controller(job, bin_dir) == 0
         state, _raw, sha = MODULE.load_state(job)

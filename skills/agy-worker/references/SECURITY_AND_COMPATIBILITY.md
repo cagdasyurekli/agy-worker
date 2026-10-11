@@ -90,7 +90,9 @@ For each attempt, the controller derives the owning main worktree from the bound
 workdir's Git common directory and compares a bounded source observation against
 one immutable baseline per job, before later launches and before admitting a report
 or retaining an inherited candidate. No-candidate cancellations and failures record
-`deferred`; their next resume/continue/repair/restart must pass the comparison. The observation binds HEAD, index, tracked paths, and non-ignored
+`deferred`; their next resume/continue/repair/restart must pass the comparison. A
+cancelled repair also records `deferred` while keeping its inherited candidate; result,
+finalize, verification copy, self-verification, and any relaunch compare first. The observation binds HEAD, index, tracked paths, and non-ignored
 untracked paths. Clean tracked files use Git object IDs plus metadata; dirty tracked
 and non-ignored untracked files are hashed from bytes. Ignored untracked files and
 other host paths are excluded. A detected change, including an owner edit, blocks
