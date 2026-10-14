@@ -92,7 +92,6 @@ if [[ "$HOST" == codex ]]; then
     echo "Next: review Codex host permissions in docs/INSTALLATION.md."
     echo "Then start a new Codex session and ask:"
 else
-    echo "Claude Code is experimental: pending live verification."
     echo "Next: review Claude Code host permissions in docs/INSTALLATION.md."
     echo "Then start a new Claude Code session and ask:"
 fi

@@ -15,7 +15,7 @@ argv_json() {
 }
 INTERNAL_EVIDENCE_TOKEN="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 INTERNAL_PYTHON="$(python3 -I -S -B -c 'import pathlib,sys; print(pathlib.Path(sys.executable).resolve())')"
-TMP="$(mktemp -d -t agyworker-receipt.XXXXXX)"
+TMP="$(mktemp -d -t agyworker-receipt.XXXXXX)" || { echo "temporary directory creation failed" >&2; exit 1; }
 trap 'rm -rf -- "$TMP"' EXIT
 pass=0; fail=0
 
@@ -1146,6 +1146,133 @@ assert not list(parent.glob(f'.{target.name}.receipt.*'))
 target.unlink()
 PY
 then ok "cleanup preserves a raced replacement after publication identity changes"; else bad "cleanup preserves a raced replacement after publication identity changes"; fi
+
+# A started gate may close its environment input before finishing EXIT cleanup.
+if python3 -I -S -B - "$ROOT/skills/agy-worker/runtime/scripts" "$TMP" \
+        "$REPO" "$BASE" "$TMP/honest.json" "$RECEIPTS" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+from unittest import mock
+
+scripts, temporary, repo, base, envelope, receipts = sys.argv[1:]
+sys.path.insert(0, scripts)
+spec = importlib.util.spec_from_file_location('receipt_pipe_fixture', Path(scripts) / 'evidence_receipt.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+root = Path(temporary) / 'gate-pipe-fixture'
+root.mkdir(mode=0o700)
+evidence = os.open(root / 'evidence', os.O_CREAT | os.O_WRONLY, 0o600)
+real_write, real_popen, real_killpg = os.write, subprocess.Popen, os.killpg
+processes = []
+
+def popen(*args, **kwargs):
+    child = real_popen(*args, **kwargs)
+    processes.append(child)
+    if mode == 'signals':
+        real_wait = child.wait
+        sent = False
+        def wait(*args, **kwargs):
+            nonlocal sent
+            if not sent:
+                sent = True
+                for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                    os.kill(os.getpid(), number)
+            return real_wait(*args, **kwargs)
+        child.wait = wait
+    return child
+
+try:
+    for mode in ('reject', 'signals', 'hang', 'zero'):
+        ready, cleaned = root / (mode + '-ready'), root / (mode + '-cleaned')
+        gate = root / (mode + '.sh')
+        delay = '30' if mode == 'hang' else '0.15'
+        gate.write_text('trap \'touch "' + str(ready) + '"; /bin/sleep ' + delay +
+                        '; touch "' + str(cleaned) + '"\' EXIT\n' +
+                        'eval "exec ${!#}<&-"\nexit ' + ('0' if mode == 'zero' else '64') + '\n')
+
+        def delayed_write(fd, payload):
+            deadline = time.monotonic() + 2
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert ready.exists(), 'gate did not reach its EXIT trap'
+            return real_write(fd, payload)
+
+        kills = []
+        def killpg(pid, number):
+            kills.append((pid, number))
+            return real_killpg(pid, number)
+        started = time.monotonic()
+        with mock.patch.object(module.os, 'killpg', side_effect=killpg), \
+                mock.patch.object(module.os, 'write', side_effect=delayed_write), \
+                mock.patch.object(module.subprocess, 'Popen', side_effect=popen), \
+                mock.patch.dict(os.environ, {'FIXTURE_VALUE': 'payload'}), \
+                module.SignalController() as controller:
+            try:
+                code = module.run_gate(gate, [], ['FIXTURE_VALUE'], evidence, controller)
+            except module.SignalInterruption:
+                assert mode == 'signals'
+                assert controller.signal_number is not None
+            except module.ProtocolFailure:
+                assert mode == 'hang'
+            else:
+                assert code == (0 if mode == 'zero' else 64), (mode, code)
+            assert controller.active_group is None
+        assert time.monotonic() - started < 11, mode
+        assert processes[-1].poll() is not None, mode
+        assert cleaned.exists() == (mode != 'hang'), mode
+        if mode != 'hang':
+            assert kills == [], (mode, kills)
+
+    captured = root / 'captured'
+    gate = root / 'read.sh'
+    gate.write_text('eval "cat <&${!#}" > "' + str(captured) + '"\nexit 64\n')
+    with module.SignalController() as controller, mock.patch.dict(os.environ, {'FIXTURE_VALUE': 'x' * 100}):
+        expected = module.verifier_environment_payload(['FIXTURE_VALUE'])
+        with mock.patch.object(module.os, 'write', side_effect=lambda fd, raw: real_write(fd, raw[:7])):
+            assert module.run_gate(gate, [], ['FIXTURE_VALUE'], evidence, controller) == 64
+        assert captured.read_bytes() == expected
+        assert module.run_gate(gate, [], [], evidence, controller) == 64
+        assert captured.read_bytes() == b''
+        with mock.patch.object(module.os, 'write', return_value=0):
+            try:
+                module.run_gate(gate, [], ['FIXTURE_VALUE'], evidence, controller)
+            except module.ProtocolFailure:
+                pass
+            else:
+                raise AssertionError('zero write accepted')
+
+    argv = ['verify', '--receipt', str(Path(receipts) / 'start-failure.json'),
+            '--envelope', envelope, '--repo', repo, '--base', base,
+            '--verify-argv', '["/usr/bin/true"]']
+    with mock.patch.object(module.subprocess, 'Popen', side_effect=OSError('start failure')):
+        assert module.main(argv) == 70
+    assert not (Path(receipts) / 'start-failure.json').exists()
+
+    # Success without evidence still fails the receipt protocol.
+    mode = 'fake-success'
+    original_run_gate = module.run_gate
+    def fake_success(_gate, args, environment, fd, controller):
+        return original_run_gate(root / 'zero.sh', args, environment, fd, controller)
+    argv[2] = str(Path(receipts) / 'fake-success.json')
+    argv.extend(['--verify-env', 'FIXTURE_VALUE'])
+    with mock.patch.object(module, 'run_gate', side_effect=fake_success), \
+            mock.patch.object(module.os, 'write', side_effect=delayed_write), \
+            mock.patch.dict(os.environ, {'FIXTURE_VALUE': 'payload'}):
+        assert module.main(argv) == 70
+    assert not (Path(receipts) / 'fake-success.json').exists()
+finally:
+    os.close(evidence)
+    for child in processes:
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+        child.wait()
+PY
+then ok "early gate input closure preserves exit cleanup, bounded failure and strict evidence"; else bad "early gate input closure preserves exit cleanup, bounded failure and strict evidence"; fi
 
 reset_repo; printf 'worker edit\n' > "$REPO/a.txt"
 race_target="$RECEIPTS/race.json"

@@ -4,7 +4,7 @@ set -uo pipefail
 
 HERE="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT="$(CDPATH= cd -- "$HERE/.." && pwd -P)"
-TMP="$(mktemp -d -t agyworker-evidence-report.XXXXXX)"
+TMP="$(mktemp -d -t agyworker-evidence-report.XXXXXX)" || { echo "temporary directory creation failed" >&2; exit 1; }
 trap 'rm -rf -- "$TMP"' EXIT
 
 python3 -I -S -B - "$ROOT" "$TMP" <<'PY'

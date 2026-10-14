@@ -60,8 +60,9 @@ Source-checkout controller reasons and normal result exit codes:
 | `source_checkout_changed` | 28 | The source checkout changed since the job baseline, by the provider or another process. No candidate or repair reuse is available; inspect the source and start a new job. |
 | `source_checkout_guard_unavailable` | 29 | The source observation or binding could not be verified within its limits. Inspect the source checkout and Git configuration, reduce large dirty or non-ignored untracked content, or use a smaller dedicated source checkout before starting a new job. |
 
-Dispatch state schema is 20; command schema remains 16. Older jobs are rejected;
-finish or discard them with the release that created them, without migration.
+See [Retired job formats and flags](PROJECT_WORKFLOW.md#retired-job-formats-and-flags)
+for the current format policy and authoritative runtime constants. Older jobs are
+rejected; finish or discard them with the release that created them, without migration.
 
 Use `--provider-isolation native` explicitly for scoped macOS containment with
 private HOME/TMP. Native mode never falls back to session mode. Include its bound agy

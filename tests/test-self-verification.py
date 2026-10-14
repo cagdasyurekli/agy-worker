@@ -8,6 +8,9 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
+import subprocess
+import time
 from pathlib import Path
 import sys
 import stat
@@ -301,6 +304,214 @@ class VerificationContracts(unittest.TestCase):
                     path = logs / ("check." + stream)
                     self.assertLessEqual(path.stat().st_size, 128)
                     self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_cleanup_defers_signals_and_closes_every_owned_handle(self):
+        for checkpoint in ("terminate", "wait", "fsync"):
+            for prior_failure in (False, True, "signal"):
+                with self.subTest(checkpoint=checkpoint, prior_failure=prior_failure):
+                    self.assert_cleanup_signals(checkpoint, prior_failure)
+
+    def assert_cleanup_signals(self, checkpoint, prior_failure):
+        with tempfile.TemporaryDirectory() as temporary:
+            logs = Path(temporary).resolve()
+            logs.chmod(0o700)
+            check = module.Check("signal", ("/bin/sleep", "30"), True, 0.03, 128)
+            prepared = SimpleNamespace(role="self", network_policy="deny", allow_keychain=False,
+                                       target_argv=check.argv)
+            processes, descriptors, received, group_calls = [], [], [], []
+            fired = False
+            real_popen, real_open, real_fsync = subprocess.Popen, os.open, os.fsync
+
+            def interrupt(number, _frame):
+                received.append(number)
+                if len(received) == 1 or number == signal.SIGALRM:
+                    raise module.VerificationError("interrupted " + str(number))
+
+            def inject(where):
+                nonlocal fired
+                if where == checkpoint and not fired:
+                    fired = True
+                    for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT, signal.SIGALRM):
+                        os.kill(os.getpid(), number)
+
+            def popen(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                real_wait = process.wait
+
+                def wait(*args, **kwargs):
+                    inject("wait")
+                    return real_wait(*args, **kwargs)
+
+                process.wait = wait
+                return process
+
+            def opened(*args, **kwargs):
+                descriptor = real_open(*args, **kwargs)
+                descriptors.append(descriptor)
+                return descriptor
+
+            def fsync(descriptor):
+                inject("fsync")
+                return real_fsync(descriptor)
+
+            def terminate(pid, number):
+                group_calls.append(pid)
+                inject("terminate")
+                try:
+                    os.killpg(pid, number)
+                except ProcessLookupError:
+                    pass
+                return ()
+
+            def bind(pid):
+                if prior_failure == "signal":
+                    os.kill(os.getpid(), signal.SIGTERM)
+                if prior_failure:
+                    raise module.VerificationError("first failure")
+                return pid
+
+            native = SimpleNamespace(
+                ROLE_SELF_VERIFY="self", NETWORK_DENY_ALL="deny",
+                confirm_contained_launch=lambda _prepared: SimpleNamespace(
+                    argv=check.argv, executable="/bin/sleep", cwd=str(logs), environment={}),
+                bind_new_process_group=bind, terminate_bound_process_group=terminate)
+            old = {number: signal.signal(number, interrupt) for number in (
+                signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGALRM)}
+            started = time.monotonic()
+            try:
+                with mock.patch.object(module.subprocess, "Popen", side_effect=popen), \
+                        mock.patch.object(module.os, "open", side_effect=opened), \
+                        mock.patch.object(module.os, "fsync", side_effect=fsync):
+                    expected = ("interrupted 15" if prior_failure == "signal" else
+                                "first failure" if prior_failure else "interrupted")
+                    with self.assertRaisesRegex(module.VerificationError, expected):
+                        module.run_check(check, prepared, containment=native,
+                                         log_directory=logs, remaining=0.03)
+                self.assertLess(time.monotonic() - started, 3)
+                if not prior_failure or checkpoint != "terminate":
+                    self.assertTrue(fired)
+                    self.assertTrue(received)
+                for process in processes:
+                    self.assertIsNotNone(process.poll())
+                    self.assertTrue(process.stdout.closed and process.stderr.closed)
+                for descriptor in descriptors:
+                    with self.assertRaises(OSError):
+                        os.fstat(descriptor)
+            finally:
+                for number, handler in old.items():
+                    signal.signal(number, handler)
+                for process in processes:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                    process.stdout.close()
+                    process.stderr.close()
+                for descriptor in descriptors:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+            if prior_failure:
+                self.assertFalse(group_calls)
+                self.assertFalse(checkpoint == "terminate" and fired)
+
+    def test_cleanup_signal_does_not_leave_a_descendant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            logs = Path(temporary).resolve()
+            logs.chmod(0o700)
+            program = ("import subprocess,time; "
+                       "p=subprocess.Popen(['/bin/sleep','30']); "
+                       "print(p.pid,flush=True); time.sleep(30)")
+            argv = (sys.executable, "-I", "-S", "-B", "-c", program)
+            check = module.Check("descendant", argv, True, 0.3, 128)
+            prepared = SimpleNamespace(role="self", network_policy="deny", allow_keychain=False,
+                                       target_argv=argv)
+            fired = False
+
+            def terminate(pid, number):
+                nonlocal fired
+                if not fired:
+                    fired = True
+                    os.kill(os.getpid(), signal.SIGTERM)
+                try:
+                    os.killpg(pid, number)
+                except ProcessLookupError:
+                    pass
+                return ()
+
+            native = SimpleNamespace(
+                ROLE_SELF_VERIFY="self", NETWORK_DENY_ALL="deny",
+                confirm_contained_launch=lambda _prepared: SimpleNamespace(
+                    argv=argv, executable=sys.executable, cwd=str(logs), environment={}),
+                bind_new_process_group=lambda pid: pid, terminate_bound_process_group=terminate)
+
+            def interrupt(_number, _frame):
+                raise module.VerificationError("interrupted")
+
+            processes = []
+            real_popen = subprocess.Popen
+
+            def popen(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                processes.append(process)
+                return process
+
+            old = signal.signal(signal.SIGTERM, interrupt)
+            try:
+                with mock.patch.object(module.subprocess, "Popen", side_effect=popen), \
+                        self.assertRaisesRegex(module.VerificationError, "interrupted"):
+                    module.run_check(check, prepared, containment=native,
+                                     log_directory=logs, remaining=0.3)
+                descendant = int((logs / "descendant.stdout").read_text().strip())
+                deadline = time.monotonic() + 2
+                while True:
+                    try:
+                        os.kill(descendant, 0)
+                    except ProcessLookupError:
+                        break
+                    self.assertLess(time.monotonic(), deadline, "descendant remained alive")
+                    time.sleep(0.02)
+                self.assertIsNotNone(processes[0].poll())
+                self.assertTrue(processes[0].stdout.closed and processes[0].stderr.closed)
+            finally:
+                signal.signal(signal.SIGTERM, old)
+                for process in processes:
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                    process.stdout.close()
+                    process.stderr.close()
+
+    def test_cleanup_failure_still_closes_other_handles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            logs = Path(temporary).resolve()
+            logs.chmod(0o700)
+            check = module.Check("close", ("/usr/bin/true",), True, 1, 128)
+            prepared = SimpleNamespace(role="self", network_policy="deny", allow_keychain=False,
+                                       target_argv=check.argv)
+            native = SimpleNamespace(
+                ROLE_SELF_VERIFY="self", NETWORK_DENY_ALL="deny",
+                confirm_contained_launch=lambda _prepared: SimpleNamespace(
+                    argv=check.argv, executable="/usr/bin/true", cwd=str(logs), environment={}),
+                bind_new_process_group=lambda pid: pid,
+                terminate_bound_process_group=lambda *_args: ())
+            descriptors = []
+            real_open = os.open
+
+            def opened(*args, **kwargs):
+                descriptor = real_open(*args, **kwargs)
+                descriptors.append(descriptor)
+                return descriptor
+
+            with mock.patch.object(module.os, "open", side_effect=opened), \
+                    mock.patch.object(module.os, "fsync", side_effect=OSError("fsync failure")):
+                with self.assertRaisesRegex(OSError, "fsync failure"):
+                    module.run_check(check, prepared, containment=native,
+                                     log_directory=logs, remaining=1)
+            for descriptor in descriptors:
+                with self.assertRaises(OSError):
+                    os.fstat(descriptor)
 
     @unittest.skipUnless(sys.platform == "darwin", "native containment requires macOS")
     def test_native_structured_shell_script_runs_inside_copy(self):

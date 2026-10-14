@@ -261,29 +261,84 @@ def candidate_state_digest(
             git_reader=git_reader,
         )
     )
-    for raw_path in sorted(paths):
-        try:
-            relative = raw_path.decode("utf-8", "surrogateescape")
-        except UnicodeDecodeError as exc:  # pragma: no cover - surrogateescape is total
-            raise CandidateStateError("candidate path is invalid") from exc
-        full_path = os.path.join(repo, relative)
-        digest.update(len(raw_path).to_bytes(8, "big"))
-        digest.update(raw_path)
-        try:
-            metadata = os.lstat(full_path)
-        except FileNotFoundError:
-            digest.update(b"deleted")
-            continue
-        digest.update(str(stat.S_IFMT(metadata.st_mode)).encode("ascii"))
-        digest.update(str(stat.S_IMODE(metadata.st_mode)).encode("ascii"))
-        if stat.S_ISLNK(metadata.st_mode):
-            digest.update(os.readlink(full_path).encode("utf-8", "surrogateescape"))
-        elif stat.S_ISREG(metadata.st_mode):
-            with open(full_path, "rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        else:
-            digest.update(b"non-regular")
+    def binding(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
+                info.st_ctime_ns)
+
+    root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    root_before = os.fstat(root_fd)
+    try:
+        for raw_path in sorted(paths):
+            parts = raw_path.split(b"/")
+            if any(part in (b"", b".", b"..") for part in parts):
+                raise CandidateStateError("candidate path is invalid")
+            digest.update(len(raw_path).to_bytes(8, "big"))
+            digest.update(raw_path)
+            descriptors = [os.dup(root_fd)]
+            ancestors: list[tuple[int, bytes, os.stat_result]] = []
+            try:
+                missing_parent = False
+                for part in parts[:-1]:
+                    parent_fd = descriptors[-1]
+                    try:
+                        before = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        missing_parent = True
+                        break
+                    child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                       dir_fd=parent_fd)
+                    descriptors.append(child_fd)
+                    if binding(os.fstat(child_fd)) != binding(before):
+                        raise CandidateStateError("candidate ancestor changed while opened")
+                    ancestors.append((parent_fd, part, before))
+                parent_fd = descriptors[-1]
+                try:
+                    if missing_parent:
+                        raise FileNotFoundError
+                    metadata = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    digest.update(b"deleted")
+                else:
+                    digest.update(str(stat.S_IFMT(metadata.st_mode)).encode("ascii"))
+                    digest.update(str(stat.S_IMODE(metadata.st_mode)).encode("ascii"))
+                    if stat.S_ISLNK(metadata.st_mode):
+                        digest.update(os.readlink(parts[-1], dir_fd=parent_fd))
+                    elif stat.S_ISREG(metadata.st_mode):
+                        handle = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                         dir_fd=parent_fd)
+                        try:
+                            opened = os.fstat(handle)
+                            if not stat.S_ISREG(opened.st_mode) or binding(opened) != binding(metadata):
+                                raise CandidateStateError("candidate file changed while opened")
+                            remaining = opened.st_size
+                            while remaining:
+                                chunk = os.read(handle, min(1024 * 1024, remaining))
+                                if not chunk:
+                                    raise CandidateStateError("candidate file changed while read")
+                                digest.update(chunk)
+                                remaining -= len(chunk)
+                            if os.read(handle, 1) or binding(os.fstat(handle)) != binding(metadata):
+                                raise CandidateStateError("candidate file changed while read")
+                        finally:
+                            os.close(handle)
+                    else:
+                        digest.update(b"non-regular")
+                    if binding(os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)) != binding(metadata):
+                        raise CandidateStateError("candidate path changed while read")
+                for parent, name, before in ancestors:
+                    if binding(os.stat(name, dir_fd=parent, follow_symlinks=False)) != binding(before):
+                        raise CandidateStateError("candidate ancestor changed while read")
+            except OSError as exc:
+                raise CandidateStateError("candidate path is unavailable or changed") from exc
+            finally:
+                for descriptor in reversed(descriptors):
+                    os.close(descriptor)
+        if (binding(os.fstat(root_fd)) != binding(root_before)
+                or binding(os.stat(repo, follow_symlinks=False)) != binding(root_before)):
+            raise CandidateStateError("candidate root changed while read")
+    finally:
+        os.close(root_fd)
     return digest.hexdigest()
 
 

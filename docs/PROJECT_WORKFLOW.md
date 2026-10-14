@@ -127,15 +127,12 @@ the facade composes, not parallel implementations to keep in sync.
 This agy-worker release accepts only the current dispatcher state and
 command formats, defined by `CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA` in
 [`agy_dispatch.py`](../skills/agy-worker/runtime/scripts/agy_dispatch.py). Persisted
+selection records must use `SELECTION_SCHEMA` in
+[`model_selection.py`](../skills/agy-worker/runtime/scripts/model_selection.py). Persisted
 workflow records must use the current explicit or facade format, defined by
 `BOUND_SCHEMA_VERSION` and `BOUND_FACADE_SCHEMA_VERSION` in
 [`workflow.py`](../skills/agy-worker/runtime/scripts/workflow.py). The separately
 versioned workflow status output is not a persisted workflow record.
-
-Current dispatch records use state V16 and command V14, and selection records use
-V4. Earlier formats are retired, including ordinary jobs that used no removed
-feature. The new formats bind capability-based selection without a version registry.
-Workflow record formats retain their existing version constants.
 
 Older records fail closed before partial projection, migration, or job mutation.
 This includes status, result, and finalization as well as provider-launch actions.
@@ -467,9 +464,9 @@ binding, a closed supervisor process group, current job/state/candidate SHA appr
 and an empty candidate unless the caller explicitly supplies `--discard-unverified`.
 It refuses active, receipt-bound, gate-passed, routed, or otherwise unbound residuals.
 
-Cleanup is intentionally narrower. Only Receipt exits `10`–`14` with verdict
-`rejected` qualify. First inspect `status`, then manually copy its current identifiers
-and approvals into one fresh command:
+Cleanup accepts only Receipt exits `10`–`14` with verdict `rejected`, or exit `15`
+with verdict `routed`. First inspect `status`, then manually copy its current
+identifiers and approvals into one fresh command:
 
 ```bash
 ./job.sh cleanup \
@@ -483,13 +480,13 @@ Cleanup revalidates the receipt, worktree registration, branch/ref/base, candida
 digest, deletion domain, and all three approvals. It persists progress before each
 destructive step, removes only the exact registered worktree, and compare-deletes
 only the exact unchanged branch ref. Interrupted reconciliation consumes the old
-approval: inspect the new state and issue a fresh command. Gate-passed, routed,
+approval: inspect the new state and issue a fresh command. Gate-passed,
 committed, moved, tampered, stale, foreign, special-node, nested-repository, or
 digest-mismatched states are retained for manual recovery. Candidate symlinks are
 removed as link nodes and never followed. The private cleaned tombstone remains until
 a separate manual retention decision.
 
-## Preserve a local Evidence Receipt v1
+## Preserve a local evidence receipt
 
 `verify-job.sh` runs the canonical gate and, only for gate outcomes `0` and
 `10`–`15`, durably publishes a private JSON receipt. It records hashes of the exact
@@ -574,7 +571,7 @@ documented command or a subprocess; do not call its `main(argv)` from a host pro
 | Verification finds a repairable gap | Bind the exact current candidate and request a same-conversation `continue` within the remaining attempt budget. |
 | Strict policy is met | Finalize the exact current candidate with the driver-owned `verified` disposition; preservation and Git integration remain separate actions. |
 | Useful candidate has unresolved evidence | Finalize `partially_verified`, or preserve it for later review without overstating the result. |
-| Gate-rejected candidate | Preserve for diagnosis or use the exact rejected-only cleanup flow; do not silently discard it. |
+| Gate-rejected or routed candidate | Preserve for diagnosis or use the exact receipt-bound cleanup flow above; do not silently discard it. |
 
 Git integration is outside every controller and Receipt action. Review the actual
 diff, then commit, push, open a pull request, merge, or delete a branch only with the

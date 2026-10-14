@@ -58,7 +58,7 @@ a short context sentence and a link, but must not maintain a second full copy.
 | First task and product overview | `README.md` |
 | Installation, compatibility, doctor, sandbox, and agy troubleshooting | `docs/INSTALLATION.md` |
 | Workflows, examples, options, and model selection | `docs/USAGE.md` |
-| Project lifecycle, Verification v2, recovery, and Evidence Receipt v1 | `docs/PROJECT_WORKFLOW.md` |
+| Project lifecycle, Verification v2, recovery, and evidence receipts | `docs/PROJECT_WORKFLOW.md` |
 | CI fallback, updates, notifier maintenance, and sanitized reporting | `docs/OPERATIONS.md` |
 | Marketplace packaging and detailed install contract | `docs/MARKETPLACE.md`; README repeats only the minimal first-task commands and authorization boundary |
 | Verification workflow tutorial | `docs/VERIFYING_AGENT_OUTPUT.md` |

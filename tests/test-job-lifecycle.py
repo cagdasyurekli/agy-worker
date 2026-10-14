@@ -337,6 +337,23 @@ repo, base = make_repo("candidate-parity")
 (repo / "link").symlink_to("fixture.txt")
 (repo / "fixture.txt").write_text("changed\n", encoding="utf-8")
 check("shared candidate digest binds semantic Git state and working bytes", lambda: CANDIDATE.candidate_state_digest(repo, base) == candidate_reference(repo, base))
+nested_tracked = repo / "nested-tracked"
+nested_tracked.mkdir()
+(nested_tracked / "tracked.txt").write_bytes(b"tracked nested\n")
+git(repo, "add", "nested-tracked/tracked.txt")
+git(repo, "commit", "-qm", "nested deletion control")
+nested_base = git(repo, "rev-parse", "HEAD").decode().strip()
+shutil.rmtree(nested_tracked)
+check("removed tracked parent preserves ordinary deletion digest", lambda:
+      CANDIDATE.candidate_state_digest(repo, nested_base) == candidate_reference(repo, nested_base))
+missing_digest = hashlib.sha256()
+missing_digest.update(b"{}" + (0).to_bytes(8, "big"))
+missing_path = b"absent-parent/item"
+missing_digest.update(len(missing_path).to_bytes(8, "big") + missing_path + b"deleted")
+check("missing listed candidate parent retains deleted-path digest", lambda:
+      CANDIDATE.candidate_state_digest(repo, nested_base, validate=False,
+          git_reader=lambda repo, *args, **kwargs: missing_path + b"\0" if args[0] == "ls-files" else b"",
+          commit_state={}) == missing_digest.hexdigest())
 before = CANDIDATE.candidate_state_digest(repo, base)
 (repo / "ignored.txt").write_text("mutated\n", encoding="utf-8")
 check("shared candidate digest binds ignored artifacts", lambda: CANDIDATE.candidate_state_digest(repo, base) != before)
@@ -1179,9 +1196,114 @@ passed_fixture.worktree.joinpath("fixture.txt").write_text("worker edit\n", enco
 passed_fixture.write_envelope()
 passed_verify = run_cli("verify", "--state", str(passed_fixture.state), "--receipt", str(passed_fixture.receipt), "--envelope", str(passed_fixture.envelope), "--only", "fixture.txt", "--expect-edits", "--verify-argv", '["true"]')
 check("gate-passed state is retained and never cleanup-eligible", lambda: passed_verify.returncode == 0 and passed_fixture.value()["phase"] == "verified-gate-passed" and passed_fixture.cleanup().returncode == 64)
+passed_state_bytes = passed_fixture.state.read_bytes()
+passed_status = json.loads(run_cli("status", "--state", str(passed_fixture.state)).stdout)
+check("passed receipt status binds evidence without authorizing cleanup", lambda:
+      passed_status["receipt_bound"] and passed_status["candidate_matches_receipt"]
+      and not passed_status["cleanup_authorized"] and passed_fixture.state.read_bytes() == passed_state_bytes)
+passed_fixture.worktree.joinpath("fixture.txt").write_text("drift after passing\n")
+passed_drift = json.loads(run_cli("status", "--state", str(passed_fixture.state)).stdout)
+check("bound passed receipt and changed candidate are independent status facts", lambda:
+      passed_drift["receipt_bound"] and not passed_drift["candidate_matches_receipt"])
 preserve = run_cli("preserve-instructions", "--state", str(passed_fixture.state))
 check("passed state returns instructions without executing them", lambda: preserve.returncode == 0 and b"git -C" in preserve.stdout and passed_fixture.worktree.exists())
 clean_fixture(passed_fixture)
+
+
+def routed_fixture(label: str) -> Fixture:
+    routed = Fixture(label)
+    assert routed.init().returncode == 0
+    routed.worktree.joinpath("fixture.txt").write_text("worker edit\n")
+    routed.write_envelope()
+    envelope = json.loads(routed.envelope.read_bytes())
+    envelope["requires_human"] = True
+    routed.envelope.write_bytes(canonical(envelope))
+    verified = run_cli("verify", "--state", str(routed.state), "--receipt", str(routed.receipt),
+                       "--envelope", str(routed.envelope), "--only", "fixture.txt",
+                       "--verify-argv", '["true"]')
+    assert verified.returncode == 15, verified.stderr
+    return routed
+
+
+routed = routed_fixture("routed")
+routed_bytes = routed.state.read_bytes()
+routed_status = json.loads(run_cli("status", "--state", str(routed.state)).stdout)
+check("routed receipt status binds evidence with zero cleanup authority", lambda:
+      routed_status["receipt_bound"] and routed_status["candidate_matches_receipt"]
+      and not routed_status["cleanup_authorized"] and routed.state.read_bytes() == routed_bytes)
+check("routed cleanup rejects wrong job", lambda: routed.cleanup(job="other").returncode == 64)
+check("routed cleanup rejects stale state", lambda: routed.cleanup(state_sha="0" * 64).returncode == 64)
+check("routed cleanup rejects wrong candidate", lambda: routed.cleanup(candidate="0" * 64).returncode == 64)
+routed_receipt = routed.receipt.read_bytes()
+routed.receipt.write_bytes(routed_receipt + b" ")
+check("routed cleanup rejects mutated receipt", lambda: routed.cleanup().returncode == 64)
+routed.receipt.write_bytes(routed_receipt)
+routed.worktree.joinpath("fixture.txt").write_text("drift\n")
+check("routed cleanup rejects candidate drift", lambda: routed.cleanup().returncode == 64)
+routed.worktree.joinpath("fixture.txt").write_text("worker edit\n")
+nested = routed.worktree / "nested"
+nested.mkdir(); git(nested, "init", "-q")
+check("routed cleanup rejects nested repository", lambda: routed.cleanup().returncode == 64)
+shutil.rmtree(nested)
+fifo = routed.worktree / "fifo"
+os.mkfifo(fifo)
+check("routed cleanup rejects special node", lambda: routed.cleanup().returncode == 64)
+fifo.unlink()
+moved_base = git(routed.repo, "commit-tree", f"{routed.base}^{{tree}}", "-p", routed.base,
+                 "-m", "synthetic moved branch").decode().strip()
+git(routed.repo, "update-ref", f"refs/heads/{routed.branch}", moved_base, routed.base)
+check("routed cleanup rejects moved branch/base binding", lambda: routed.cleanup().returncode == 64)
+git(routed.repo, "update-ref", f"refs/heads/{routed.branch}", routed.base, moved_base)
+for verdict, gate_exit in (("rejected", 0), ("routed", 10), ("gate-passed", 0)):
+    invalid_cleanup = routed.value()
+    invalid_cleanup.update(phase="cleanup-in-progress", last_result=None, failure=None)
+    invalid_cleanup["receipt"].update(verdict=verdict, gate_exit=gate_exit)
+    check(f"cleanup phase rejects invalid receipt pair {verdict}/{gate_exit}",
+          lambda invalid_cleanup=invalid_cleanup: rejects(lambda: MODULE.validate_state(invalid_cleanup)))
+check("routed candidate cleans with all exact approvals", lambda:
+      routed.cleanup().returncode == 0 and routed.value()["phase"] == "cleaned" and not routed.worktree.exists())
+clean_fixture(routed)
+
+def routed_cleanup_resume() -> bool:
+    routed_resume = routed_fixture("routed-resume")
+    try:
+        resume_store = MODULE.StateStore(routed_resume.state)
+        try:
+            resume_store.update({"phase": "cleanup-in-progress", "failure": None, "last_result": None})
+        finally:
+            resume_store.close()
+        git(routed_resume.repo, "worktree", "remove", "--force", str(routed_resume.worktree))
+        first = routed_resume.cleanup()
+        reconciled = first.returncode == 74 and routed_resume.value()["cleanup_step"] == "worktree-removed"
+        second = routed_resume.cleanup()
+        return reconciled and second.returncode == 0 and routed_resume.value()["phase"] == "cleaned"
+    finally:
+        clean_fixture(routed_resume)
+
+
+check("routed interrupted cleanup reconciles and requires fresh state approval", routed_cleanup_resume)
+
+interrupted = Fixture("verify-interrupted-retry")
+assert interrupted.init().returncode == 0
+interrupted.worktree.joinpath("fixture.txt").write_text("worker edit\n")
+interrupted.write_envelope()
+retry_store = MODULE.StateStore(interrupted.state)
+retry_store.update({"phase": "verify-interrupted", "failure": "interrupted", "last_result": 143})
+retry_store.close()
+interrupted.receipt.write_bytes(b"orphan partial receipt")
+interrupted.receipt.chmod(0o600)
+occupied = run_cli("verify", "--state", str(interrupted.state), "--receipt", str(interrupted.receipt),
+                   "--envelope", str(interrupted.envelope), "--only", "fixture.txt", "--verify-argv", '["true"]')
+check("interrupted verification preserves occupied receipt", lambda:
+      occupied.returncode == 64 and interrupted.receipt.read_bytes() == b"orphan partial receipt"
+      and interrupted.value()["phase"] == "verify-interrupted")
+fresh_receipt = interrupted.state_dir / "fresh-receipt.json"
+retry = run_cli("verify", "--state", str(interrupted.state), "--receipt", str(fresh_receipt),
+                "--envelope", str(interrupted.envelope), "--only", "fixture.txt", "--verify-argv", '["true"]')
+check("interrupted verification retries with fresh bound receipt", lambda:
+      retry.returncode == 0 and interrupted.value()["phase"] == "verified-gate-passed"
+      and interrupted.receipt.read_bytes() == b"orphan partial receipt")
+clean_fixture(interrupted)
 
 
 def state_cas_pair() -> bool:
@@ -1787,6 +1909,109 @@ mutated = source.replace(b"                os.fsync(descriptor)\n", b"          
 check("mutation removing staged state fsync is killed", lambda: not state_fsync_contract(mutated))
 mutated = source.replace(b"            os.fsync(self.parent_fd)\n", b"            pass\n", 1)
 check("mutation removing initial parent fsync is killed", lambda: not state_fsync_contract(mutated))
+
+def bounded_read_probe(owner: str, variant: str, mutation: str) -> bool:
+    code = r"""
+import builtins, importlib.util, os, pathlib, stat, sys, tempfile
+sys.dont_write_bytecode = True
+sys.path.insert(0, sys.argv[1])
+m = __import__(sys.argv[2])
+variant, mutation = sys.argv[3:5]
+with tempfile.TemporaryDirectory() as directory:
+    root = pathlib.Path(directory)
+    parent = root / 'dir'; parent.mkdir()
+    leaf = parent / 'item'; leaf.write_bytes(b'abcd'); leaf.chmod(0o600)
+    outside = root / 'outside'; outside.mkdir()
+    sentinel = outside / 'item'; sentinel.write_bytes(b'NEVER READ')
+    sentinel_inode = sentinel.stat().st_ino
+    real_stat, real_lstat, real_open, real_read = os.stat, os.lstat, os.open, os.read
+    real_builtin = builtins.open
+    injected = False
+    consumed = False
+    def target(path):
+        return os.fsencode(path).split(b'/')[-1] == b'item'
+    def mutate():
+        global injected
+        injected = True
+        if mutation == 'fifo': leaf.unlink(); os.mkfifo(leaf)
+        elif mutation == 'symlink': leaf.unlink(); leaf.symlink_to(sentinel)
+        elif mutation == 'regular': leaf.unlink(); leaf.write_bytes(b'efgh'); leaf.chmod(0o600)
+        elif mutation in ('ancestor', 'ancestor-read'): parent.rename(root/'old-dir'); parent.symlink_to(outside)
+        elif mutation == 'replace-read': leaf.unlink(); leaf.write_bytes(b'efgh'); leaf.chmod(0o600)
+        elif mutation == 'inplace': leaf.write_bytes(b'efgh')
+        elif mutation == 'grow':
+            with real_builtin(leaf, 'ab') as handle: handle.write(b'x')
+        elif mutation == 'shrink': leaf.write_bytes(b'a')
+    def observe(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if target(path) and not injected and mutation in ('fifo','symlink','regular','ancestor'):
+            mutate()
+        return info
+    def observe_lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if target(path) and not injected and mutation in ('fifo','symlink','regular','ancestor'):
+            mutate()
+        return info
+    def guarded_read(fd, size):
+        global consumed
+        if os.fstat(fd).st_ino == sentinel_inode:
+            raise AssertionError('outside sentinel read attempted')
+        chunk = real_read(fd, size)
+        if chunk and not consumed and mutation in ('inplace','grow','shrink','ancestor-read','replace-read'):
+            consumed = True; mutate()
+        return chunk
+    class Guarded:
+        def __init__(self, handle): self.handle = handle
+        def __enter__(self): return self
+        def __exit__(self, *args): self.handle.close()
+        def read(self, size):
+            global consumed
+            if os.fstat(self.handle.fileno()).st_ino == sentinel_inode:
+                raise AssertionError('outside sentinel read attempted')
+            chunk = self.handle.read(size)
+            if chunk and not consumed and mutation in ('inplace','grow','shrink','ancestor-read','replace-read'):
+                consumed=True; mutate()
+            return chunk
+    def guarded_fd_open(path, *args, **kwargs):
+        if target(path) and not injected and mutation in ('fifo','symlink','regular'):
+            mutate()
+        return real_open(path, *args, **kwargs)
+    def guarded_open(path, *args, **kwargs): return Guarded(real_builtin(path, *args, **kwargs))
+    if mutation == 'fifo-direct': leaf.unlink(); os.mkfifo(leaf)
+    os.stat, os.lstat, os.open, os.read, builtins.open = observe, observe_lstat, guarded_fd_open, guarded_read, guarded_open
+    try:
+        if variant == 'candidate':
+            result = m.candidate_state_digest(root, '0'*40, validate=False,
+                git_reader=lambda repo,*args,**kwargs: b'dir/item\0' if args[0]=='ls-files' else b'',
+                commit_state={})
+        elif variant == 'at':
+            fd = real_open(parent, os.O_RDONLY|os.O_DIRECTORY)
+            try: result = m.read_regular_at(fd, 'item', 100, 'fixture', private=True)
+            finally: os.close(fd)
+        else: result = m.read_regular(leaf, 100, 'fixture', private=True)
+    except (m.CandidateStateError if variant == 'candidate' else m.JobError if sys.argv[2]=='job_lifecycle' else m.WorkflowError, OSError):
+        sys.exit(0 if injected or mutation == 'fifo-direct' else 1)
+    sys.exit(1)
+"""
+    try:
+        result = subprocess.run([PYTHON, "-I", "-S", "-B", "-c", code,
+                                 str(RUNTIME / "scripts"), owner, variant, mutation],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=3, check=False)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+for read_variant in ("path", "at"):
+    for owner in ("job_lifecycle", "workflow"):
+        for mutation in ("fifo-direct", "fifo", "symlink", "regular", "inplace", "grow", "shrink", "replace-read"):
+            check(f"{owner} {read_variant} reader promptly rejects {mutation}",
+                  lambda owner=owner, read_variant=read_variant, mutation=mutation:
+                  bounded_read_probe(owner, read_variant, mutation))
+for mutation in ("fifo", "symlink", "regular", "ancestor", "inplace", "grow", "shrink", "ancestor-read", "replace-read"):
+    check(f"candidate digest rejects {mutation} without outside reads or hang",
+          lambda mutation=mutation: bounded_read_probe("candidate_state", "candidate", mutation))
 
 clean_fixture(fixture)
 shutil.rmtree(TMP)

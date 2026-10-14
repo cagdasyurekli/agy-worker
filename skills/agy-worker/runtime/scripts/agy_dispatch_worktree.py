@@ -23,6 +23,8 @@ import time
 import unicodedata
 from typing import Any, NamedTuple, cast
 
+sys.dont_write_bytecode = True
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
@@ -3831,16 +3833,34 @@ def _persist_reconciliation_ledger(job_fd: int, ledger: dict[str, Any]) -> None:
         tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
         0o600, dir_fd=job_fd,
     )
+    tmp_identity = _reconciliation_root_identity(os.fstat(descriptor))
     try:
-        _reconciliation_write_all(descriptor, raw)
-        os.fsync(descriptor)
+        try:
+            os.fchmod(descriptor, 0o600)
+            tmp_identity = _reconciliation_root_identity(os.fstat(descriptor))
+            _reconciliation_write_all(descriptor, raw)
+            os.fsync(descriptor)
+            current = os.stat(tmp, dir_fd=job_fd, follow_symlinks=False)
+            if _reconciliation_root_identity(current) != tmp_identity or current.st_nlink != 1:
+                raise DispatchError("reconciliation marker temp identity changed")
+            os.replace(
+                tmp, "reconciliation-in-progress.json",
+                src_dir_fd=job_fd, dst_dir_fd=job_fd,
+            )
+            os.fsync(job_fd)
+        except BaseException:
+            try:
+                current = os.stat(tmp, dir_fd=job_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if _reconciliation_root_identity(current) != tmp_identity or current.st_nlink != 1:
+                    raise DispatchError("reconciliation marker temp cleanup identity changed")
+                os.unlink(tmp, dir_fd=job_fd)
+                os.fsync(job_fd)
+            raise
     finally:
         os.close(descriptor)
-    os.replace(
-        tmp, "reconciliation-in-progress.json",
-        src_dir_fd=job_fd, dst_dir_fd=job_fd,
-    )
-    os.fsync(job_fd)
 
 
 def _reconciliation_parts(value: Any) -> list[str]:
@@ -3918,7 +3938,10 @@ def _reconciliation_parent(root_fd: int, parts: list[str]) -> int:
 
 
 def _reconciliation_stat(root_fd: int, parts: list[str]) -> os.stat_result | None:
-    parent = _reconciliation_parent(root_fd, parts)
+    try:
+        parent = _reconciliation_parent(root_fd, parts)
+    except FileNotFoundError:
+        return None
     try:
         try:
             return os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
@@ -3958,23 +3981,78 @@ def _finish_reconciliation_recovery(
     job_fd: int, recovery_fd: int, ledger: dict[str, Any],
 ) -> None:
     """Remove only the exact backup artifacts named by a verified ledger."""
-    expected = {
-        record["name"] for record in ledger["backups"].values()
-        if isinstance(record, dict) and isinstance(record.get("name"), str)
-    }
-    scan_fd = os.dup(recovery_fd)
-    try:
-        with os.scandir(scan_fd) as entries:
-            actual = {entry.name for entry in entries}
-    finally:
-        os.close(scan_fd)
-    if not actual <= expected:
+    expected = {}
+    for record in ledger["backups"].values():
+        if not isinstance(record, dict) or not isinstance(record.get("name"), str):
+            raise DispatchError("reconciliation backup cleanup binding is invalid")
+        name = record["name"]
+        if re.fullmatch(r"[0-9]{6}\.backup", name) is None or name in expected:
+            raise DispatchError("reconciliation backup cleanup name is invalid")
+        expected[name] = record.get("backup_identity")
+    actual: set[str] = set()
+    if recovery_fd >= 0:
+        scan_fd = os.dup(recovery_fd)
+        try:
+            with os.scandir(scan_fd) as entries:
+                actual = {entry.name for entry in entries}
+        finally:
+            os.close(scan_fd)
+    if not actual <= expected.keys():
         raise DispatchError("reconciliation backup directory contents changed")
+    if recovery_fd >= 0 and _reconciliation_root_identity(os.stat(
+        "reconciliation-backups", dir_fd=job_fd, follow_symlinks=False,
+    )) != ledger.get("backup_dir_identity"):
+        raise DispatchError("reconciliation backup directory identity changed")
     for name in sorted(actual):
+        metadata = os.stat(name, dir_fd=recovery_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+            or metadata.st_uid != os.getuid()
+            or _reconciliation_root_identity(metadata) != expected[name]
+        ):
+            raise DispatchError("reconciliation backup cleanup identity changed")
+    marker = "reconciliation-in-progress.json"
+    marker_fd = os.open(
+        marker, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        dir_fd=job_fd,
+    )
+    try:
+        marker_info = os.fstat(marker_fd)
+        raw = _canonical_json(ledger) + b"\n"
+        if (
+            not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1
+            or marker_info.st_uid != os.getuid() or stat.S_IMODE(marker_info.st_mode) != 0o600
+            or marker_info.st_size != len(raw)
+        ):
+            raise DispatchError("reconciliation cleanup ledger authority changed")
+        observed = bytearray()
+        while len(observed) < len(raw):
+            chunk = os.read(marker_fd, min(65536, len(raw) - len(observed)))
+            if not chunk:
+                raise DispatchError("reconciliation cleanup ledger changed")
+            observed.extend(chunk)
+        if bytes(observed) != raw or os.read(marker_fd, 1):
+            raise DispatchError("reconciliation cleanup ledger changed")
+    finally:
+        os.close(marker_fd)
+    if _manifest_binding(marker_info) != _manifest_binding(os.stat(
+        marker, dir_fd=job_fd, follow_symlinks=False,
+    )):
+        raise DispatchError("reconciliation cleanup ledger identity changed")
+    for name in sorted(actual):
+        if _reconciliation_root_identity(os.stat(
+            name, dir_fd=recovery_fd, follow_symlinks=False,
+        )) != expected[name]:
+            raise DispatchError("reconciliation backup cleanup identity changed")
         os.unlink(name, dir_fd=recovery_fd)
-    os.fsync(recovery_fd)
-    os.rmdir("reconciliation-backups", dir_fd=job_fd)
-    os.unlink("reconciliation-in-progress.json", dir_fd=job_fd)
+    if recovery_fd >= 0:
+        os.fsync(recovery_fd)
+        if _reconciliation_root_identity(os.stat(
+            "reconciliation-backups", dir_fd=job_fd, follow_symlinks=False,
+        )) != ledger.get("backup_dir_identity"):
+            raise DispatchError("reconciliation backup directory identity changed")
+        os.rmdir("reconciliation-backups", dir_fd=job_fd)
+    os.unlink(marker, dir_fd=job_fd)
     os.fsync(job_fd)
 
 
@@ -4099,29 +4177,41 @@ def _restore_reconciliation_prior(
             or type(record.get("mode")) is not int
             or not isinstance(record.get("name"), str)
             or not isinstance(record.get("prior_identity"), list)
+            or len(record["prior_identity"]) != 9
             or not isinstance(record.get("prior_sha256"), str)
         ):
             raise DispatchError("reconciliation file backup is invalid")
         parts = _reconciliation_parts(rel)
-        backup_fd = os.open(record["name"], os.O_RDONLY | nofollow, dir_fd=recovery_fd)
+        backup_fd = os.open(
+            record["name"], os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=recovery_fd,
+        )
         try:
             metadata = os.fstat(backup_fd)
             if (
                 not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
                 or metadata.st_uid != os.getuid()
+                or _reconciliation_root_identity(metadata) != record.get("backup_identity")
+                or metadata.st_size != record["prior_identity"][6]
+                or metadata.st_size > SELECTED_CONTENT_MAX_FILE_BYTES
             ):
                 raise DispatchError("reconciliation backup authority is invalid")
             content = bytearray()
             hasher = hashlib.sha256()
-            while True:
-                chunk = os.read(backup_fd, 65536)
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(backup_fd, min(65536, remaining))
                 if not chunk:
-                    break
+                    raise DispatchError("reconciliation backup content changed")
                 content.extend(chunk)
-                if len(content) > SELECTED_CONTENT_MAX_FILE_BYTES:
-                    raise DispatchError("reconciliation backup is oversized")
+                remaining -= len(chunk)
                 hasher.update(chunk)
-            if hasher.hexdigest() != record["prior_sha256"]:
+            if (
+                os.read(backup_fd, 1) or hasher.hexdigest() != record["prior_sha256"]
+                or _manifest_binding(metadata) != _manifest_binding(os.fstat(backup_fd))
+                or _manifest_binding(metadata) != _manifest_binding(os.stat(
+                    record["name"], dir_fd=recovery_fd, follow_symlinks=False,
+                ))
+            ):
                 raise DispatchError("reconciliation backup content changed")
         finally:
             os.close(backup_fd)
@@ -4209,7 +4299,8 @@ def _recover_reconciliation(source_root: str | Path, job_dir: Path) -> bool:
     try:
         try:
             marker_fd = os.open(
-                "reconciliation-in-progress.json", os.O_RDONLY | nofollow, dir_fd=job_fd,
+                "reconciliation-in-progress.json",
+                os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=job_fd,
             )
         except FileNotFoundError:
             return False
@@ -4260,9 +4351,21 @@ def _recover_reconciliation(source_root: str | Path, job_dir: Path) -> bool:
             type(active) is not int or not 0 <= active < len(ledger["operation_manifest"])
         ):
             raise DispatchError("reconciliation active operation is invalid")
-        recovery_fd = os.open(
-            "reconciliation-backups", os.O_RDONLY | directory_flag | nofollow, dir_fd=job_fd,
-        )
+        preparing = ledger.get("status") == "preparing"
+        if preparing and (
+            type(ledger.get("applied_operations")) is not int
+            or ledger["applied_operations"] != 0 or active is not None
+        ):
+            raise DispatchError("reconciliation preparation state is invalid")
+        try:
+            recovery_fd = os.open(
+                "reconciliation-backups", os.O_RDONLY | directory_flag | nofollow, dir_fd=job_fd,
+            )
+        except FileNotFoundError:
+            if not preparing:
+                raise
+            _finish_reconciliation_recovery(job_fd, -1, ledger)
+            return True
         recovery_metadata = os.fstat(recovery_fd)
         if (
             _reconciliation_root_identity(recovery_metadata) != ledger.get("backup_dir_identity")
@@ -4270,7 +4373,7 @@ def _recover_reconciliation(source_root: str | Path, job_dir: Path) -> bool:
             or stat.S_IMODE(recovery_metadata.st_mode) != 0o700
         ):
             raise DispatchError("reconciliation backup directory identity changed")
-        if ledger.get("status") not in {"committed", "rolled-back-verified"}:
+        if not preparing and ledger.get("status") not in {"committed", "rolled-back-verified"}:
             _restore_reconciliation_prior(src_root_fd, recovery_fd, job_fd, ledger)
         _finish_reconciliation_recovery(job_fd, recovery_fd, ledger)
         os.close(recovery_fd)
@@ -4289,11 +4392,11 @@ def _recover_reconciliation(source_root: str | Path, job_dir: Path) -> bool:
 
 def _prepare_reconciliation_backups(
     src_root_fd: int, recovery_fd: int, operation_manifest: list[dict[str, Any]],
-    directory_flag: int, nofollow: int,
+    directory_flag: int, nofollow: int, job_fd: int, ledger: dict[str, Any],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """Bind prior targets and write backups before the coordinator publishes them."""
-    backups: dict[str, dict[str, Any]] = {}
-    directory_backups: dict[str, dict[str, Any]] = {}
+    backups = ledger["backups"]
+    directory_backups = ledger["directory_backups"]
     created_directory_indexes = {
         op["path"]: index
         for index, op in enumerate(operation_manifest)
@@ -4356,7 +4459,9 @@ def _prepare_reconciliation_backups(
                     os.close(curr_src)
                     curr_src = next_src
                 try:
-                    f_fd = os.open(parts[-1], os.O_RDONLY | nofollow, dir_fd=curr_src)
+                    f_fd = os.open(
+                        parts[-1], os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=curr_src,
+                    )
                 except FileNotFoundError:
                     f_fd = -1
             finally:
@@ -4364,35 +4469,51 @@ def _prepare_reconciliation_backups(
             if f_fd >= 0:
                 try:
                     st = os.fstat(f_fd)
+                    if (
+                        not stat.S_ISREG(st.st_mode)
+                        or list(_manifest_binding(st)) != op["prior_identity"]
+                        or st.st_size > SELECTED_CONTENT_MAX_FILE_BYTES
+                    ):
+                        raise DispatchError("reconciliation prior file authority changed")
                     backup_name = f"{index:06d}.backup"
+                    record: dict[str, Any] = {
+                        "mode": stat.S_IMODE(st.st_mode),
+                        "name": backup_name,
+                        "prior_identity": op["prior_identity"],
+                        "prior_sha256": op["prior_sha256"],
+                        "backup_identity": None,
+                    }
+                    backups[op["path"]] = record
+                    _persist_reconciliation_ledger(job_fd, ledger)
                     backup_fd = os.open(
                         backup_name,
                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow,
                         0o600, dir_fd=recovery_fd,
                     )
                     try:
+                        record["backup_identity"] = _reconciliation_root_identity(os.fstat(backup_fd))
+                        os.fsync(recovery_fd)
+                        _persist_reconciliation_ledger(job_fd, ledger)
                         hasher = hashlib.sha256()
-                        total = 0
-                        while True:
-                            chunk = os.read(f_fd, 65536)
+                        remaining = st.st_size
+                        while remaining:
+                            chunk = os.read(f_fd, min(65536, remaining))
                             if not chunk:
-                                break
-                            total += len(chunk)
-                            if total > SELECTED_CONTENT_MAX_FILE_BYTES:
-                                raise DispatchError("reconciliation backup byte limit exceeded")
+                                raise DispatchError("reconciliation prior content changed")
+                            remaining -= len(chunk)
                             hasher.update(chunk)
                             _reconciliation_write_all(backup_fd, chunk)
                         os.fsync(backup_fd)
                     finally:
                         os.close(backup_fd)
-                    if hasher.hexdigest() != op["prior_sha256"]:
+                    current_prior = _reconciliation_stat(src_root_fd, parts)
+                    if (
+                        os.read(f_fd, 1) or hasher.hexdigest() != op["prior_sha256"]
+                        or _manifest_binding(st) != _manifest_binding(os.fstat(f_fd))
+                        or current_prior is None
+                        or _manifest_binding(st) != _manifest_binding(current_prior)
+                    ):
                         raise DispatchError("reconciliation prior content changed")
-                    backups[op["path"]] = {
-                        "mode": stat.S_IMODE(st.st_mode),
-                        "name": backup_name,
-                        "prior_identity": op["prior_identity"],
-                        "prior_sha256": op["prior_sha256"],
-                    }
                 finally:
                     os.close(f_fd)
 
@@ -4439,7 +4560,7 @@ def _apply_reconciliation_operation(
                 except FileNotFoundError:
                     os.mkdir(comp, 0o700, dir_fd=curr_fd)
                     next_fd = os.open(comp, os.O_RDONLY | directory_flag | nofollow, dir_fd=curr_fd)
-                os.fchmod(next_fd, 0o700)
+                    os.fchmod(next_fd, 0o700)
                 os.fsync(curr_fd)
                 os.close(curr_fd)
                 curr_fd = next_fd
@@ -4473,21 +4594,44 @@ def _apply_reconciliation_operation(
                 except FileNotFoundError:
                     os.mkdir(comp, 0o700, dir_fd=curr_src)
                     next_src = os.open(comp, os.O_RDONLY | directory_flag | nofollow, dir_fd=curr_src)
-                os.fchmod(next_src, 0o700)
+                    os.fchmod(next_src, 0o700)
                 os.close(curr_src)
                 curr_src = next_src
 
             tmp_name = f".tmp.reconcile.{os.getpid()}.{time.time_ns()}"
             mode = 0o700 if op["executable"] else 0o600
             tmp_fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, mode, dir_fd=curr_src)
+            tmp_identity = _reconciliation_root_identity(os.fstat(tmp_fd))
             try:
-                _reconciliation_write_all(tmp_fd, content)
-                os.fsync(tmp_fd)
-                os.fchmod(tmp_fd, mode)
+                try:
+                    os.fchmod(tmp_fd, mode)
+                    tmp_identity = _reconciliation_root_identity(os.fstat(tmp_fd))
+                    _reconciliation_write_all(tmp_fd, content)
+                    os.fsync(tmp_fd)
+                    current_tmp = os.stat(tmp_name, dir_fd=curr_src, follow_symlinks=False)
+                    if (
+                        _reconciliation_root_identity(current_tmp) != tmp_identity
+                        or current_tmp.st_nlink != 1
+                    ):
+                        raise DispatchError("reconciliation temp identity changed")
+                    os.replace(tmp_name, parts[-1], src_dir_fd=curr_src, dst_dir_fd=curr_src)
+                    os.fsync(curr_src)
+                except BaseException:
+                    try:
+                        current_tmp = os.stat(tmp_name, dir_fd=curr_src, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if (
+                            _reconciliation_root_identity(current_tmp) != tmp_identity
+                            or current_tmp.st_nlink != 1
+                        ):
+                            raise DispatchError("reconciliation temp cleanup identity changed")
+                        os.unlink(tmp_name, dir_fd=curr_src)
+                        os.fsync(curr_src)
+                    raise
             finally:
                 os.close(tmp_fd)
-            os.replace(tmp_name, parts[-1], src_dir_fd=curr_src, dst_dir_fd=curr_src)
-            os.fsync(curr_src)
         finally:
             os.close(curr_src)
     elif op["op"] == "delete" and op["kind"] == "file":
@@ -4584,14 +4728,17 @@ def _reconcile_stage_to_source(
             pass
         else:
             raise DispatchError("unfinished reconciliation requires recovery")
+        persist_ledger()
         os.mkdir(backup_dir_name, 0o700, dir_fd=job_fd)
         recovery_fd = os.open(
             backup_dir_name, os.O_RDONLY | directory_flag | nofollow, dir_fd=job_fd,
         )
         ledger["backup_dir_identity"] = _reconciliation_root_identity(os.fstat(recovery_fd))
+        os.fsync(job_fd)
+        persist_ledger()
 
         backups, directory_backups = _prepare_reconciliation_backups(
-            src_root_fd, recovery_fd, operation_manifest, directory_flag, nofollow,
+            src_root_fd, recovery_fd, operation_manifest, directory_flag, nofollow, job_fd, ledger,
         )
 
         os.fsync(recovery_fd)
@@ -4622,6 +4769,11 @@ def _reconcile_stage_to_source(
         except Exception as exc:
             ledger["status"] = "rollback-required"
             try:
+                _refresh_reconciliation_directory_ancestors(
+                    src_root_fd, operation_manifest, operation_index,
+                    operation="create", identity_key="post_identity",
+                    candidates=range(operation_index),
+                )
                 persist_ledger()
                 os.close(recovery_fd)
                 recovery_fd = -1
@@ -4645,6 +4797,19 @@ def _reconcile_stage_to_source(
         os.close(recovery_fd)
         recovery_fd = -1
         return final_manifest_sha
+    except Exception as exc:
+        if ledger["status"] == "preparing":
+            if recovery_fd >= 0:
+                os.close(recovery_fd)
+                recovery_fd = -1
+            try:
+                _recover_reconciliation(source_root, job_dir)
+            except Exception as recovery_exc:
+                raise DispatchError(
+                    "reconciliation preparation recovery uncertain; preserve job artifacts"
+                ) from recovery_exc
+            raise DispatchError(f"reconciliation preparation failed and was recovered: {exc}") from exc
+        raise
     finally:
         if recovery_fd >= 0:
             os.close(recovery_fd)

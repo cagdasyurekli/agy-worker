@@ -15,7 +15,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 WORKER="$ROOT/agy-worker.sh"
 SELECTOR="$ROOT/model-selection.sh"
-TMP="$(mktemp -d -t agyworker-dispatch.XXXXXX)"
+TMP="$(mktemp -d -t agyworker-dispatch.XXXXXX)" || exit 1
 tmp_identity() {
     python3 - "$1" <<'PY'
 import os
@@ -2009,6 +2009,26 @@ printf 'unsafe provider environment\n' | run_worker unsafe-provider-env \
     --model gemini-3.6-flash-low --provider-env PYTHONPATH \
     > "$TMP/unsafe-provider-env.out" 2> "$TMP/unsafe-provider-env.err"
 expect_exit "runtime-injection provider environment name is rejected" 64 "$?"
+
+for unsafe_provider_name in GIT_CONFIG_COUNT GIT_DIR AGY_WORKER_SCHEMA; do
+    unsafe_job="unsafe-provider-$unsafe_provider_name"
+    printf 'unsafe provider environment\n' | AGY_WORKER_LOG_DIR="$TMP/logs" \
+        "$WORKER" --workdir "$TMP/repo" --job-id "$unsafe_job" \
+        --model gemini-3.6-flash-low --provider-env "$unsafe_provider_name" \
+        > "$TMP/$unsafe_job.out" 2> "$TMP/$unsafe_job.err"
+    unsafe_rc=$?
+    if [[ "$unsafe_rc" == 64 && ! -e "$TMP/logs/$unsafe_job" ]] \
+            && grep -Fq 'unsafe --provider-env name' "$TMP/$unsafe_job.err"; then
+        ok "unsafe $unsafe_provider_name rejects before selector or job allocation"
+    else bad "unsafe $unsafe_provider_name early usage rejection"; fi
+done
+
+mktemp_assignment="$(sed -n '/^TMP="$(mktemp -d /p' "$HERE/test-agy-worker.sh")"
+mktemp_guard_output="$(bash -c 'set -uo pipefail; mktemp() { return 73; }; eval "$1"; printf continued' _ "$mktemp_assignment")"
+mktemp_guard_rc=$?
+if [[ "$mktemp_guard_rc" != 0 && -z "$mktemp_guard_output" ]]; then
+    ok "failed mktemp exits before dispatcher fixture setup"
+else bad "failed mktemp must not reach dispatcher fixture setup"; fi
 
 printf 'raw custom model\n' | run_worker raw-flash-high \
     --model gemini-3.6-flash-high > "$TMP/raw-flash-high.out" 2>/dev/null
@@ -4451,7 +4471,7 @@ state = module.initial_state(
     command_identity=(1, 1, os.getuid(), os.getgid(), 0o600),
     stage_sha=None, stage_identity=None,
 )
-assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 20
+assert state["schema_version"] == module.CURRENT_STATE_SCHEMA == 21
 assert state["worktree_root_identity"] is not None
 assert state["worktree_baseline"] is not None
 assert state["worktree_snapshot_algorithm"] == module.WORKTREE_SNAPSHOT_SEMANTIC_V1

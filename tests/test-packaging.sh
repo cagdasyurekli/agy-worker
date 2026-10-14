@@ -13,12 +13,33 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
 CI_OFFLINE="$ROOT/scripts/ci-offline.sh"
 CI_STAGES="$ROOT/scripts/ci_stages.py"
-TMP="$(mktemp -d -t agyworker-packaging.XXXXXX)"
+TMP="$(mktemp -d -t agyworker-packaging.XXXXXX)" || { echo "temporary directory creation failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 
 ok() { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
+
+# Execute only each exact prologue assignment, never any fixture writes.
+if python3 -I -S -B - "$ROOT/tests" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+unsafe = []
+for name in ('qa-gate', 'evidence-receipt', 'evidence-report', 'agy-worker',
+             'packaging', 'update', 'doctor', 'proof-demo'):
+    text = (Path(sys.argv[1]) / ('test-' + name + '.sh')).read_text()
+    options = next(line for line in text.splitlines() if line.startswith('set -'))
+    assignment = next(line for line in text.splitlines() if line.startswith('TMP="$(mktemp -d'))
+    result = subprocess.run(['/bin/bash', '-c', options + '\nmktemp(){ return 1; }\n' +
+                             assignment + '\nprintf fixture-writes-reached'],
+                            capture_output=True, text=True, timeout=5)
+    if result.returncode == 0 or 'fixture-writes-reached' in result.stdout:
+        unsafe.append(name)
+assert not unsafe, unsafe
+PY
+then ok "failed temporary-directory allocation stops all shell fixtures"; else bad "failed temporary-directory allocation stops all shell fixtures"; fi
 
 ci_stage_registered() {
     python3 -B - "$CI_STAGES" "$1" <<'PY'
@@ -2594,7 +2615,8 @@ claude_install_rc=$?
 if [[ "$claude_install_rc" == 0 && ! -e "$TMP/untouched-codex" ]] \
     && [[ "$(bash "$TMP/claude installed/agy-worker/scripts/resolve-pipeline.sh")" == "$(cd "$ROOT" && pwd -P)" ]] \
     && marketplace_installed_parity "$ROOT" "$TMP/claude installed/agy-worker" "$TMP/claude-parity-mutant" \
-    && grep -Fq 'new Claude Code session' "$TMP/claude-install.out"; then
+    && grep -Fq 'new Claude Code session' "$TMP/claude-install.out" \
+    && ! grep -Fq 'experimental: pending live verification' "$TMP/claude-install.out"; then
     ok "Claude standalone install preserves bytes marker and host-specific destination"
 else
     bad "Claude standalone install preserves bytes marker and host-specific destination"
@@ -3000,6 +3022,7 @@ required = {
         "--approve-whole-worktree LAUNCH_APPROVAL_SHA256",
     ),
     "docs/VERIFYING_AGENT_OUTPUT.md": (
+        "Dispatch only after approving one exact transmission mode. Whole-worktree dispatch",
         "Whole-worktree dispatch remains an explicit manifest-bound exception",
         "The recommended provider-scope mode instead binds exact reviewed read entries",
     ),
@@ -3018,6 +3041,8 @@ required = {
         "Session mode uses the existing AGY session; explicit native mode requires supported macOS containment",
     ),
     "docs/PROJECT_WORKFLOW.md": (
+        "`CURRENT_STATE_SCHEMA` and `CURRENT_COMMAND_SCHEMA`",
+        "selection records must use `SELECTION_SCHEMA`",
         "Choose the transmission mode explicitly",
         "`--provider-scope FILE --approve-transmission-sha SHA256`, which binds exact reviewed read/write entries",
         "--approve-whole-worktree LAUNCH_APPROVAL_SHA256",
@@ -3041,6 +3066,19 @@ for relative, phrases in required.items():
     assert all(phrase in flattened for phrase in phrases), (relative, phrases)
     assert "overrides any global or user instruction file" not in flattened, relative
     assert "report incompatible requirements as a conflict" not in flattened, relative
+
+# Schema values belong to runtime constants, not a second version inventory in prose.
+workflow = (root / "docs/PROJECT_WORKFLOW.md").read_text(encoding="utf-8")
+retired_formats = workflow.split("## Retired job formats and flags", 1)[1].split(
+    "The following surfaces", 1
+)[0]
+import re
+assert not re.search(r"\b(?:state|command|selection records use)\s+V\d+", retired_formats)
+for relative in ("docs/PROJECT_WORKFLOW.md", "docs/OPERATIONS.md", "docs/DOCUMENTATION_POLICY.md"):
+    assert "Evidence Receipt v1" not in (root / relative).read_text(encoding="utf-8"), relative
+operations = " ".join((root / "docs/OPERATIONS.md").read_text(encoding="utf-8").split())
+assert "every offline shell suite in a disposable candidate worktree" in operations
+assert "every offline suite in a disposable candidate worktree" not in operations
 
 # Read authority is owned by the usage guide, independently of its write policy.
 usage = " ".join((root / "docs/USAGE.md").read_text(encoding="utf-8").split())

@@ -922,6 +922,228 @@ def provider_settings_rule_targets_and_failures_are_exact() -> bool:
         shutil.rmtree(root)
 
 
+def provider_settings_profile_accepts_only_the_fixed_chain() -> bool:
+    common = {
+        "target_executable": "/usr/bin/true", "role": MODULE.ROLE_PROVIDER,
+        "network_policy": MODULE.NETWORK_DENY_ALL, "allow_keychain": True,
+        "keychain_path": "/private/keychain-db",
+    }
+    path = "/private/job/home/.gemini/antigravity-cli/settings.json"
+    profile = MODULE.render_profile(**common, provider_settings_path=path).decode()
+    invalid = (
+        "/private/job/home/other/settings.json",
+        "/private/job/home/.gemini/antigravity-cli/other.json",
+        "/private/job/home/../home/.gemini/antigravity-cli/settings.json",
+        "/private/job/home//.gemini/antigravity-cli/settings.json",
+        "/.gemini/antigravity-cli/settings.json",
+    )
+    return (
+        '(literal (param "HOME"))' in profile
+        and '(literal "/private/job/home/.gemini")' in profile
+        and '(literal "/private/job/home/.gemini/antigravity-cli")' in profile
+        and all(rejects(lambda value=value: MODULE.render_profile(
+            **common, provider_settings_path=value,
+        )) for value in invalid)
+    )
+
+
+def provider_settings_native_mutation_is_denied(operation: str, level: str) -> bool:
+    """Exercise actual syscalls with the rendered provider/Keychain profile."""
+    if sys.platform != "darwin":
+        return None
+    root, job, stage, _checkout, _ambient = fixture(f"settings-{operation}-{level}")
+    probe = """import ctypes, errno, json, os, sys
+from pathlib import Path
+home = Path(os.environ['HOME'])
+tmp = Path(os.environ['TMPDIR'])
+settings = home / '.gemini/antigravity-cli/settings.json'
+operation, level, sentinel = sys.argv[1:]
+target = {'home': home, 'gemini': home / '.gemini',
+          'cli': settings.parent, 'leaf': settings}[level]
+incoming = tmp / 'incoming'
+if level == 'leaf':
+    incoming.write_text('tampered')
+else:
+    incoming.mkdir()
+    relative = {'home': '.gemini/antigravity-cli', 'gemini': 'antigravity-cli', 'cli': '.'}[level]
+    parent = incoming / relative
+    parent.mkdir(parents=True, exist_ok=True)
+    (parent / 'settings.json').write_text('tampered')
+observed = {'readable': bool(settings.read_bytes())}
+try:
+    if operation == 'write':
+        target.write_text('tampered')
+    elif operation == 'metadata':
+        target.chmod(0o755)
+    elif operation == 'unlink-recreate':
+        target.unlink()
+        target.write_text('tampered')
+    elif operation == 'rmdir-recreate':
+        target.rmdir()
+        target.mkdir()
+    elif operation == 'replace-leaf':
+        os.replace(incoming, target)
+    elif operation == 'hardlink-alias':
+        alias = tmp / 'policy-alias'
+        os.link(target, alias)
+        alias.write_text('tampered')
+    elif operation == 'hardlink-replace':
+        alias = tmp / 'mutable-alias'
+        os.link(incoming, alias)
+        os.replace(alias, target)
+    elif operation == 'exchange':
+        libc = ctypes.CDLL(None, use_errno=True)
+        exchange = libc.renameatx_np
+        exchange.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        exchange.restype = ctypes.c_int
+        if exchange(-2, os.fsencode(target), -2, os.fsencode(incoming), 2):
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code))
+    else:
+        # Report the first failed mutation; a later create cannot hide denial.
+        destination = (Path.cwd() if operation == 'rename-stage' else
+                       home if operation == 'rename-home' else tmp)
+        target.rename(destination / 'old')
+        if operation == 'replace':
+            os.replace(incoming, target)
+        elif operation == 'symlink':
+            target.symlink_to(incoming, target_is_directory=level != 'leaf')
+        elif operation == 'outside-symlink':
+            target.symlink_to(sentinel, target_is_directory=False)
+            target.write_text('escaped')
+        elif operation not in {'rename', 'rename-stage', 'rename-home'}:
+            raise AssertionError(operation)
+except OSError as exc:
+    observed['errno'] = exc.errno
+else:
+    observed['errno'] = 0
+print(json.dumps(observed))
+"""
+    try:
+        sentinel = root / "outside-sentinel"
+        sentinel.write_bytes(b"outside unchanged\n")
+        prepared = prepare(
+            job, stage, CLT_PYTHON_EXECUTABLE,
+            [CLT_PYTHON_EXECUTABLE, "-I", "-S", "-B", "-c", probe,
+             operation, level, str(sentinel)], {}, allow_keychain=True,
+        )
+        settings = Path(prepared.provider_settings.path)
+        before = MODULE._bind_file(settings, modes={0o600}, limit=MODULE.MAX_PROFILE_BYTES)
+        parents = [settings.parent, settings.parent.parent, Path(prepared.private_home.path)]
+        identities = [(p.stat().st_dev, p.stat().st_ino, p.stat().st_mode) for p in parents]
+        result = run_confirmed(prepared)
+        if result.returncode != 0:
+            raise AssertionError(f"native probe rc={result.returncode}: {result.stderr!r}")
+        observed = json.loads(result.stdout)
+        allowed_errors = {errno.EPERM}
+        if operation == "rmdir-recreate":
+            # The populated chain also rejects rmdir before this fix. This is
+            # an unchanged nonempty-directory control, not a bypass regression.
+            allowed_errors.add(errno.ENOTEMPTY)
+        if observed.get("readable") is not True or observed.get("errno") not in allowed_errors:
+            raise AssertionError(f"{operation}/{level}: {observed!r}")
+        after = MODULE._bind_file(settings, modes={0o600}, limit=MODULE.MAX_PROFILE_BYTES)
+        if before != after or identities != [
+            (p.stat().st_dev, p.stat().st_ino, p.stat().st_mode) for p in parents
+        ] or sentinel.read_bytes() != b"outside unchanged\n":
+            raise AssertionError("policy bytes, metadata, identity, links or ancestry changed")
+        return True
+    finally:
+        shutil.rmtree(root)
+
+
+def provider_settings_mutable_descendants_remain_writable() -> bool:
+    if sys.platform != "darwin":
+        return None
+    root, job, stage, _checkout, _ambient = fixture("settings-mutable-descendants")
+    probe = """import os
+from pathlib import Path
+home = Path(os.environ['HOME'])
+parents = [home, home / '.gemini', home / '.gemini/antigravity-cli',
+           home / '.gemini/antigravity-cli/log', home / '.gemini/antigravity-cli/crashes',
+           home / '.gemini/antigravity-cli/synthetic-db']
+for parent in parents:
+    parent.mkdir(parents=True, exist_ok=True)
+    original = parent / 'state'
+    replacement = parent / 'replacement'
+    original.write_bytes(b'created')
+    original.write_bytes(b'modified')
+    replacement.write_bytes(b'replaced')
+    os.replace(replacement, original)
+    assert original.read_bytes() == b'replaced'
+    alias = parent / 'state-alias'
+    os.link(original, alias)
+    alias.unlink()
+    original.rename(replacement)
+    replacement.unlink()
+db = parents[-1] / 'conversation.db'
+for suffix in ['', '-journal', '-wal', '-shm']:
+    file = Path(str(db) + suffix)
+    file.write_bytes(b'synthetic SQLite-style lifecycle')
+    file.unlink()
+print('mutable descendants preserved')
+"""
+    try:
+        prepared = prepare(
+            job, stage, CLT_PYTHON_EXECUTABLE,
+            [CLT_PYTHON_EXECUTABLE, "-I", "-S", "-B", "-c", probe],
+            {}, allow_keychain=True,
+        )
+        settings = Path(prepared.provider_settings.path)
+        before = MODULE._bind_file(settings, modes={0o600}, limit=MODULE.MAX_PROFILE_BYTES)
+        result = run_confirmed(prepared)
+        if result.returncode != 0:
+            raise AssertionError(f"mutable descendants rc={result.returncode}: {result.stderr!r}")
+        return (
+            result.stdout == b"mutable descendants preserved\n"
+            and before == MODULE._bind_file(settings, modes={0o600}, limit=MODULE.MAX_PROFILE_BYTES)
+        )
+    finally:
+        shutil.rmtree(root)
+
+
+def provider_settings_exact_rebind_rejects_aliases_and_replacement() -> bool:
+    for mutation in ("same-bytes-inode", "hardlink", "home-replacement"):
+        root, job, stage, _checkout, _ambient = fixture(f"settings-rebind-{mutation}")
+        try:
+            home = job / "provider-home"
+            home.mkdir(mode=0o700)
+            selectors = MODULE._validate_provider_write_selectors((
+                {"kind": "file", "path": "candidate.py"},
+            ))
+            binding = MODULE._prepare_provider_settings(job, home, 1, selectors)
+            settings = Path(binding.path)
+            if mutation == "same-bytes-inode":
+                replacement = settings.with_name("replacement")
+                replacement.write_bytes(settings.read_bytes())
+                replacement.chmod(0o600)
+                os.replace(replacement, settings)
+            elif mutation == "hardlink":
+                os.link(settings, home / "alias")
+            else:
+                if sys.platform != "darwin":
+                    continue
+                prepared = prepare(
+                    job, stage, "/usr/bin/true", ["/usr/bin/true"], {}, allow_keychain=True,
+                )
+                old_home = job / "old-home"
+                home.rename(old_home)
+                home.mkdir(mode=0o700)
+                # Keep both exact leaf bindings intact so the HOME identity
+                # check itself, rather than a missing policy, must reject.
+                (old_home / ".gemini").rename(home / ".gemini")
+                (old_home / "Library").rename(home / "Library")
+                if not rejects(lambda prepared=prepared: MODULE.confirm_contained_launch(prepared)):
+                    return False
+                continue
+            if not rejects(lambda job=job, home=home, selectors=selectors:
+                           MODULE._prepare_provider_settings(job, home, 1, selectors)):
+                return False
+        finally:
+            shutil.rmtree(root)
+    return True
+
+
 def keychain_binding_is_metadata_only_and_rebinds_identity() -> bool:
     if sys.platform != "darwin":
         return None
@@ -2246,6 +2468,23 @@ check("private generated DefaultKeychain preferences create once and reject repa
 check("precomputed provider settings bind all repair stages and reject drift", provider_settings_are_precomputed_private_and_rebound)
 check("provider settings leaf stays immutable while ordinary HOME state remains writable", provider_settings_leaf_is_immutable_but_home_state_stays_writable)
 check("provider settings rule targets, stages, and failure labels stay bounded", provider_settings_rule_targets_and_failures_are_exact)
+check("provider settings profile accepts only the fixed policy chain", provider_settings_profile_accepts_only_the_fixed_chain)
+for settings_level in ("leaf", "cli", "gemini", "home"):
+    settings_operations = (
+        ("write", "unlink-recreate", "replace-leaf", "metadata", "hardlink-alias", "hardlink-replace", "exchange", "rename", "symlink", "outside-symlink")
+        if settings_level == "leaf" else
+        ("rename", "rename-stage", "replace", "rmdir-recreate", "metadata", "symlink", "outside-symlink", "exchange")
+    )
+    if settings_level in {"cli", "gemini"}:
+        settings_operations += ("rename-home",)
+    for settings_operation in settings_operations:
+        check(
+            f"native policy {settings_level} rejects {settings_operation} with unchanged binding",
+            lambda operation=settings_operation, level=settings_level:
+                provider_settings_native_mutation_is_denied(operation, level),
+        )
+check("native policy literal denies preserve mutable siblings, logs, crashes and DB-like lifecycle", provider_settings_mutable_descendants_remain_writable)
+check("exact policy rebind rejects identical replacement inode, hardlink and HOME replacement", provider_settings_exact_rebind_rejects_aliases_and_replacement)
 check("default keychain identity is metadata-only and allows content churn only", keychain_binding_is_metadata_only_and_rebinds_identity)
 check("Keychain read authority is helper-only and self-verification has none", keychain_policy_is_helper_only_and_self_verify_never_discovers)
 check("synthetic default-Keychain locator is closed, bounded, and strict", keychain_locator_is_bounded_closed_and_strict)

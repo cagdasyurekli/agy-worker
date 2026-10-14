@@ -30,7 +30,7 @@ changed files cannot replace it.
 
 ## 2. Keep the worker report as untrusted input
 
-Dispatch only after approving one exact transmission mode. Without
+Dispatch only after approving one exact transmission mode.
 Whole-worktree dispatch remains an explicit manifest-bound exception: when selected,
 the entire disposable worktree may be read and sent through `agy` to Google/Gemini;
 `--add-dir`, prompt denylists, and gate path policies do not narrow that broad boundary.

@@ -69,7 +69,7 @@ STAGES: tuple[Stage, ...] = (
     ),
     Stage(
         "evidence-receipt",
-        "Evidence Receipt v1 suite",
+        "Evidence Receipt suite",
         "other-b",
         ("./tests/test-evidence-receipt.sh",),
         {"receipt_id": "evidence-receipt"},

@@ -1288,6 +1288,281 @@ def run(context: dict[str, object]) -> None:
 
     check("narrow preflight symlink stage-race and copy-drift failures never launch provider", narrow_preflight_symlink_race_and_copy_drift_never_launch_provider)
 
+    def reconciliation_preparation_failure_recovers_owned_artifacts() -> None:
+        fixture = root / "preparation-retry"; fixture.mkdir()
+        source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+        for directory in (source, stage, job): directory.mkdir(mode=0o700)
+        (source / "prior").write_bytes(b"original")
+        (source / "conflict").write_bytes(b"conflict")
+        (stage / "prior").write_bytes(b"changed")
+        (stage / "conflict").write_bytes(b"created")
+        operations = [
+            {"op": "replace", "kind": "file", "path": "prior", "executable": False,
+             "prior_sha256": hashlib.sha256(b"original").hexdigest()},
+            {"op": "create", "kind": "file", "path": "conflict", "executable": False},
+        ]
+        try:
+            MODULE._reconcile_stage_to_source(source, stage, operations, job)
+        except MODULE.DispatchError as exc:
+            assert "preparation failed and was recovered" in str(exc), str(exc)
+        else:
+            raise AssertionError("conflicting create was accepted")
+        assert not list(job.iterdir()) and (source / "prior").read_bytes() == b"original"
+        (source / "conflict").unlink()
+        MODULE._reconcile_stage_to_source(source, stage, operations, job)
+        assert not list(job.iterdir()) and (source / "prior").read_bytes() == b"changed"
+        assert (source / "conflict").read_bytes() == b"created"
+
+        # A marker-less tree never becomes ours merely because its name matches.
+        backups = job / "reconciliation-backups"; backups.mkdir(mode=0o700)
+        sentinel = backups / "unknown"; sentinel.write_bytes(b"preserve")
+        try:
+            MODULE._reconcile_stage_to_source(source, stage, operations, job)
+        except MODULE.DispatchError as exc:
+            assert "preserve job artifacts" in str(exc)
+        else:
+            raise AssertionError("unbound backup tree was adopted")
+        assert sentinel.read_bytes() == b"preserve"
+
+    check("reconciliation preparation failures recover owned backups and permit corrected retry", reconciliation_preparation_failure_recovers_owned_artifacts)
+
+    def reconciliation_preparation_checkpoints_are_identity_safe() -> None:
+        engine = MODULE.WORKTREE
+        original_persist = engine._persist_reconciliation_ledger
+        for checkpoint in (1, 2, 3, 4):
+            fixture = root / f"preparation-checkpoint-{checkpoint}"; fixture.mkdir()
+            source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+            for directory in (source, stage, job): directory.mkdir(mode=0o700)
+            (source / "prior").write_bytes(b"original"); (stage / "prior").write_bytes(b"changed")
+            operations = [{"op": "replace", "kind": "file", "path": "prior", "executable": False,
+                           "prior_sha256": hashlib.sha256(b"original").hexdigest()}]
+            count = 0
+            def interrupt(job_fd, ledger, checkpoint=checkpoint):
+                nonlocal count
+                original_persist(job_fd, ledger)
+                count += 1
+                if count == checkpoint: raise KeyboardInterrupt("checkpoint")
+            with mock.patch.object(engine, "_persist_reconciliation_ledger", side_effect=interrupt):
+                try:
+                    MODULE._reconcile_stage_to_source(source, stage, operations, job)
+                except KeyboardInterrupt:
+                    pass
+                else:
+                    raise AssertionError("preparation interruption was not injected")
+            assert count == checkpoint and (source / "prior").read_bytes() == b"original"
+            assert MODULE._recover_reconciliation(source, job) is True
+            assert not list(job.iterdir()) and MODULE._recover_reconciliation(source, job) is False
+
+        for fault in ("marker-write", "mkdir", "unbound-directory", "backup-write"):
+            fixture = root / f"preparation-fault-{fault}"; fixture.mkdir()
+            source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+            for directory in (source, stage, job): directory.mkdir(mode=0o700)
+            (source / "prior").write_bytes(b"original"); (stage / "prior").write_bytes(b"changed")
+            operations = [{"op": "replace", "kind": "file", "path": "prior", "executable": False,
+                           "prior_sha256": hashlib.sha256(b"original").hexdigest()}]
+            original_write, original_mkdir, original_open = engine._reconciliation_write_all, os.mkdir, os.open
+            injected = False
+            def fail_write(descriptor, payload, fault=fault, original_write=original_write):
+                nonlocal injected
+                if (fault == "marker-write" and not injected) or (fault == "backup-write" and payload == b"original"):
+                    injected = True; os.write(descriptor, payload[:3]); raise OSError("preparation write")
+                return original_write(descriptor, payload)
+            def fail_mkdir(name, *args, fault=fault, original_mkdir=original_mkdir, **kwargs):
+                nonlocal injected
+                if fault == "mkdir" and name == "reconciliation-backups":
+                    injected = True; raise OSError("preparation mkdir")
+                return original_mkdir(name, *args, **kwargs)
+            def fail_open(name, *args, fault=fault, original_open=original_open, **kwargs):
+                nonlocal injected
+                if fault == "unbound-directory" and name == "reconciliation-backups":
+                    injected = True; raise KeyboardInterrupt("unbound directory")
+                return original_open(name, *args, **kwargs)
+            with mock.patch.object(engine, "_reconciliation_write_all", side_effect=fail_write), \
+                    mock.patch.object(os, "mkdir", side_effect=fail_mkdir), \
+                    mock.patch.object(os, "open", side_effect=fail_open):
+                try: MODULE._reconcile_stage_to_source(source, stage, operations, job)
+                except (MODULE.DispatchError, KeyboardInterrupt): pass
+                else: raise AssertionError(f"preparation {fault} was accepted")
+            assert injected and (source / "prior").read_bytes() == b"original"
+            if fault == "unbound-directory":
+                assert (job / "reconciliation-in-progress.json").is_file()
+                assert (job / "reconciliation-backups").is_dir()
+                try: MODULE._recover_reconciliation(source, job)
+                except MODULE.DispatchError: pass
+                else: raise AssertionError("unbound preparation directory was adopted")
+                assert (job / "reconciliation-backups").is_dir()
+            else:
+                assert not list(job.iterdir()), fault
+
+        # Once bound, neither a replaced backup nor an extra entry may be removed.
+        for mutation in ("replacement", "unknown", "directory"):
+            fixture = root / f"preparation-preserve-{mutation}"; fixture.mkdir()
+            source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+            for directory in (source, stage, job): directory.mkdir(mode=0o700)
+            (source / "prior").write_bytes(b"original"); (stage / "prior").write_bytes(b"changed")
+            operations = [{"op": "replace", "kind": "file", "path": "prior", "executable": False,
+                           "prior_sha256": hashlib.sha256(b"original").hexdigest()}]
+            def bound_interrupt(job_fd, ledger):
+                original_persist(job_fd, ledger)
+                if any(record.get("backup_identity") for record in ledger["backups"].values()):
+                    raise KeyboardInterrupt("bound checkpoint")
+            with mock.patch.object(engine, "_persist_reconciliation_ledger", side_effect=bound_interrupt):
+                try: MODULE._reconcile_stage_to_source(source, stage, operations, job)
+                except KeyboardInterrupt: pass
+            backups = job / "reconciliation-backups"
+            if mutation == "replacement":
+                target = backups / "000000.backup"; target.rename(backups / "saved")
+                target.write_bytes(b"replacement"); target.chmod(0o600)
+                (backups / "saved").unlink()
+            elif mutation == "unknown":
+                target = backups / "unknown"; target.write_bytes(b"preserve")
+            else:
+                backups.rename(job / "saved-backups"); backups.mkdir(mode=0o700)
+                target = backups / "unknown"; target.write_bytes(b"preserve")
+            preserved = target.read_bytes()
+            try: MODULE._recover_reconciliation(source, job)
+            except MODULE.DispatchError: pass
+            else: raise AssertionError(f"recovery accepted {mutation}")
+            assert target.read_bytes() == preserved and (source / "prior").read_bytes() == b"original"
+
+    check("preparation checkpoints recover only durably bound identities", reconciliation_preparation_checkpoints_are_identity_safe)
+
+    def reconciliation_backup_fifo_replacements_fail_promptly() -> None:
+        program = r"""
+import hashlib, os, stat, sys
+from pathlib import Path
+from unittest import mock
+sys.path.insert(0, sys.argv[1])
+import agy_dispatch_worktree as engine
+fixture = Path(sys.argv[2]); phase = sys.argv[3]
+source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+for directory in (source, stage, job): directory.mkdir(mode=0o700)
+(source / "prior").write_bytes(b"original"); (stage / "prior").write_bytes(b"changed")
+operations = [{"op": "replace", "kind": "file", "path": "prior", "executable": False,
+               "prior_sha256": hashlib.sha256(b"original").hexdigest()}]
+if phase == "restore":
+    original = engine._persist_reconciliation_ledger
+    def interrupt(descriptor, ledger):
+        original(descriptor, ledger)
+        if ledger["status"] == "prepared": raise KeyboardInterrupt("prepared")
+    with mock.patch.object(engine, "_persist_reconciliation_ledger", side_effect=interrupt):
+        try: engine._reconcile_stage_to_source(source, stage, operations, job)
+        except KeyboardInterrupt: pass
+    target = job / "reconciliation-backups/000000.backup"
+    target.unlink(); os.mkfifo(target, 0o600)
+    try: engine._recover_reconciliation(source, job)
+    except engine.DispatchError as exc: assert "backup authority" in str(exc), str(exc)
+    else: raise AssertionError("FIFO backup was accepted")
+    assert stat.S_ISFIFO(target.lstat().st_mode) and (source / "prior").read_bytes() == b"original"
+else:
+    original = os.open
+    changed = False
+    def swap(name, flags, *args, **kwargs):
+        global changed
+        if name == "prior" and "dir_fd" in kwargs and not changed:
+            changed = True; (source / "prior").unlink(); os.mkfifo(source / "prior", 0o600)
+        return original(name, flags, *args, **kwargs)
+    with mock.patch.object(os, "open", side_effect=swap):
+        try: engine._reconcile_stage_to_source(source, stage, operations, job)
+        except engine.DispatchError as exc: assert "preparation failed and was recovered" in str(exc), str(exc)
+        else: raise AssertionError("FIFO preparation source was accepted")
+    assert changed and stat.S_ISFIFO((source / "prior").lstat().st_mode) and not list(job.iterdir())
+print(phase, "FIFO rejected and preserved")
+"""
+        for phase in ("restore", "prepare"):
+            fixture = root / f"backup-fifo-{phase}"; fixture.mkdir()
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", program, str(SOURCE.parent), str(fixture), phase],
+                capture_output=True, timeout=2, check=False,
+            )
+            assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+            assert f"{phase} FIFO rejected and preserved".encode() in result.stdout
+
+    check("reconciliation backup and preparation FIFO swaps reject without blocking", reconciliation_backup_fifo_replacements_fail_promptly)
+
+    def reconciliation_missing_parents_and_existing_modes_are_preserved() -> None:
+        fixture = root / "reconcile-modes"; fixture.mkdir()
+        source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+        for directory in (source, stage, job): directory.mkdir(mode=0o700)
+        for directory in (source / "existing", stage / "existing"): directory.mkdir(mode=0o755)
+        operations = [
+            {"op": "create", "kind": "directory", "path": "existing/newdir"},
+            {"op": "create", "kind": "file", "path": "existing/newdir/a", "executable": False},
+            {"op": "create", "kind": "file", "path": "existing/newdir/missing", "executable": False},
+        ]
+        (stage / "existing/newdir").mkdir(); (stage / "existing/newdir/a").write_bytes(b"a")
+        try: MODULE._reconcile_stage_to_source(source, stage, operations, job)
+        except MODULE.DispatchError as exc: assert "failed and was rolled back" in str(exc), str(exc)
+        else: raise AssertionError("missing stage file was accepted")
+        assert sorted(path.name for path in source.iterdir()) == ["existing"]
+        assert not list((source / "existing").iterdir()) and not list(job.iterdir())
+        assert stat.S_IMODE((source / "existing").stat().st_mode) == 0o755
+        MODULE._reconcile_stage_to_source(source, stage, operations[:2], job)
+        assert stat.S_IMODE((source / "existing").stat().st_mode) == 0o755
+        assert stat.S_IMODE((source / "existing/newdir").stat().st_mode) == 0o700
+        (stage / "existing/newdir/a").write_bytes(b"replacement")
+        replacement = [{"op": "replace", "kind": "file", "path": "existing/newdir/a", "executable": False,
+                        "prior_sha256": hashlib.sha256(b"a").hexdigest()}]
+        MODULE._reconcile_stage_to_source(source, stage, replacement, job)
+        assert stat.S_IMODE((source / "existing").stat().st_mode) == 0o755
+        descriptor = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            assert MODULE.WORKTREE._reconciliation_stat(descriptor, ["absent", "leaf"]) is None
+            (source / "wrong-kind").write_bytes(b"file")
+            (source / "link").symlink_to(source / "existing", target_is_directory=True)
+            for parent in ("wrong-kind", "link"):
+                try: MODULE.WORKTREE._reconciliation_stat(descriptor, [parent, "leaf"])
+                except OSError: pass
+                else: raise AssertionError(f"invalid parent {parent} became absent")
+        finally: os.close(descriptor)
+
+    check("rollback accepts genuinely absent parents and preserves existing directory modes", reconciliation_missing_parents_and_existing_modes_are_preserved)
+
+    def reconciliation_temp_failure_cleanup_is_identity_safe() -> None:
+        engine = MODULE.WORKTREE
+        for fault in ("write", "fsync", "replace", "replacement"):
+            fixture = root / f"reconcile-temp-{fault}"; fixture.mkdir()
+            source, stage, job = (fixture / name for name in ("source", "stage", "job"))
+            for directory in (source, stage, job): directory.mkdir(mode=0o700)
+            (stage / "newdir").mkdir(); (stage / "newdir/a").write_bytes(b"payload")
+            operations = [{"op": "create", "kind": "directory", "path": "newdir"},
+                          {"op": "create", "kind": "file", "path": "newdir/a", "executable": False}]
+            original_write, original_fsync, original_replace = engine._reconciliation_write_all, os.fsync, os.replace
+            injected = False
+            def fail_write(descriptor, payload, fault=fault, original_write=original_write, source=source):
+                nonlocal injected
+                if payload == b"payload" and fault in {"write", "replacement"}:
+                    injected = True
+                    if fault == "replacement":
+                        target = next((source / "newdir").glob(".tmp.reconcile.*"))
+                        target.unlink(); target.write_bytes(b"preserve")
+                    raise OSError("injected temp write")
+                return original_write(descriptor, payload)
+            def fail_fsync(descriptor, fault=fault, original_fsync=original_fsync, source=source):
+                nonlocal injected
+                if fault == "fsync" and not injected and list(source.rglob(".tmp.reconcile.*")):
+                    injected = True; raise OSError("injected temp fsync")
+                return original_fsync(descriptor)
+            def fail_replace(src, dst, fault=fault, original_replace=original_replace, **kwargs):
+                nonlocal injected
+                if fault == "replace" and str(src).startswith(".tmp.reconcile."):
+                    injected = True; raise OSError("injected temp replace")
+                return original_replace(src, dst, **kwargs)
+            with mock.patch.object(engine, "_reconciliation_write_all", side_effect=fail_write), \
+                    mock.patch.object(os, "fsync", side_effect=fail_fsync), \
+                    mock.patch.object(os, "replace", side_effect=fail_replace):
+                try: MODULE._reconcile_stage_to_source(source, stage, operations, job)
+                except MODULE.DispatchError as exc:
+                    assert ("uncertain" if fault == "replacement" else "failed and was rolled back") in str(exc), str(exc)
+                else: raise AssertionError(f"temp {fault} failure was accepted")
+            assert injected
+            if fault == "replacement":
+                assert next(source.rglob(".tmp.reconcile.*")).read_bytes() == b"preserve"
+            else:
+                assert not list(source.iterdir()) and not list(job.iterdir())
+
+    check("failed reconciliation temps are removed only while their identity remains owned", reconciliation_temp_failure_cleanup_is_identity_safe)
+
     def deleted_nested_directories_are_restored_after_later_failure() -> None:
         """Deleting an empty child before failure cannot produce a false rollback."""
         fixture = root / "nested-directory-rollback"; fixture.mkdir()
@@ -1434,7 +1709,7 @@ def run(context: dict[str, object]) -> None:
                 MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
                 state, _state_sha = MODULE.create_state(job, "initial", resume=False)
                 persisted = json.loads((job / MODULE.STATE_NAME).read_text(encoding="utf-8"))
-                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 20, label
+                assert state["schema_version"] == persisted["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 21, label
                 assert state["worktree_snapshot_algorithm"] == MODULE.CURRENT_WORKTREE_SNAPSHOT_ALGORITHM, label
                 assert state["worktree_baseline"] is not None, label
                 assert state["worktree_root_identity"] is not None, label
@@ -2233,7 +2508,7 @@ def run(context: dict[str, object]) -> None:
         job, state, _sha, _envelope = current_candidate_fixture(
             "current-inside-worktree", inside_worktree=True,
         )
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 20
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 21
         state["continue_available"] = True
         before, sha = MODULE.write_atomic(job, MODULE.STATE_NAME, state)
         state, loaded_raw, loaded_sha = MODULE.load_state(job)
@@ -3593,7 +3868,7 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
     def current_sanitized_outer_terminal_disposition_contracts() -> None:
         """Sanitized outer terminal disposition on the current complete state."""
         job, state, state_sha, _envelope = current_candidate_fixture("current-terminal-disposition")
-        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 20
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 21
         assert state["provider_terminal_status"] == "unknown"
 
         # 1. State validation bounds on provider_terminal_status enum

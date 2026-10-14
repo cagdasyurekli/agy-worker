@@ -59,7 +59,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 150
+EXPECTED_CHECKS = 159
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -69,7 +69,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 76, "runtime": 19, "recovery": 55}
+GROUP_CHECKS = {"core": 80, "runtime": 19, "recovery": 60}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -752,6 +752,85 @@ with tempfile.TemporaryDirectory() as temporary:
         assert binding is None and outer == "SUCCESS" and stage == "missing_structured_output"
 
     check("framing and structured-output failures remain distinct", terminal_failure_stages_are_distinct)
+
+    def structured_output_short_writes_complete() -> None:
+        source = root / "short-write.ndjson"
+        stream(source, "SUCCESS", report(summary="x" * 8000))
+        original_write = MODULE.os.write
+        for progress in (7, 0, -1):
+            envelope = root / f"short-write-{progress}.json"
+            def partial_write(descriptor, payload, progress=progress):
+                return original_write(descriptor, payload[:progress]) if progress > 0 else progress
+            with mock.patch.object(MODULE.os, "write", side_effect=partial_write):
+                if progress <= 0:
+                    try:
+                        MODULE._validate_terminal_envelope(source, envelope, provider, SCHEMA)
+                    except MODULE.DispatchError as exc:
+                        assert "write failed" in str(exc)
+                    else:
+                        raise AssertionError("zero/negative write progress was accepted")
+                else:
+                    binding, outer, stage = MODULE._validate_terminal_envelope(source, envelope, provider, SCHEMA)
+                    assert binding is not None and (outer, stage) == ("SUCCESS", None)
+                    assert json.loads(envelope.read_bytes())["summary"] == "x" * 8000
+
+    check("structured output preserves short writes and rejects no progress", structured_output_short_writes_complete)
+
+    def private_reader_rejects_fifo_and_content_drift() -> None:
+        fifo = root / "private-reader.fifo"; os.mkfifo(fifo, 0o600)
+        script = (
+            "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+            "import agy_dispatch as m; m.read_regular(Path(sys.argv[2]), 1024, 'fixture')"
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-B", "-c", script, str(SOURCE.parent), str(fifo)],
+            capture_output=True, timeout=2, check=False,
+        )
+        assert result.returncode != 0 and b"regular file" in result.stderr
+        path = root / "private-reader.json"; path.write_bytes(b"abcdefgh"); path.chmod(0o600)
+        assert MODULE.read_regular(path, 8, "fixture")[0] == b"abcdefgh"
+        original_read = MODULE.os.read
+        for action in ("rewrite", "grow", "shrink", "replace", "symlink"):
+            path.unlink(); path.write_bytes(b"abcdefgh"); path.chmod(0o600)
+            changed = False
+            def drift(descriptor, count, action=action):
+                nonlocal changed
+                if not changed:
+                    changed = True
+                    if action == "rewrite": path.write_bytes(b"ABCDEFGH")
+                    elif action == "grow": path.write_bytes(b"abcdefghMORE")
+                    elif action == "shrink": path.write_bytes(b"abc")
+                    else:
+                        path.unlink()
+                        if action == "replace": path.write_bytes(b"abcdefgh"); path.chmod(0o600)
+                        else: path.symlink_to(fifo)
+                return original_read(descriptor, count)
+            with mock.patch.object(MODULE.os, "read", side_effect=drift):
+                try:
+                    MODULE.read_regular(path, 1024, "fixture")
+                except MODULE.DispatchError as exc:
+                    assert "identity changed" in str(exc), (action, str(exc))
+                else:
+                    raise AssertionError(f"reader accepted {action} during read")
+
+    check("private dispatcher reads reject FIFO and bounded content identity drift", private_reader_rejects_fifo_and_content_drift)
+
+    def standalone_preview_suppresses_bytecode_before_imports() -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary)
+            runtime = destination / "skills/agy-worker/runtime/scripts"
+            shutil.copytree(SOURCE.parent, runtime, ignore=shutil.ignore_patterns("__pycache__"))
+            scripts = destination / "scripts"; scripts.mkdir()
+            shutil.copy2(ROOT / "scripts/transmission_preview.py", scripts)
+            for entry in (scripts / "transmission_preview.py", runtime / "transmission_preview.py", runtime / "agy_dispatch_worktree.py"):
+                result = subprocess.run(
+                    [sys.executable, "-I", "-S", str(entry), "--help"],
+                    capture_output=True, timeout=10, check=False,
+                )
+                assert result.returncode == 64, result.stderr
+                assert not list(destination.rglob("*.pyc")), str(entry)
+
+    check("direct preview and worktree entries suppress repository bytecode", standalone_preview_suppresses_bytecode_before_imports)
 
     def only_two_optional_arrays_normalize() -> None:
         source = root / "critical-missing.ndjson"; envelope = root / "critical-missing.json"
@@ -5346,6 +5425,33 @@ with tempfile.TemporaryDirectory() as temporary:
         loaded, _raw, loaded_sha = MODULE.load_state(job)
         assert loaded_sha == sha
         return job, loaded, sha, envelope
+
+    def quota_contract_is_retired_from_current_records() -> None:
+        job, state, sha, _envelope = current_candidate_fixture("quota-contract")
+        assert state["schema_version"] == MODULE.CURRENT_STATE_SCHEMA == 21
+        retired = {"provider_retry_after_seconds", "provider_retry_observed_epoch"}
+        assert not retired.intersection(state)
+        assert "provider_quota_exhausted" not in MODULE.EXIT_BY_REASON
+        assert 24 not in MODULE.EXIT_BY_REASON.values()
+        assert "retry_after_seconds" not in MODULE.public_status(state, sha, job=job)
+        help_text = (ROOT / "skills/agy-worker/runtime/agy-worker.sh").read_text()
+        assert "24 quota exhausted" not in help_text
+        command_raw = (job / MODULE.COMMAND_NAME).read_bytes()
+        command = json.loads(command_raw)
+        initialized = MODULE.initial_state(
+            command, "initial", 1, command_sha=MODULE.digest(command_raw),
+            command_identity=MODULE._identity((job / MODULE.COMMAND_NAME).stat()),
+            stage_sha=None, stage_identity=None, schema_bindings=MODULE._schema_bindings(command),
+        )
+        MODULE.validate_state(initialized)
+        assert initialized["schema_version"] == 21 and not retired.intersection(initialized)
+        prior = dict(state, schema_version=20, provider_retry_after_seconds=None,
+                     provider_retry_observed_epoch=None)
+        try: MODULE.validate_state(prior)
+        except MODULE.DispatchError as exc: assert "not supported" in str(exc)
+        else: raise AssertionError("old dispatch record shape was accepted")
+
+    check("current records and public status retire unsupported quota retry contract", quota_contract_is_retired_from_current_records)
 
     def current_repository_controlled_git_fails_closed_before_guarded_commands() -> None:
         """A current root probe must never execute a worktree's ``bin/git`` wrapper."""
