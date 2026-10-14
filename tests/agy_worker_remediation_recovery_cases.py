@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 # run() receives these names from test-agy-worker-remediation.py globals.
 # These declarations are static only; the live objects still come from context.
 if TYPE_CHECKING:
+    from unittest import mock
     from types import ModuleType
     from typing import cast
     from typing import Callable, Optional
@@ -250,6 +251,68 @@ def run(context: dict[str, object]) -> None:
             MODULE.load_command(job)
 
     check("current commands reject retired feature authority and preserve prompt text", current_commands_reject_retired_feature_authority)
+
+    def current_command_rejects_unapproved_option(flag: str) -> None:
+        job, _state, _sha, _envelope = current_candidate_fixture("unapproved-" + flag.lstrip("-"))
+        original = json.loads((job / MODULE.COMMAND_NAME).read_bytes())
+        (job / MODULE.STATE_NAME).unlink()
+        spellings = ([flag, "synthetic-value"], [flag + "=synthetic-value"])
+        if flag in {"--dangerously-skip-permissions", "--continue", "-c"}:
+            spellings = ([flag], [flag + "=true"])
+        accepted = []
+        for spelling in spellings:
+            command = {**original, "argv": [original["argv"][0], *spelling, *original["argv"][1:]]}
+            assert command["launch_authority"] == original["launch_authority"]
+            assert command["approved_whole_worktree_sha256"] == original["approved_whole_worktree_sha256"]
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+            try:
+                MODULE.load_command(job)
+            except MODULE.DispatchError as exc:
+                assert str(exc) == "dispatch argv contains an unapproved execution option", exc
+                with mock.patch.object(MODULE, "_bound_stage", side_effect=AssertionError("initial binding reached")):
+                    try:
+                        MODULE.create_state(job, "initial", resume=False)
+                    except MODULE.DispatchError as initial_exc:
+                        assert str(initial_exc) == str(exc), initial_exc
+                    else:
+                        raise AssertionError("initial state accepted unapproved argv")
+                assert not (job / MODULE.STATE_NAME).exists()
+            else:
+                accepted.append(spelling)
+        assert not accepted, accepted
+        # An option-looking value is task/selector/directory text, not an option.
+        for value_option in ("--print", "--model", "--add-dir"):
+            command = {**original, "argv": list(original["argv"])}
+            if value_option in command["argv"]:
+                command["argv"][command["argv"].index(value_option) + 1] = flag
+            else:
+                command["argv"][1:1] = [value_option, flag]
+            MODULE.write_atomic(job, MODULE.COMMAND_NAME, command)
+            MODULE.load_command(job)
+
+    for unapproved_option in (
+        "--dangerously-skip-permissions", "--log-file", "--continue", "-c",
+        "--prompt-interactive", "-i",
+    ):
+        check("current commands reject unapproved option " + unapproved_option,
+              lambda flag=unapproved_option: current_command_rejects_unapproved_option(flag))
+
+    def actual_dispatch_mode_rejects_auto() -> None:
+        job, state, _sha, _envelope = current_candidate_fixture("auto-mode-authority")
+        original = json.loads((job / MODULE.COMMAND_NAME).read_bytes())
+        for spelling in (["--mode", "auto"], ["--mode=auto"]):
+            argv = list(original["argv"])
+            index = argv.index("--mode")
+            argv[index:index + 2] = spelling
+            command = {**original, "argv": argv}
+            try:
+                MODULE._confirm_launch_authority(job, command, state)
+            except MODULE.DispatchError as exc:
+                assert str(exc) == "dispatch launch mode is invalid", exc
+            else:
+                raise AssertionError("pre-spawn authority accepted auto mode")
+
+    check("actual dispatch launch authority rejects auto mode split and equals", actual_dispatch_mode_rejects_auto)
 
     def linked_preview_authorizes_v11_initial_and_prelaunch_binding() -> None:
         """The public preview digest is the exact V11 launch authorization."""

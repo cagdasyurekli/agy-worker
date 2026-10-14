@@ -225,13 +225,15 @@ Before preview, make the saved scope file owner-private with `chmod 600 "$SCOPE"
 use `umask 077` when creating it.
 
 Preview and review the exact policy, complete path/kind enumeration, selected-content
-digest, and unified transmission digest without starting a provider:
+digest, and unified transmission digest without starting a provider.
+Set `LAUNCH_APPROVAL_SHA256` to the preview's full `launch_approval_sha256`,
+after approval; do not use the content-only `transmission_sha256` subdigest.
 
 ```bash
 "$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" \
   --provider-scope "$SCOPE" --workflow task --task "$TASK"
 "$PIPELINE/workflow.sh" run --repo "$TARGET" --job-id "$JOB_ID" \
-  --provider-scope "$SCOPE" --approve-transmission-sha "$TRANSMISSION_SHA" \
+  --provider-scope "$SCOPE" --approve-transmission-sha "$LAUNCH_APPROVAL_SHA256" \
   --workflow task --task "$TASK"
 
 # Advanced direct-dispatch compatibility surface:
@@ -242,7 +244,7 @@ digest, and unified transmission digest without starting a provider:
 # After reviewing and obtaining approval for the exact launch_approval_sha256:
 printf '%s\n' "$TASK" | "$PIPELINE/agy-worker.sh" \
   --workflow task --mode accept-edits --workdir "$WT" \
-  --provider-scope "$SCOPE" --approve-transmission-sha "$TRANSMISSION_SHA" \
+  --provider-scope "$SCOPE" --approve-transmission-sha "$LAUNCH_APPROVAL_SHA256" \
   --approval-record "$STATE_DIR/scoped-preview.json" \
   > "$ENVELOPE"
 ```
@@ -422,10 +424,12 @@ remains unknown unless AGY stream JSON reports it.
 AGY decides whether a pair is supported; rejection does not trigger a different model
 or effort. A strictly recognized startup rejection ends as `model_selection_rejected`
 (exit 26); status directs the caller to check `agy models` and the `--model`/`--effort`
-pair before starting a new job. AGY 1.3.0 rejected the observed combination
-`--model gemini-3.8-flash-medium` with `--effort high` and reported a conflict between
-that model and `--effort high`. This observation does not establish how a bare model
-name with `--effort` behaves.
+pair before starting a new job. In bounded synthetic runs on AGY 1.3.5,
+`--model gemini-4-argon` was accepted both without effort and with `--effort high`.
+The stream did not reveal the thinking level selected for the bare name without effort.
+`--model gemini-4-argon-high --effort low` was rejected as a conflict;
+the workflow reported `model_selection_rejected` (exit 26). These observations do
+not establish behavior for other model/effort pairs.
 Repeated model or effort selectors, CLI/environment duplicates, and effort without a
 model fail before dispatch.
 

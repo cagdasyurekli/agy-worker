@@ -762,6 +762,11 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
             "--remote-control", "--input-format", "--project", "--new-project",
         }:
             raise DispatchError("dispatch argv contains a retired feature")
+        if option in {
+            "--dangerously-skip-permissions", "--log-file", "--continue", "-c",
+            "--prompt-interactive", "-i",
+        }:
+            raise DispatchError("dispatch argv contains an unapproved execution option")
         if "=" not in argument and option in {
             "--print", "--model", "--mode", "--json-schema", "--add-dir",
             "--conversation", "--print-timeout", "--output-format",

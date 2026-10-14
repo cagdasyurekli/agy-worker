@@ -168,6 +168,21 @@ def test_workflow_mode_defaults_and_conflicts() -> bool:
 check("workflow mode derives from intent and rejects only explicit conflicts", test_workflow_mode_defaults_and_conflicts)
 
 
+def test_workflow_rejects_auto_mode() -> bool:
+    for entrypoint in (ROOT / "workflow.sh", RUNTIME / "workflow.sh"):
+        for mode in (["--mode", "auto"], ["--mode=auto"]):
+            result = run_cmd(str(entrypoint), "run", "--repo", "/tmp/unused-repo",
+                             "--job-id", "auto-mode", "--workflow", "task", *mode,
+                             "--task", "bounded task")
+            assert result.returncode == 64, result
+            assert b"invalid choice: 'auto'" in result.stderr, result.stderr
+            assert b"Traceback" not in result.stderr
+    return True
+
+
+check("workflow entrypoints reject auto mode split and equals", test_workflow_rejects_auto_mode)
+
+
 def test_finalize_is_required_for_unreviewed_bound_candidate() -> bool:
     actions = [{"action": "result"}, {"action": "finalize"}]
     assert WORKFLOW_MODULE._next_required_workflow_action({
@@ -2074,6 +2089,26 @@ def _explicit_state(f: RepoFixture) -> dict[str, Any]:
         "preview_launch_approval_sha256": FIXTURE_APPROVAL, "preview_launch_authority": FIXTURE_AUTHORITY, "native_grant_profile": "baseline",
         "dispatch_job_dir": None, "job_state_path": None, "receipt_path": None,
     }
+
+
+def test_persisted_workflow_rejects_auto_mode() -> bool:
+    f = RepoFixture("persisted-auto-mode")
+    try:
+        state = _explicit_state(f)
+        WORKFLOW_MODULE.validate_workflow_state(state)
+        altered = {**state, "preview_launch_authority": {**FIXTURE_AUTHORITY, "mode": "auto"}}
+        try:
+            WORKFLOW_MODULE.validate_workflow_state(altered)
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert str(exc) == "workflow state launch authority is invalid", exc
+        else:
+            raise AssertionError("persisted workflow accepted auto mode")
+        return True
+    finally:
+        f.clean()
+
+
+check("persisted workflow launch authority rejects auto mode", test_persisted_workflow_rejects_auto_mode)
 
 
 def test_workflow_selection_rejection_status_is_actionable_and_read_only() -> bool:

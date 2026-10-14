@@ -59,7 +59,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 143
+EXPECTED_CHECKS = 150
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -69,7 +69,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 76, "runtime": 19, "recovery": 48}
+GROUP_CHECKS = {"core": 76, "runtime": 19, "recovery": 55}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -2602,6 +2602,10 @@ with tempfile.TemporaryDirectory() as temporary:
             ("live-invalid-1-2-11", "1.2.11", True, False, "failed", "permission_required", 6),
             ("denial-1-3-0", "1.3.0", True, True, "failed", "permission_required", 6),
             ("live-invalid-1-3-0", "1.3.0", True, False, "failed", "permission_required", 6),
+            # Synthetic C1/C5-shaped fixtures: compatibility pins, not live runs.
+            ("ordinary-1-3-5", "1.3.5", False, True, "succeeded", None, 0),
+            ("denial-1-3-5", "1.3.5", True, True, "failed", "permission_required", 6),
+            ("c5-shaped-1-3-5", "1.3.5", True, False, "failed", "permission_required", 6),
             ("unreviewed-intermediate", "arbitrary-build", True, True, "failed", "permission_required", 6),
             ("prior-version", "1.1.26", True, True, "failed", "permission_required", 6),
             # The live 1.2.2 denial emitted this top-level key but no structured
@@ -2623,22 +2627,29 @@ with tempfile.TemporaryDirectory() as temporary:
                     report(summary=f"denied-actions-{label}") if valid_candidate else None
                 ),
             }
+            if label == "c5-shaped-1-3-5":
+                terminal.pop("structured_output")
+                terminal.update(response="", num_turns=1)
             if include_denial:
                 # Presence only: the provider's undocumented payload shape is
                 # never parsed or persisted by the controller.
                 terminal["denied_actions"] = (
                     [{"action": "command", "display_name": "RunCommand"}]
-                    if version in {"1.2.2", "1.2.6", "1.2.11", "1.3.0"} else None
+                    if version in {"1.2.2", "1.2.6", "1.2.11", "1.3.0", "1.3.5"} else None
                 )
             events = [
                 {"event": "init", "init": {}, "conversation_id": "conversation-1"},
                 {"event": "result", "result": terminal},
             ]
             fake = bin_dir / "agy"
+            stderr = (
+                '[agy] a tool required the "command" permission that headless mode cannot prompt for, '
+                'so it was auto-denied.\n' if label == "c5-shaped-1-3-5" else ""
+            )
             fake.write_text(
                 "#!/bin/sh\nprintf '%s\\n' " + " ".join(
                     shlex.quote(json.dumps(event)) for event in events
-                ) + "\n",
+                ) + "\nprintf '%s' " + shlex.quote(stderr) + " >&2\n",
                 encoding="utf-8",
             ); fake.chmod(0o755)
             command = current_command_fixture({
@@ -3496,6 +3507,10 @@ with tempfile.TemporaryDirectory() as temporary:
             # Supplemental valid-candidate coverage; C3 emitted no report.
             ("partial-1-3-0", "1.3.0", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
             ("exact-1-3-0", "1.3.0", True, False, timeout_1s, None, "invalid_envelope", 4, False),
+            # Timeout shapes are synthetic; T1 did not observe a 1.3.5 timeout.
+            ("normal-1-3-5", "1.3.5", True, False, b"", report(summary="complete"), None, 0, True),
+            ("partial-1-3-5", "1.3.5", True, False, timeout_line, report(summary="partial"), "provider_timeout", 17, True),
+            ("empty-1-3-5", "1.3.5", True, False, b"", None, "invalid_envelope", 4, False),
             ("near-miss-1-2-7", "1.2.7", True, False, timeout_line + b".", report(summary="complete"), None, 0, True),
             ("unobserved-version-1-2-7", "1.2.7", False, False, timeout_line, report(summary="complete"), "provider_timeout", 17, True),
             ("invalid-envelope-1-2-7", "1.2.7", True, False, timeout_line, None, "invalid_envelope", 4, False),

@@ -251,10 +251,10 @@ capability checks do not certify a model catalog, authentication, backend identi
 cost, availability, or quality. No selector leaves AGY's default unchanged. See
 [model and effort selection](USAGE.md#model-and-effort-selection).
 
-Bounded synthetic live runs exercised AGY **1.3.0** from Claude Code, including a
-headless denial, print timeout, and rejected model/effort combination. Smoke runs of
-the installed v0.24.3 plugin exercised AGY **1.3.2** from both Claude Code and Codex:
-one scoped task dispatch per host, accepted by the driver gate after independent
+Bounded synthetic live runs with the installed v0.24.3 plugin exercised AGY **1.3.5**
+from Claude Code, including scoped explore/task dispatches and a rejected model/effort
+combination. The Codex-host live smoke used the installed v0.24.3 plugin with AGY
+**1.3.2**: one scoped task dispatch, accepted by the driver gate after independent
 verification. These observations are informational;
 they do not gate launches or qualify future versions, authentication or task quality.
 
