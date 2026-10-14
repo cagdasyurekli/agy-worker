@@ -85,6 +85,56 @@ def authority_module():
 
 
 class LaunchAuthorityTests(unittest.TestCase):
+    def test_selection_entrypoints_reject_auto_mode_before_effects(self) -> None:
+        # Selection has no mode input; ambiguous model prefixes fail before probing AGY.
+        for selector in (ROOT / "model-selection.sh", WORKER.with_name("model-selection.sh")):
+            for arguments in (["--mode", "auto"], ["--mode=auto"]):
+                with self.subTest(selector=selector, arguments=arguments):
+                    result = subprocess.run([str(selector), *arguments], input=b"",
+                        env=self.environment, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 64, result.stderr)
+                    self.assertIn(b"ambiguous option", result.stderr)
+                    self.assertFalse(self.called.exists())
+
+    def test_worker_entrypoints_reject_auto_mode_before_effects(self) -> None:
+        for worker in (ROOT / "agy-worker.sh", WORKER):
+            for arguments in (["--mode", "auto"], ["--mode=auto"]):
+                with self.subTest(worker=worker, arguments=arguments):
+                    result = subprocess.run([str(worker), *arguments, "--task", "bounded task"],
+                        input=b"", env=self.environment, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 64, result.stderr)
+                    self.assertFalse(self.called.exists())
+                    self.assertEqual(list(self.logs.iterdir()), [])
+
+    def test_preview_entrypoints_reject_auto_mode_before_effects(self) -> None:
+        for worker in (ROOT / "agy-worker.sh", WORKER):
+            for arguments in (["--mode", "auto"], ["--mode=auto"]):
+                with self.subTest(worker=worker, arguments=arguments):
+                    result = subprocess.run([str(worker), "transmission-preview", *self.common,
+                                             *arguments], input=b"bounded task",
+                        env=self.environment, capture_output=True, timeout=15)
+                    self.assertEqual(result.returncode, 64, result.stderr)
+                    self.assertIn(b"invalid choice: 'auto'", result.stderr)
+                    self.assertFalse(self.called.exists())
+                    self.assertEqual(list(self.logs.iterdir()), [])
+
+    def test_prompt_render_rejects_auto_mode(self) -> None:
+        module = authority_module()
+        with self.assertRaisesRegex(module.LaunchAuthorityError, "mode is invalid"):
+            module.full_prompt(b"bounded task", mode="auto", provider_isolation="session")
+        result = subprocess.run([sys.executable, "-I", "-S", "-B",
+            str(WORKER.with_name("scripts") / "launch_authority.py"), "render", "auto", "session", ""],
+            input=b"bounded task", capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 64, result.stderr)
+        self.assertEqual(result.stdout, b"")
+
+    def test_launch_authority_record_rejects_auto_mode(self) -> None:
+        _raw, preview = self.preview()
+        authority = {**preview["launch_authority"], "mode": "auto"}
+        module = authority_module()
+        with self.assertRaisesRegex(module.LaunchAuthorityError, "workflow is invalid"):
+            module.approval_sha256(authority)
+
     def test_worker_prompt_preserves_applicable_policy(self) -> None:
         module = authority_module()
         for mode in ("plan", "accept-edits"):

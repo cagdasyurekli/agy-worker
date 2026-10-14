@@ -86,6 +86,12 @@ jobs with their creating release; see
 Default `--provider-isolation session` retains the caller's existing HOME/session
 and normal filesystem/network authority. Environment filtering and selected staging
 cannot prevent or exhaustively observe host access.
+A scoped session run on AGY 1.3.5 offered MCP, plugin, browser and web tools in its
+initialization stream. Tool availability does not establish execution; installed-plugin
+hooks and repository configuration auto-loading were not tested. The controller supplies
+no plugin, hook or MCP suppression policy; disabling slash commands does not provide
+that isolation.
+
 For each attempt, the controller derives the owning main worktree from the bound
 workdir's Git common directory and compares a bounded source observation against
 one immutable baseline per job, before later launches and before admitting a report

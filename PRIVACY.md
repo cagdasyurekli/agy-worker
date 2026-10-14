@@ -34,6 +34,10 @@ reconciliation do not enforce a host read/write boundary. Disclose this mode in 
 initial approval alongside the task and selected content; the job cannot silently
 switch modes later.
 
+Session mode supplies no plugin, hook or MCP suppression policy. See the observed
+[session tool exposure](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#session-and-native-modes)
+before approving a launch.
+
 Explicit `--provider-isolation native` requires supported macOS scoped containment
 with private HOME/TMP and never falls back to session mode. In native mode, the bound agy image receives non-local TCP
 443, DNS through the local resolver socket, local TCP listener permissions, and
