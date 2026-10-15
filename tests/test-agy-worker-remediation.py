@@ -59,7 +59,7 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
-EXPECTED_CHECKS = 159
+EXPECTED_CHECKS = 160
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -69,7 +69,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 80, "runtime": 19, "recovery": 60}
+GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 60}
 
 
 def selected_group(arguments: list[str]) -> str | None:
@@ -6107,7 +6107,7 @@ with tempfile.TemporaryDirectory() as temporary:
             context = ast.get_source_segment(source, context_node)
             assert context is not None
             assert "_bound_git_worktree_root(top_level, root, root_binding)" in boundary
-            assert "_bound_git_worktree_root(top_level[1], self.root, self.root_binding)" in context
+            assert "_bound_git_worktree_root(top_level, self.root, self.root_binding)" in context
             assert "if not context.bound_worktree():" in worktree_function_source("_snapshot_bind_git")
             assert "or not context.bound_worktree()" in snapshot
 
@@ -6433,11 +6433,11 @@ with tempfile.TemporaryDirectory() as temporary:
             os.environ["PATH"] = previous_path
             MODULE.WORKTREE._bounded_git_read = original_reader
         commands = log.read_text(encoding="utf-8").splitlines()
-        # A committed empty repository used to make 83 bounded subprocesses:
+        # A committed repository used to make 83 bounded subprocesses:
         # 25 enumerations each repeated two root facts.  The pinned context
         # must remain well below that deterministic baseline without caching a
         # snapshot across lifecycle phases.
-        assert len(calls) <= 40, len(calls)
+        assert len(calls) <= 30, len(calls)
         expected_root = os.path.realpath(repo)
         expected_git_dir = os.path.join(expected_root, ".git")
         enumerations = [
@@ -6451,14 +6451,14 @@ with tempfile.TemporaryDirectory() as temporary:
 
         def bare_root_fact(arguments: tuple[str, ...]) -> bool:
             return arguments in {
-                ("rev-parse", "--is-inside-work-tree"),
-                ("rev-parse", "--show-toplevel"),
+                ("rev-parse", "--is-inside-work-tree", "--show-toplevel"),
             }
 
         bare_root_calls = [arguments for arguments, git_directory in calls if git_directory is None and bare_root_fact(arguments)]
-        assert len(bare_root_calls) == 4, bare_root_calls
-        assert sum(arguments == ("rev-parse", "--is-inside-work-tree") for arguments in bare_root_calls) == 2
-        assert sum(arguments == ("rev-parse", "--show-toplevel") for arguments in bare_root_calls) == 2
+        assert len(bare_root_calls) == 2, bare_root_calls
+        root_pair = ("rev-parse", "--is-inside-work-tree", "--show-toplevel")
+        assert calls[0] == (root_pair, None) and calls[-1] == (root_pair, None), calls
+        assert sum(arguments == ("rev-parse", "--show-object-format", "--absolute-git-dir") for arguments, _boundary in calls) == 1
 
         for command in commands:
             parts = shlex.split(command)
@@ -6468,6 +6468,141 @@ with tempfile.TemporaryDirectory() as temporary:
             assert f"--work-tree={expected_root}" in parts, command
 
     check("snapshot pins Git context while retaining initial/final root checks", snapshot_git_context_is_pinned_and_avoids_redundant_root_probes)
+
+    def paired_snapshot_metadata_preserves_framing_budgets_and_binding_order() -> None:
+        root_pair = ("rev-parse", "--is-inside-work-tree", "--show-toplevel")
+        metadata_pair = ("rev-parse", "--show-object-format", "--absolute-git-dir")
+        for pair in (root_pair, metadata_pair):
+            assert MODULE.WORKTREE._fixed_git_read_argv(list(pair))
+            assert not MODULE.WORKTREE._fixed_git_read_argv([pair[0], pair[2], pair[1]])
+
+        repo = (root / "paired-metadata\r-repo").resolve(); repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "untracked.txt").write_text("content\n", encoding="utf-8")
+        # Exercise actual Git framing for unborn SHA-1/SHA-256 and linked roots;
+        # the committed-HEAD fixture above covers the 30-read path.
+        sha256_repo = root / "paired-metadata-sha256"; sha256_repo.mkdir()
+        subprocess.run(["git", "init", "-q", "--object-format=sha256", str(sha256_repo)], check=True)
+        linked = root / "paired-metadata-linked"
+        initialize_linked_fixture(linked)
+        for fixture in (repo, sha256_repo, linked):
+            assert MODULE._worktree_snapshot(str(fixture)) is not None, fixture
+
+        original_reader = MODULE.WORKTREE._bounded_git_read
+        root_frame = b"true\n" + os.fsencode(repo) + b"\n"
+        metadata_frame = b"sha1\n" + os.fsencode(repo / ".git") + b"\n"
+        outside = root / "paired-metadata-outside"; outside.mkdir()
+        malformed_roots = (
+            None, b"", b"true", b"true\n", root_frame[:-1], root_frame + b"\n",
+            b"false\n" + os.fsencode(repo) + b"\n",
+            b"true\n\xff\n", b"true\nrelative\n", b"true\n/tmp/has\0nul\n",
+            b"true\n" + os.fsencode(outside) + b"\n",
+            b"true\n" + os.fsencode(repo) + b"/../" + os.fsencode(repo.name) + b"\n",
+            os.fsencode(repo) + b"\ntrue\n",
+        )
+        malformed_metadata = (
+            None, b"", b"sha1", b"sha1\n", metadata_frame[:-1], metadata_frame + b"\n",
+            b"unknown\n" + os.fsencode(repo / ".git") + b"\n",
+            b"sha1\n/tmp/has\0nul\n", os.fsencode(repo / ".git") + b"\nsha1\n",
+        )
+        for target, frames in ((root_pair, malformed_roots), (metadata_pair, malformed_metadata)):
+            # A malformed final root must reject too, after the unchanged content
+            # observations have run; initial failures must precede enumeration.
+            for occurrence in ((1, 2) if target == root_pair else (1,)):
+                for frame in frames:
+                    calls = []
+                    seen = 0
+
+                    def malformed_reader(
+                        *args, calls=calls, target=target, occurrence=occurrence, frame=frame, **kwargs,
+                    ):
+                        nonlocal seen
+                        arguments = tuple(args[3]); calls.append(arguments)
+                        if arguments == target:
+                            seen += 1
+                            if seen == occurrence:
+                                return None if frame is None else (0, frame)
+                        return original_reader(*args, **kwargs)
+
+                    with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", malformed_reader):
+                        assert MODULE._worktree_snapshot(str(repo)) is None, (target, occurrence, frame)
+                    assert seen == occurrence, (target, occurrence, frame, calls)
+                    if occurrence == 1:
+                        assert not any(call[0] in {"config", "ls-files", "ls-tree", "cat-file"} for call in calls), calls
+
+        observations = []
+        original_directory = MODULE.WORKTREE._snapshot_directory_boundary
+        original_index = MODULE.WORKTREE._snapshot_index_binding
+
+        def observe_reader(*args, **kwargs):
+            observations.append(("read", tuple(args[3])))
+            return original_reader(*args, **kwargs)
+
+        def observe_directory(path):
+            observations.append(("directory", path))
+            return original_directory(path)
+
+        def observe_index(path):
+            observations.append(("index", path))
+            return original_index(path)
+
+        with (
+            mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", observe_reader),
+            mock.patch.object(MODULE.WORKTREE, "_snapshot_directory_boundary", observe_directory),
+            mock.patch.object(MODULE.WORKTREE, "_snapshot_index_binding", observe_index),
+        ):
+            paired_snapshot = MODULE._worktree_snapshot(str(repo))
+        assert paired_snapshot is not None
+        assert observations[:7] == [
+            ("read", root_pair), ("read", metadata_pair),
+            ("directory", str(repo / ".git")),
+            ("read", ("rev-parse", "--git-path", "index")),
+            ("index", str(repo / ".git/index")),
+            ("read", ("rev-parse", "--git-common-dir")),
+            ("directory", str(repo / ".git")),
+        ], observations[:7]
+
+        def singleton_reader(*args, **kwargs):
+            arguments = tuple(args[3])
+            if arguments not in {root_pair, metadata_pair}:
+                return original_reader(*args, **kwargs)
+            outputs = []
+            remaining = kwargs["stdout_limit"]
+            for option in arguments[1:]:
+                completed = original_reader(*args[:3], ["rev-parse", option], **{**kwargs, "stdout_limit": remaining})
+                assert completed is not None
+                outputs.append(completed[1]); remaining -= len(completed[1])
+            return 0, b"".join(outputs)
+
+        with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", singleton_reader):
+            assert MODULE._worktree_snapshot(str(repo)) == paired_snapshot
+
+        safe_git = MODULE._safe_git_executable(); assert safe_git is not None
+        descriptor = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            def context():
+                return MODULE.WORKTREE._SnapshotGitContext(
+                    descriptor, str(repo), MODULE.WORKTREE._full_stat_binding(os.fstat(descriptor)),
+                    time.monotonic() + 10, *safe_git,
+                )
+
+            exact = context()
+            exact.total = MODULE.MAX_STREAM_BYTES - len(root_frame) - len(metadata_frame)
+            assert exact.bound_worktree()
+            assert exact.read(list(metadata_pair)) == (0, metadata_frame)
+            assert exact.total == MODULE.MAX_STREAM_BYTES
+            assert exact.read(list(metadata_pair)) is None
+            assert exact.total == MODULE.MAX_STREAM_BYTES
+            for available in (len(root_frame) - 1, len(root_frame) + len(metadata_frame) - 1):
+                limited = context(); limited.total = MODULE.MAX_STREAM_BYTES - available
+                with mock.patch.object(MODULE.WORKTREE, "_bounded_git_read", observe_reader):
+                    observations.clear()
+                    assert MODULE.WORKTREE._snapshot_bind_git(limited, explain_unsupported=False) is None
+                assert all(value in {root_pair, metadata_pair} for kind, value in observations if kind == "read"), observations
+        finally:
+            os.close(descriptor)
+
+    check("paired snapshot metadata preserves framing budgets and filesystem binding order", paired_snapshot_metadata_preserves_framing_budgets_and_binding_order)
 
     def whole_repair_prompt_uses_one_immutable_base() -> None:
         origin = root / "whole-base-origin"; origin.mkdir()

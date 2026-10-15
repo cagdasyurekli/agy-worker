@@ -1750,9 +1750,12 @@ print(phase, "FIFO rejected and preserved")
             aliases: set[tuple[str, ...]] = set()
             def var_alias_reader(*args, **kwargs):
                 result = direct_reader(*args, **kwargs)
-                if result is not None and result[1].startswith(b"/private/var/"):
+                if result is not None and any(field.startswith(b"/private/var/") for field in result[1].split(b"\n")):
                     aliases.add(tuple(args[3]))
-                    return result[0], b"/var/" + result[1][len(b"/private/var/"):]
+                    return result[0], b"\n".join(
+                        b"/var/" + field[len(b"/private/var/"):] if field.startswith(b"/private/var/") else field
+                        for field in result[1].split(b"\n")
+                    )
                 return result
 
             for label, worktree in (("standard", source_repo), ("linked", linked)):
@@ -1764,6 +1767,8 @@ print(phase, "FIFO rejected and preserved")
             # possible or required on that canonical root.
             if str(source_repo.resolve(strict=True)).startswith("/private/var/"):
                 assert {("rev-parse", "--show-toplevel"), ("rev-parse", "--absolute-git-dir")} <= aliases
+                assert {("rev-parse", "--is-inside-work-tree", "--show-toplevel"),
+                        ("rev-parse", "--show-object-format", "--absolute-git-dir")} <= aliases
                 assert ("rev-parse", "--git-common-dir") in aliases
             else:
                 assert not aliases
@@ -1773,7 +1778,18 @@ print(phase, "FIFO rejected and preserved")
             def replaced_reader(arguments, replacement):
                 def reader(*args, **kwargs):
                     result = direct_reader(*args, **kwargs)
-                    return (result[0], replacement) if result is not None and tuple(args[3]) == arguments else result
+                    if result is not None:
+                        if tuple(args[3]) == arguments:
+                            return result[0], replacement
+                        paired_arguments = {
+                            ("rev-parse", "--show-toplevel"): ("rev-parse", "--is-inside-work-tree", "--show-toplevel"),
+                            ("rev-parse", "--absolute-git-dir"): ("rev-parse", "--show-object-format", "--absolute-git-dir"),
+                        }.get(arguments)
+                        if tuple(args[3]) == paired_arguments:
+                            first, separator, _path = result[1].partition(b"\n")
+                            assert separator
+                            return result[0], first + separator + replacement
+                    return result
                 return reader
 
             for worktree, arguments, replacement in (
