@@ -220,8 +220,6 @@ CURRENT_STATE_FIELDS = {
     'progress_count',
     'project_boundary',
     'provider_isolation',
-    'provider_retry_after_seconds',
-    'provider_retry_observed_epoch',
     'provider_schema_identity',
     'provider_schema_sha256',
     'provider_scope_identity',
@@ -277,7 +275,7 @@ CURRENT_STATE_FIELDS = {
     'worktree_snapshot_algorithm',
 }
 PUBLIC_LAUNCHER = '"$PIPELINE/agy-worker.sh"'
-CURRENT_STATE_SCHEMA = 20
+CURRENT_STATE_SCHEMA = 21
 CURRENT_COMMAND_SCHEMA = 16
 LAST_DOCUMENTED_LEGACY_SCHEMA_RELEASE = "v0.22.0"
 WORKTREE_SNAPSHOT_SEMANTIC_V1 = "semantic-v1"
@@ -302,7 +300,7 @@ REASONS = {
     "authentication_failed", "provider_unavailable", "status_unavailable",
     "resume_failed", "cancelled", "agy_failed_unclassified",
     "permission_required", "empty_output", "invalid_envelope",
-    "output_oversized", "interrupted", "provider_quota_exhausted",
+    "output_oversized", "interrupted",
     "provider_terminal_error", "provider_terminal_cancelled",
     "selection_preflight_failed", "model_selection_rejected", "resolve_undo_present",
     "native_host_sandbox_unavailable",
@@ -322,7 +320,6 @@ EXIT_BY_REASON = {
     "resume_failed": 21,
     "cancelled": 22,
     "output_oversized": 23,
-    "provider_quota_exhausted": 24,
     "provider_terminal_error": 25,
     "selection_preflight_failed": 26,
     "model_selection_rejected": 26,
@@ -347,8 +344,6 @@ SOURCE_GUARD_MESSAGES = {
         "or use a smaller dedicated source checkout, then start a new job."
     ),
 }
-
-MAX_PROVIDER_RETRY_SECONDS = 30 * 24 * 3600
 
 
 class SourceGuardError(DispatchError):
@@ -500,7 +495,10 @@ def read_regular(
     path: Path, maximum: int, label: str, *, allowed_modes: tuple[int, ...] = (0o600,),
 ) -> tuple[bytes, os.stat_result]:
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        initial = path.lstat()
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
     except OSError as exc:
         raise DispatchError(f"{label} is unavailable") from exc
     try:
@@ -512,16 +510,20 @@ def read_regular(
             or info.st_nlink != 1
         ):
             raise DispatchError(f"{label} must be one owner-private regular file")
+        if WORKTREE._manifest_binding(initial) != WORKTREE._manifest_binding(info):
+            raise DispatchError(f"{label} identity changed")
+        if info.st_size > maximum:
+            raise DispatchError(f"{label} is oversized")
         chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(descriptor, min(65536, maximum + 1 - total))
+        remaining = info.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
             if not chunk:
-                break
+                raise DispatchError(f"{label} identity changed")
             chunks.append(chunk)
-            total += len(chunk)
-            if total > maximum:
-                raise DispatchError(f"{label} is oversized")
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise DispatchError(f"{label} identity changed")
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
@@ -529,7 +531,9 @@ def read_regular(
         named = path.lstat()
     except OSError as exc:
         raise DispatchError(f"{label} identity changed") from exc
-    if _identity(info) != _identity(after) or _identity(after) != _identity(named):
+    if WORKTREE._manifest_binding(info) != WORKTREE._manifest_binding(after) or (
+        WORKTREE._manifest_binding(after) != WORKTREE._manifest_binding(named)
+    ):
         raise DispatchError(f"{label} identity changed")
     return b"".join(chunks), named
 
@@ -1036,8 +1040,6 @@ class DispatchState(TypedDict):
     last_success_sha256: str | None
     last_success_identity: list[int] | None
     project_boundary: ProjectBoundary | None
-    provider_retry_after_seconds: int | None
-    provider_retry_observed_epoch: float | None
     candidate_recognized: bool
     candidate_source: str
     result_available: bool
@@ -1563,18 +1565,6 @@ def _validate_attempt_state(value: Mapping[str, Any]) -> None:
     _validate_fields(value, dict.fromkeys(('progress_count', 'notice_count'), _validate_counter))
     _validate_fields(value, dict.fromkeys(('created_epoch', 'updated_epoch', 'elapsed_seconds', 'hard_seconds', 'max_seconds', 'idle_seconds', 'attempt_base_elapsed'), _validate_time))
     _validate_fields(value, dict.fromkeys(('started_epoch', 'finished_epoch', 'last_progress_epoch'), _validate_optional_time))
-    retry_after = value["provider_retry_after_seconds"]
-    retry_observed = value["provider_retry_observed_epoch"]
-    if (retry_after is None) != (retry_observed is None):
-        raise DispatchError("dispatch provider retry binding is incomplete")
-    if retry_after is not None and (
-        type(retry_after) is not int or not (1 <= retry_after <= MAX_PROVIDER_RETRY_SECONDS)
-        or type(retry_observed) not in (int, float)
-        or not math.isfinite(retry_observed) or retry_observed < 0
-    ):
-        raise DispatchError("dispatch provider retry binding is invalid")
-    if value["reason"] != "provider_quota_exhausted" and retry_after is not None:
-        raise DispatchError("dispatch provider retry reason is inconsistent")
     _validate_fields(value, dict.fromkeys(('exit_code', 'controller_pid', 'agy_returncode'), _validate_optional_integer))
     _validate_fields(value, dict.fromkeys(('workdir', 'result_path', 'stream_path', 'stderr_path', 'verification_path', 'last_success_path'), _validate_optional_path))
     if value["limit_kind"] not in {None, "idle", "hard", "max-runtime"}:
@@ -1627,7 +1617,6 @@ def _source_guard_veto(value: Mapping[str, Any]) -> dict[str, Any]:
         "next_action": "none", "next_action_command": None,
         "worktree_reconciliation": "unavailable", "worktree_changes_present": None,
         "worktree_changed_since_dispatch": None, "limit_kind": None,
-        "provider_retry_after_seconds": None, "provider_retry_observed_epoch": None,
         "check_summary": None, "check_counts": dict.fromkeys(("passed", "failed", "advisory", "missing"), 0),
         "self_verification_started_epoch": None, "self_verification_return_phase": None,
         **dict.fromkeys((
@@ -2022,8 +2011,6 @@ def initial_state(
             else WORKTREE._project_boundary(command["workdir"]) if workflow == "project"
             else None
         ),
-        "provider_retry_after_seconds": None,
-        "provider_retry_observed_epoch": None,
         "candidate_recognized": False,
         "candidate_source": "none",
         "result_available": False,
@@ -2655,15 +2642,6 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
     last_age = None
     if value["last_progress_epoch"] is not None:
         last_age = max(0.0, now - value["last_progress_epoch"])
-    retry_remaining = None
-    if value["provider_retry_after_seconds"] is not None:
-        retry_remaining = max(
-            0,
-            int(math.ceil(
-                value["provider_retry_after_seconds"]
-                - max(0.0, now - value["provider_retry_observed_epoch"])
-            )),
-        )
     candidate_bound: bool | None = None
     lifecycle_mutation_bound: bool | None = None
     provider_launch_bound: bool | None = None
@@ -2791,7 +2769,6 @@ def public_status(value: Mapping[str, Any], sha: str, *, job: Path | None = None
             if value["reason"] == "model_selection_rejected"
             else SOURCE_GUARD_MESSAGES.get(detected_source_reason or value["reason"])
         ),
-        "retry_after_seconds": retry_remaining,
         "remote_cancel_unverified": value["remote_cancel_unverified"],
         "resume_available": "resume" in action_names,
         "continue_available": public_continue_available,
@@ -4666,7 +4643,12 @@ def _validate_terminal_envelope(
         return None, outer_status, "schema_rejection"
     descriptor = _ensure_new_private(envelope)
     try:
-        os.write(descriptor, raw)
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise DispatchError("structured output write failed")
+            view = view[written:]
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
@@ -4763,8 +4745,6 @@ class _ControllerOutcome:
     provisional_orphan_result: bool = False
     result_binding: tuple[str, tuple[int, int, int, int, int]] | None = None
     outer_status: str | None = None
-    provider_retry_after: int | None = None
-    provider_retry_observed: float | None = None
     source_guard_failed: bool = False
     boundary_failed: bool = False
     cleanup_failed: bool = False
@@ -5717,8 +5697,6 @@ def _observe_controller_terminal(
         outcome.failure_stage = "binding_failure"
     outcome.result_binding = None
     outcome.outer_status = None
-    outcome.provider_retry_after = None
-    outcome.provider_retry_observed = None
     if outcome.provisional_orphan_result and outcome.reason in {
         None, "idle_timeout", "hard_deadline_exceeded",
     }:
@@ -6031,9 +6009,6 @@ def _classify_controller_candidate(
         outcome.result_path = None
         outcome.result_binding = None
         outcome.failure_stage = None
-    if outcome.reason != "provider_quota_exhausted":
-        outcome.provider_retry_after = None
-        outcome.provider_retry_observed = None
     prior_candidate_exists = bool(
         current["attempt_origin"] == "conversation-continue"
         and current["candidate_recognized"]
@@ -6226,8 +6201,6 @@ def _controller_terminal_updates(
         "continue_available": False,
         "remote_cancel_unverified": outcome.reason in {"cancelled", "interrupted"},
         "limit_kind": outcome.limit_kind,
-        "provider_retry_after_seconds": outcome.provider_retry_after,
-        "provider_retry_observed_epoch": outcome.provider_retry_observed,
         **repair_lineage_updates,
     }
     if current.get("provider_scope_path") is not None:

@@ -4,7 +4,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
-TMP="$(mktemp -d -t agyworker-update-tests.XXXXXX)"
+TMP="$(mktemp -d -t agyworker-update-tests.XXXXXX)" || { echo "temporary directory creation failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
 REAL_PYTHON_REAL="$(command -v python3)"

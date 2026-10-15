@@ -93,7 +93,7 @@ Applying is a separate state transition:
 `apply` refuses a dirty or detached checkout, accepts only stable release tags from
 the expected GitHub origin, verifies that the fetched tag resolves to the exact
 remote commit and is a fast-forward, and runs Bash syntax, a temporary skill-install
-preflight, and every offline suite in a disposable candidate worktree. It refuses an
+preflight, and every offline shell suite in a disposable candidate worktree. It refuses an
 update that would begin tracking and overwrite an ignored local file. Candidate
 failure leaves the checkout unchanged.
 
@@ -169,9 +169,9 @@ ordinary explicit `refresh`; there is no automatic old-format migration or clean
 
 ## Render bounded evidence in automation
 
-Evidence Receipt v1 creation, validation, report commands, GitHub Step Summary
+Evidence receipt creation, validation, report commands, GitHub Step Summary
 redirection, privacy limits, and the process-owning file-output boundary have one
-authoritative owner: [Project workflow](PROJECT_WORKFLOW.md#preserve-a-local-evidence-receipt-v1).
+authoritative owner: [Project workflow](PROJECT_WORKFLOW.md#preserve-a-local-evidence-receipt).
 Use that reviewed recipe in automation; this operations guide does not maintain a
 second copy.
 

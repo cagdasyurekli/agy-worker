@@ -192,13 +192,16 @@ def test_preflight_and_provider_failures_never_silent_fallback() -> bool:
     assert res_pref["direct_codex_authorized"] is False
     assert res_pref["silent_fallback_authorized"] is False
 
-    # Provider quota exhausted
+    # A retired provider classification must not remain an accepted input.
     inp_quota = valid_input("delegation-first")
     inp_quota["provider_state"] = "quota_exhausted"
-    res_quota = MODULE.evaluate_policy(inp_quota)
-    assert res_quota["decision"] == "blocked"
-    assert res_quota["reason_code"] == "provider-quota-exhausted"
-    assert res_quota["direct_codex_authorized"] is False
+    try:
+        MODULE.evaluate_policy(inp_quota)
+    except MODULE.DelegationPolicyError as exc:
+        assert "invalid provider_state" in str(exc)
+    else:
+        raise AssertionError("retired quota input was accepted")
+    assert "provider-quota-exhausted" not in json.loads(SCHEMA_PATH.read_text())["properties"]["reason_code"]["enum"]
 
     # Provider unavailable
     for st in ("unavailable", "rate_limited", "unverified"):

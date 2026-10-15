@@ -183,6 +183,20 @@ def test_workflow_rejects_auto_mode() -> bool:
 check("workflow entrypoints reject auto mode split and equals", test_workflow_rejects_auto_mode)
 
 
+def test_retired_quota_reason_is_unclassified() -> bool:
+    # A hand-built projection is not a supported current dispatcher record.
+    # The facade must not revive a removed provider/policy contract from it.
+    projection = WORKFLOW_MODULE._delegation_from_dispatch({
+        "state_sha256": "a" * 64, "status": "failed", "reason": "provider_quota_exhausted",
+        "workflow": "task", "attempt": 1, "max_cycles": 2,
+    }, approval_bound=True)
+    return projection == {"policy": "delegation-first", "state": "pending",
+                          "reason": "dispatch-outcome-unclassified"}
+
+
+check("workflow does not revive retired quota policy mapping", test_retired_quota_reason_is_unclassified)
+
+
 def test_finalize_is_required_for_unreviewed_bound_candidate() -> bool:
     actions = [{"action": "result"}, {"action": "finalize"}]
     assert WORKFLOW_MODULE._next_required_workflow_action({
@@ -237,6 +251,34 @@ def test_public_workflow_status_shows_required_finalize() -> bool:
                     assert json.loads(output)["next_required_action"] == "verify-finalize"
                 else:
                     assert "next-required-action=verify-finalize" in output
+            for receipt_case in ("missing", "malformed", "rejected", "routed", "replaced", "symlink"):
+                receipt = Path(directory) / "recorded-receipt.json"
+                if receipt.exists() or receipt.is_symlink():
+                    receipt.unlink()
+                if receipt_case != "missing":
+                    receipt.write_bytes(b"not json" if receipt_case == "malformed" else
+                                        json.dumps({"verdict": "routed" if receipt_case == "routed" else "rejected",
+                                                    "gate_exit": 15 if receipt_case == "routed" else 10}).encode())
+                    receipt.chmod(0o600)
+                if receipt_case == "replaced":
+                    receipt.unlink(); receipt.write_bytes(b"{}"); receipt.chmod(0o600)
+                if receipt_case == "symlink":
+                    target = Path(directory) / "outside-receipt"
+                    target.write_bytes(b"preserve")
+                    receipt.unlink(); receipt.symlink_to(target)
+                state["receipt_path"] = str(receipt)
+                state_before = dict(state)
+                captured = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+                with mock.patch.object(WORKFLOW_MODULE.sys, "stdout", captured):
+                    assert WORKFLOW_MODULE._workflow_status(
+                        WORKFLOW_MODULE.argparse.Namespace(state=str(Path(directory) / "workflow.json"), format="json")) == 0
+                    captured.flush()
+                status = json.loads(captured.buffer.getvalue())
+                assert status["next_required_action"] is None
+                assert "new receipt path" in status["advanced_recovery"]
+                assert "unavailable" in status["advanced_recovery"]
+                assert status["available_actions"] == facts["available_actions"]
+                assert state == state_before
     return True
 
 
@@ -1920,7 +1962,7 @@ def test_verify_finalize_gate_and_dispatch_approval_boundaries() -> bool:
             "def bound_provider_execution(job,value):\n"
             " return {'legacy':False,'scope':'whole-worktree','agy_sandbox':False,'native_containment':False}\n"
             "def public_status(value,sha,job=None):\n"
-            " execution=bound_provider_execution(job,value); return {'job_id':value['job_id'],'phase':'awaiting-verification','controller_phase':'awaiting-verification','state_sha256':sha,'available_actions':[],'provider_isolation':value['provider_isolation'],'provider_execution':execution}\n",
+            " execution=bound_provider_execution(job,value); return {'job_id':value['job_id'],'phase':'awaiting-verification','controller_phase':'awaiting-verification','state_sha256':sha,'result_available':True,'driver_disposition':'unreviewed','available_actions':[{'action':'finalize'}],'provider_isolation':value['provider_isolation'],'provider_execution':execution}\n",
             encoding="utf-8",
         )
         status = run_cmd(
@@ -2012,6 +2054,22 @@ def test_verify_finalize_gate_and_dispatch_approval_boundaries() -> bool:
             assert receipt.exists()
             assert not sentinel.exists()
             assert dispatch_state.read_bytes() == dispatch_raw
+            receipt_bytes = receipt.read_bytes()
+            workflow_bytes = f.state_file.read_bytes()
+            post_gate = run_cmd(sys.executable, "-I", "-S", "-B",
+                                str(copied_runtime / "scripts" / "workflow.py"),
+                                "status", "--state", str(f.state_file))
+            assert post_gate.returncode == 0, post_gate.stderr
+            projected = json.loads(post_gate.stdout)
+            assert projected["next_required_action"] is None
+            assert "new receipt path" in projected["advanced_recovery"]
+            assert projected["available_actions"] == [{"action": "finalize"}]
+            same_path = invoke(receipt, approval=dispatch_sha, gate_rc=gate_rc)
+            assert same_path.returncode == 20 and b"receipt path already exists" in same_path.stderr
+            assert receipt.read_bytes() == receipt_bytes
+            assert f.state_file.read_bytes() == workflow_bytes
+            assert dispatch_state.read_bytes() == dispatch_raw
+            assert not sentinel.exists()
 
         exact = invoke(f.state_dir / "exact.json", approval=dispatch_sha)
         assert exact.returncode == 0

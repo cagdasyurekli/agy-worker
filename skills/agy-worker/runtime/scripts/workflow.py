@@ -140,38 +140,19 @@ def validate_private_parent(parent: Path) -> tuple[Path, int]:
     return parent, descriptor
 
 
+def _read_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    # Reading may advance atime; all other content/identity facts must stay bound.
+    return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink,
+            metadata.st_uid, metadata.st_gid, metadata.st_size,
+            metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+
 def read_regular(path: Path, maximum: int, label: str, *, private: bool) -> tuple[bytes, os.stat_result]:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as exc:
-        raise WorkflowError(f"{label} is unavailable") from exc
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise WorkflowError(f"{label} must be one real file")
-        if private and (
-            metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
-        ):
-            raise WorkflowError(f"{label} must be owner-private mode 0600")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(descriptor, min(65536, maximum + 1 - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > maximum:
-                raise WorkflowError(f"{label} is oversized")
-        if len(b"".join(chunks)) != metadata.st_size:
-            raise WorkflowError(f"{label} changed while read")
-        return b"".join(chunks), metadata
-    finally:
-        os.close(descriptor)
+    return read_regular_at(None, str(path), maximum, label, private=private)
 
 
 def read_regular_at(
-    parent_fd: int,
+    parent_fd: int | None,
     name: str,
     maximum: int,
     label: str,
@@ -179,9 +160,9 @@ def read_regular_at(
     private: bool,
 ) -> tuple[bytes, os.stat_result]:
     try:
+        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         descriptor = os.open(
-            name,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=parent_fd,
         )
     except OSError as exc:
@@ -190,21 +171,26 @@ def read_regular_at(
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise WorkflowError(f"{label} must be one real file")
+        if _read_identity(metadata) != _read_identity(before):
+            raise WorkflowError(f"{label} changed while opened")
         if private and (
             metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
         ):
             raise WorkflowError(f"{label} must be owner-private mode 0600")
+        if metadata.st_size > maximum:
+            raise WorkflowError(f"{label} is oversized")
         chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(descriptor, min(65536, maximum + 1 - total))
+        remaining = metadata.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
             if not chunk:
-                break
+                raise WorkflowError(f"{label} changed while read")
             chunks.append(chunk)
-            total += len(chunk)
-            if total > maximum:
-                raise WorkflowError(f"{label} is oversized")
-        if total != metadata.st_size:
+            remaining -= len(chunk)
+        if (os.read(descriptor, 1)
+                or _read_identity(os.fstat(descriptor)) != _read_identity(metadata)
+                or _read_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+                != _read_identity(metadata)):
             raise WorkflowError(f"{label} changed while read")
         return b"".join(chunks), metadata
     finally:
@@ -753,8 +739,6 @@ def _delegation_from_dispatch(
         return _pending_delegation("provider-preflight-or-run-pending")
     if reason == "selection_preflight_failed":
         preflight_passed, provider_state = False, "unverified"
-    elif reason == "provider_quota_exhausted":
-        preflight_passed, provider_state = True, "quota_exhausted"
     elif reason in {"native_host_sandbox_unavailable", "source_checkout_changed", "source_checkout_guard_unavailable"}:
         preflight_passed, provider_state = True, "unverified"
     elif reason in {
@@ -1160,7 +1144,7 @@ def build_parser() -> argparse.ArgumentParser:
     # 3. verify-finalize
     vf_parser = subparsers.add_parser("verify-finalize", help="Run verification and finalization.")
     vf_parser.add_argument("--state", required=True, help="Path to workflow state file.")
-    vf_parser.add_argument("--receipt", required=True, help="Path to write Evidence Receipt v1.")
+    vf_parser.add_argument("--receipt", required=True, help="Path to write Evidence Receipt.")
     vf_parser.add_argument("--envelope", required=True, help="Path to worker result envelope JSON.")
     vf_parser.add_argument("--base", help="Optional immutable base commit SHA to recheck.")
     vf_parser.add_argument("--candidate-sha", help="Optional exact candidate state SHA to recheck.")
@@ -1596,8 +1580,10 @@ def _bound_dispatch_status(dispatch_dir: Path, job_id: str) -> dict[str, Any]:
     return facts
 
 
-def _next_required_workflow_action(facts: dict[str, Any] | None) -> str | None:
-    if not facts or not facts.get("result_available") or facts.get("driver_disposition") != "unreviewed":
+def _next_required_workflow_action(
+    facts: dict[str, Any] | None, receipt_path: str | None = None,
+) -> str | None:
+    if receipt_path or not facts or not facts.get("result_available") or facts.get("driver_disposition") != "unreviewed":
         return None
     actions = facts.get("available_actions", [])
     if any(isinstance(item, dict) and item.get("action") == "finalize" for item in actions):
@@ -1678,10 +1664,15 @@ def _workflow_status(args: argparse.Namespace) -> int:
             "available_actions": (
                 dispatch_facts.get("available_actions", []) if dispatch_facts else []
             ),
-            "next_required_action": _next_required_workflow_action(dispatch_facts),
+            "next_required_action": _next_required_workflow_action(dispatch_facts, state.get("receipt_path")),
             "advanced_recovery": (
-                "Use workflow verify-finalize for driver-owned verification; "
-                "use job.sh or agy-worker.sh directly only for advanced recovery."
+                ("Inspect the recorded receipt and address its rejection or routing requirement; "
+                 "if evidence is unavailable, recover it before drawing conclusions. "
+                 "For an explicitly requested verification retry, choose a new receipt path "
+                 "with current approvals and candidate bindings.")
+                if state.get("receipt_path") else
+                ("Use workflow verify-finalize for driver-owned verification; "
+                 "use job.sh or agy-worker.sh directly only for advanced recovery.")
             ),
         }
         status_result.update({

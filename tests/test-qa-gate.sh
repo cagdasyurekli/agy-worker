@@ -5,7 +5,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$HERE/../qa-gate.sh"
 SCHEMA="$HERE/../skills/agy-worker/runtime/schemas/worker-result.schema.json"
-TMP="$(mktemp -d -t agyworker-tests.XXXXXX)"
+TMP="$(mktemp -d -t agyworker-tests.XXXXXX)" || {
+    printf 'test-qa-gate: cannot create temporary directory\n' >&2
+    exit 1
+}
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
@@ -387,6 +390,38 @@ if [[ "$got" == 0 ]]; then
     printf '  ok   %-52s exit %s\n' "relative envelope survives different --repo" "$got"; pass=$((pass+1))
 else
     printf '  FAIL %-52s exit %s (wanted 0)\n' "relative envelope survives different --repo" "$got"; fail=$((fail+1))
+fi
+mkdir -p "$TMP/cdpath-decoy/repo"
+CDPATH="$TMP/cdpath-decoy" "$GATE" --envelope honest.json --repo repo \
+    --base "$BASE_COMMIT" --verify-argv '["true"]' >/dev/null 2>&1
+got=$?
+if [[ "$got" == 0 ]]; then
+    printf '  ok   %-52s exit %s\n' "ambient CDPATH cannot redirect candidate repo" "$got"; pass=$((pass+1))
+else
+    printf '  FAIL %-52s exit %s (wanted 0)\n' "ambient CDPATH cannot redirect candidate repo" "$got"; fail=$((fail+1))
+fi
+cp -R "$TMP/repo" "$TMP/-repo"
+"$GATE" --envelope honest.json --repo -repo --base "$BASE_COMMIT" \
+    --verify-argv '["true"]' >/dev/null 2>&1
+got=$?
+if [[ "$got" == 0 ]]; then
+    printf '  ok   %-52s exit %s\n' "leading-dash repo is a literal directory" "$got"; pass=$((pass+1))
+else
+    printf '  FAIL %-52s exit %s (wanted 0)\n' "leading-dash repo is a literal directory" "$got"; fail=$((fail+1))
+fi
+# Execute only the setup prologue, so a deliberately broken base cannot write
+# root-relative fixture paths after an injected allocation failure.
+sed -n '1,/^trap /p' "$HERE/test-qa-gate.sh" > "$TMP/mktemp-prologue.sh"
+printf '\nprintf "UNSAFE continuation\n"\n' >> "$TMP/mktemp-prologue.sh"
+mktemp() { return 1; }
+export -f mktemp
+bash "$TMP/mktemp-prologue.sh" > "$TMP/mktemp-prologue.out" 2>&1
+got=$?
+unset -f mktemp
+if [[ "$got" != 0 ]] && ! grep -q 'UNSAFE continuation' "$TMP/mktemp-prologue.out"; then
+    printf '  ok   %-52s\n' "temporary allocation failure stops before fixture writes"; pass=$((pass+1))
+else
+    printf '  FAIL %-52s\n' "temporary allocation failure stops before fixture writes"; fail=$((fail+1))
 fi
 check "invalid base fails closed" 64 honest.json --base does-not-exist --verify-argv '["true"]'
 check "symbolic HEAD is rejected as a mutable base" 64 honest.json --base HEAD --verify-argv '["true"]'
