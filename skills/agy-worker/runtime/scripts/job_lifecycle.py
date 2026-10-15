@@ -37,7 +37,7 @@ from candidate_state import (  # noqa: E402
     GIT_EXECUTABLE,
     candidate_state_digest,
     candidate_state_is_empty,
-    stat_binding,
+    read_regular_at as _read_regular_at,
 )
 from evidence_receipt import (  # noqa: E402
     ValidationFailure,
@@ -263,42 +263,9 @@ def read_regular_at(
     *,
     private: bool,
 ) -> tuple[bytes, os.stat_result]:
-    try:
-        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        descriptor = os.open(
-            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=parent_fd,
-        )
-    except OSError as exc:
-        raise JobError(f"{label} is unavailable") from exc
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise JobError(f"{label} must be one real file")
-        if stat_binding(metadata) != stat_binding(before):
-            raise JobError(f"{label} changed while opened")
-        if private and (
-            metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
-        ):
-            raise JobError(f"{label} must be owner-private mode 0600")
-        if metadata.st_size > maximum:
-            raise JobError(f"{label} is oversized")
-        chunks: list[bytes] = []
-        remaining = metadata.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(65536, remaining))
-            if not chunk:
-                raise JobError(f"{label} changed while read")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        if (os.read(descriptor, 1)
-                or stat_binding(os.fstat(descriptor)) != stat_binding(metadata)
-                or stat_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-                != stat_binding(metadata)):
-            raise JobError(f"{label} changed while read")
-        return b"".join(chunks), metadata
-    finally:
-        os.close(descriptor)
+    return _read_regular_at(
+        parent_fd, name, maximum, label, private=private, error_type=JobError,
+    )
 
 
 def parse_strict(data: bytes, label: str) -> Any:

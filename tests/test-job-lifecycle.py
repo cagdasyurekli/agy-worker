@@ -20,6 +20,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 from typing import Any, Callable
+from unittest.mock import patch
 
 
 sys.dont_write_bytecode = True
@@ -2039,6 +2040,193 @@ def stat_binding_contract() -> bool:
 
 check("shared stat binding preserves all nine ordered facts and excludes atime",
       stat_binding_contract)
+
+def regular_reader_contract(
+    owner: str, variant: str, case: str, message: str | None, expected_steps: str,
+) -> bool:
+    module = MODULE if owner == "job_lifecycle" else __import__("workflow")
+    error_type = module.JobError if owner == "job_lifecycle" else module.WorkflowError
+    private = case != "public"
+    size = 0 if case == "empty" else 65537 if case == "chunks" else 4
+    facts = dict(st_dev=11, st_ino=22, st_mode=stat.S_IFREG | 0o600, st_nlink=2,
+                 st_uid=os.getuid(), st_gid=66, st_size=size, st_mtime_ns=888,
+                 st_ctime_ns=999, st_atime_ns=123)
+    if case in ("mode", "public"):
+        facts["st_mode"] = stat.S_IFREG | 0o644
+    if case in ("uid", "public"):
+        facts["st_uid"] += 1
+    if case == "nonregular":
+        facts["st_mode"] = stat.S_IFDIR | 0o600
+    before, opened = SimpleNamespace(**facts), SimpleNamespace(**facts)
+    final_fd = SimpleNamespace(**{**facts, "st_atime_ns": 456})
+    final_name = SimpleNamespace(**{**facts, "st_atime_ns": 789})
+    if case == "opened":
+        opened.st_ino += 1
+    if case == "fd":
+        final_fd.st_ino += 1
+    if case == "name":
+        final_name.st_ino += 1
+    failure = PermissionError(13, "injected boundary failure")
+    cause, context = LookupError("prior cause"), RuntimeError("prior context")
+    failure.__cause__, failure.__context__, failure.__suppress_context__ = cause, context, False
+    interrupt = KeyboardInterrupt("bounded read interrupted")
+    failure_steps = {"stat-error": "stat1", "open-error": "open",
+                     "fstat-error": "fstat1", "read-error": "read4",
+                     "eof-error": "read1", "fd-error": "fstat2",
+                     "name-error": "stat2", "close-error": "close",
+                     "close-policy": "close", "close-read": "close"}
+    steps: list[str] = []
+    calls = {"stat": 0, "fstat": 0}
+    parent_fd = 77 if variant == "at" else None
+    name = "item" if variant == "at" else "/fixture/item"
+    payload = b"x" * size
+    remaining = payload
+
+    def record(step: str) -> None:
+        steps.append(step)
+        if failure_steps.get(case) == step:
+            raise failure
+        if case == "interrupt" and step == "read4":
+            raise interrupt
+        if case == "close-read" and step == "read4":
+            raise BlockingIOError(11, "body failure")
+
+    def observe(path: str, *, dir_fd: int | None, follow_symlinks: bool) -> Any:
+        assert (path, dir_fd, follow_symlinks) == (name, parent_fd, False)
+        calls["stat"] += 1
+        record(f"stat{calls['stat']}")
+        return before if calls["stat"] == 1 else final_name
+
+    def open_file(path: str, flags: int, *, dir_fd: int | None) -> int:
+        assert (path, flags, dir_fd) == (
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, parent_fd,
+        )
+        record("open")
+        return 91
+
+    def observe_fd(descriptor: int) -> Any:
+        assert descriptor == 91
+        calls["fstat"] += 1
+        record(f"fstat{calls['fstat']}")
+        return opened if calls["fstat"] == 1 else final_fd
+
+    def read(descriptor: int, count: int) -> bytes:
+        nonlocal remaining
+        assert descriptor == 91
+        record(f"read{count}")
+        if case == "short":
+            return b""
+        if not remaining:
+            return b"!" if case in ("trailing", "close-policy") else b""
+        chunk, remaining = remaining[:count], remaining[count:]
+        return chunk
+
+    def close(descriptor: int) -> None:
+        assert descriptor == 91
+        record("close")
+
+    caught: BaseException | None = None
+    result: Any = None
+    with patch.object(os, "stat", observe), patch.object(os, "open", open_file), \
+            patch.object(os, "fstat", observe_fd), patch.object(os, "read", read), \
+            patch.object(os, "close", close):
+        try:
+            maximum = 3 if case == "oversized" else size
+            if variant == "at":
+                result = module.read_regular_at(parent_fd, name, maximum, "fixture", private=private)
+            else:
+                result = module.read_regular(Path(name), maximum, "fixture", private=private)
+        except BaseException as exc:
+            caught = exc
+    assert steps == expected_steps.split()
+    if case in ("stat-error", "open-error"):
+        assert type(caught) is error_type and caught.args == ("fixture is unavailable",)
+        assert caught.__cause__ is failure and caught.__context__ is failure
+        assert caught.__suppress_context__ is True
+    elif case in failure_steps:
+        assert caught is failure and type(caught) is PermissionError
+        assert caught.args == (13, "injected boundary failure") and caught.__cause__ is cause
+        assert caught.__suppress_context__ is False
+        if case == "close-policy":
+            assert type(caught.__context__) is error_type
+            assert caught.__context__.args == ("fixture changed while read",)
+        elif case == "close-read":
+            assert type(caught.__context__) is BlockingIOError
+            assert caught.__context__.args == (11, "body failure")
+        else:
+            assert caught.__context__ is context
+    elif case == "interrupt":
+        assert caught is interrupt and caught.args == ("bounded read interrupted",)
+        assert caught.__cause__ is None and caught.__context__ is None
+        assert caught.__suppress_context__ is False
+    elif message is not None:
+        assert type(caught) is error_type and caught.args == (f"fixture {message}",)
+        assert caught.__cause__ is None and caught.__context__ is None
+        assert caught.__suppress_context__ is False
+    else:
+        assert caught is None and result[0] == payload and result[1] is opened
+    return True
+
+
+def regular_reader_hardlink_contract(owner: str, variant: str) -> bool:
+    module = MODULE if owner == "job_lifecycle" else __import__("workflow")
+    with tempfile.TemporaryDirectory(dir=TMP) as directory:
+        parent = Path(directory)
+        parent.chmod(0o700)
+        leaf = parent / "item"
+        leaf.write_bytes(b"hardlinked")
+        leaf.chmod(0o600)
+        os.link(leaf, parent / "alias")
+        descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for private in (True, False):
+                if variant == "at":
+                    data, info = module.read_regular_at(descriptor, "item", 10, "fixture", private=private)
+                else:
+                    data, info = module.read_regular(leaf, 10, "fixture", private=private)
+                assert data == b"hardlinked" and info.st_nlink == 2
+        finally:
+            os.close(descriptor)
+    return True
+
+
+# Concrete transcripts pin the short-circuit order, chunk sizes and close precedence.
+reader_cases = (
+    ("exact", None, "stat1 open fstat1 read4 read1 fstat2 stat2 close"),
+    ("empty", None, "stat1 open fstat1 read1 fstat2 stat2 close"),
+    ("chunks", None, "stat1 open fstat1 read65536 read1 read1 fstat2 stat2 close"),
+    ("public", None, "stat1 open fstat1 read4 read1 fstat2 stat2 close"),
+    ("oversized", "is oversized", "stat1 open fstat1 close"),
+    ("mode", "must be owner-private mode 0600", "stat1 open fstat1 close"),
+    ("uid", "must be owner-private mode 0600", "stat1 open fstat1 close"),
+    ("nonregular", "must be one real file", "stat1 open fstat1 close"),
+    ("opened", "changed while opened", "stat1 open fstat1 close"),
+    ("short", "changed while read", "stat1 open fstat1 read4 close"),
+    ("trailing", "changed while read", "stat1 open fstat1 read4 read1 close"),
+    ("fd", "changed while read", "stat1 open fstat1 read4 read1 fstat2 close"),
+    ("name", "changed while read", "stat1 open fstat1 read4 read1 fstat2 stat2 close"),
+    ("stat-error", None, "stat1"),
+    ("open-error", None, "stat1 open"),
+    ("fstat-error", None, "stat1 open fstat1 close"),
+    ("read-error", None, "stat1 open fstat1 read4 close"),
+    ("eof-error", None, "stat1 open fstat1 read4 read1 close"),
+    ("fd-error", None, "stat1 open fstat1 read4 read1 fstat2 close"),
+    ("name-error", None, "stat1 open fstat1 read4 read1 fstat2 stat2 close"),
+    ("close-error", None, "stat1 open fstat1 read4 read1 fstat2 stat2 close"),
+    ("close-policy", None, "stat1 open fstat1 read4 read1 close"),
+    ("close-read", None, "stat1 open fstat1 read4 close"),
+    ("interrupt", None, "stat1 open fstat1 read4 close"),
+)
+for reader_owner in ("job_lifecycle", "workflow"):
+    for reader_variant in ("path", "at"):
+        for reader_case, reader_message, reader_steps in reader_cases:
+            check(f"{reader_owner} {reader_variant} concrete read contract {reader_case}",
+                  lambda owner=reader_owner, variant=reader_variant, case=reader_case,
+                  message=reader_message, steps=reader_steps:
+                  regular_reader_contract(owner, variant, case, message, steps))
+        check(f"{reader_owner} {reader_variant} permits preexisting hardlinks",
+              lambda owner=reader_owner, variant=reader_variant:
+              regular_reader_hardlink_contract(owner, variant))
 
 clean_fixture(fixture)
 shutil.rmtree(TMP)
