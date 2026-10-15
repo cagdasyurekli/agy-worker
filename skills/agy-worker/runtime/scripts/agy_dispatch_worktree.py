@@ -1571,8 +1571,10 @@ def _bound_git_worktree_root(
 _FIXED_GIT_READ_ARGV = {
     ("rev-parse", "--is-inside-work-tree"),
     ("rev-parse", "--show-toplevel"),
+    ("rev-parse", "--is-inside-work-tree", "--show-toplevel"),
     ("rev-parse", "--show-object-format"),
     ("rev-parse", "--absolute-git-dir"),
+    ("rev-parse", "--show-object-format", "--absolute-git-dir"),
     ("rev-parse", "--git-common-dir"),
     ("rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"),
     ("rev-parse", "--git-path", "index"),
@@ -2283,12 +2285,13 @@ class _SnapshotGitContext:
 
     def bound_worktree(self) -> bool:
         """Reject configured worktree redirection before and after enumeration."""
-        inside = self.read(["rev-parse", "--is-inside-work-tree"])
-        top_level = self.read(["rev-parse", "--show-toplevel"])
+        result = self.read(["rev-parse", "--is-inside-work-tree", "--show-toplevel"])
+        if result is None:
+            return False
+        inside, separator, top_level = result[1].partition(b"\n")
         return (
-            inside is not None and inside[1] == b"true\n"
-            and top_level is not None
-            and _bound_git_worktree_root(top_level[1], self.root, self.root_binding)
+            inside == b"true" and bool(separator)
+            and _bound_git_worktree_root(top_level, self.root, self.root_binding)
         )
 
     def bound_read(
@@ -2317,14 +2320,14 @@ def _snapshot_bind_git(
     if not context.bound_worktree():
         return None
 
-    format_result = context.read(["rev-parse", "--show-object-format"])
-    if format_result is None or format_result[1] not in {b"sha1\n", b"sha256\n"}:
-        return None
-    object_length = 40 if format_result[1] == b"sha1\n" else 64
-    git_dir_result = context.read(["rev-parse", "--absolute-git-dir"])
+    git_dir_result = context.read(["rev-parse", "--show-object-format", "--absolute-git-dir"])
     if git_dir_result is None:
         return None
-    git_dir_path = _snapshot_one_path(context.root, git_dir_result[1], resolve=False)
+    object_format, separator, git_dir = git_dir_result[1].partition(b"\n")
+    if not separator or object_format not in {b"sha1", b"sha256"}:
+        return None
+    object_length = 40 if object_format == b"sha1" else 64
+    git_dir_path = _snapshot_one_path(context.root, git_dir, resolve=False)
     if git_dir_path is None:
         return None
     git_dir_boundary = _snapshot_directory_boundary(git_dir_path)
