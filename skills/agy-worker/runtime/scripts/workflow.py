@@ -28,7 +28,11 @@ SCRIPTS = Path(__file__).resolve(strict=True).parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from candidate_state import CandidateStateError, candidate_state_digest  # noqa: E402 -- sibling imports follow startup isolation/path setup
+from candidate_state import (  # noqa: E402 -- sibling imports follow startup isolation/path setup
+    CandidateStateError,
+    candidate_state_digest,
+    read_regular_at as _read_regular_at,
+)
 import agy_dispatch as DISPATCH  # noqa: E402 -- sibling imports follow startup isolation/path setup
 import launch_authority as LAUNCH_AUTHORITY  # noqa: E402 -- sibling imports follow startup isolation/path setup
 from delegation_policy import evaluate_policy  # noqa: E402 -- sibling imports follow startup isolation/path setup
@@ -140,12 +144,6 @@ def validate_private_parent(parent: Path) -> tuple[Path, int]:
     return parent, descriptor
 
 
-def _read_identity(metadata: os.stat_result) -> tuple[int, ...]:
-    # Reading may advance atime; all other content/identity facts must stay bound.
-    return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink,
-            metadata.st_uid, metadata.st_gid, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns)
-
 
 def read_regular(path: Path, maximum: int, label: str, *, private: bool) -> tuple[bytes, os.stat_result]:
     return read_regular_at(None, str(path), maximum, label, private=private)
@@ -159,42 +157,9 @@ def read_regular_at(
     *,
     private: bool,
 ) -> tuple[bytes, os.stat_result]:
-    try:
-        before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        descriptor = os.open(
-            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-            dir_fd=parent_fd,
-        )
-    except OSError as exc:
-        raise WorkflowError(f"{label} is unavailable") from exc
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise WorkflowError(f"{label} must be one real file")
-        if _read_identity(metadata) != _read_identity(before):
-            raise WorkflowError(f"{label} changed while opened")
-        if private and (
-            metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
-        ):
-            raise WorkflowError(f"{label} must be owner-private mode 0600")
-        if metadata.st_size > maximum:
-            raise WorkflowError(f"{label} is oversized")
-        chunks: list[bytes] = []
-        remaining = metadata.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(65536, remaining))
-            if not chunk:
-                raise WorkflowError(f"{label} changed while read")
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        if (os.read(descriptor, 1)
-                or _read_identity(os.fstat(descriptor)) != _read_identity(metadata)
-                or _read_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-                != _read_identity(metadata)):
-            raise WorkflowError(f"{label} changed while read")
-        return b"".join(chunks), metadata
-    finally:
-        os.close(descriptor)
+    return _read_regular_at(
+        parent_fd, name, maximum, label, private=private, error_type=WorkflowError,
+    )
 
 
 def _write_all(descriptor: int, data: bytes) -> None:

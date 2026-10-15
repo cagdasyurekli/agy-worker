@@ -29,6 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from candidate_state import stat_binding as _manifest_binding  # noqa: E402 -- standalone sibling imports follow path setup
 import agy_dispatch_containment as CONTAINMENT  # noqa: E402 -- standalone sibling imports follow path setup
 import model_selection as MODEL_SELECTION  # noqa: E402 -- standalone sibling imports follow path setup
 import launch_authority as LAUNCH_AUTHORITY  # noqa: E402 -- standalone sibling imports follow path setup
@@ -147,20 +148,6 @@ def _decode_manifest_path(raw: bytes) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ReadableManifestError("path is not UTF-8") from exc
-
-
-def _manifest_binding(info: os.stat_result) -> tuple[int, ...]:
-    return (
-        info.st_dev,
-        info.st_ino,
-        info.st_mode,
-        info.st_nlink,
-        info.st_uid,
-        info.st_gid,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
 
 
 def _read_provider_scope_file(
@@ -1027,12 +1014,6 @@ def _marker_only_preflight(root_fd: int, *, deadline: float | None = None) -> bo
     directory = getattr(os, "O_DIRECTORY", 0)
     entries_seen = 0
 
-    def binding(info: os.stat_result) -> tuple[int, ...]:
-        return (
-            info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-            info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
-        )
-
     def walk(parent_fd: int, *, is_root: bool = False) -> bool:
         nonlocal entries_seen
         if deadline is not None and time.monotonic() >= deadline:
@@ -1078,9 +1059,9 @@ def _marker_only_preflight(root_fd: int, *, deadline: float | None = None) -> bo
                     except OSError:
                         return False
                     try:
-                        if binding(os.fstat(child_fd)) != binding(info) or not walk(child_fd):
+                        if _manifest_binding(os.fstat(child_fd)) != _manifest_binding(info) or not walk(child_fd):
                             return False
-                        if binding(os.fstat(child_fd)) != binding(info):
+                        if _manifest_binding(os.fstat(child_fd)) != _manifest_binding(info):
                             return False
                     except OSError:
                         return False
@@ -1092,7 +1073,7 @@ def _marker_only_preflight(root_fd: int, *, deadline: float | None = None) -> bo
             if scan_fd >= 0:
                 os.close(scan_fd)
         try:
-            return binding(os.fstat(parent_fd)) == binding(before_directory)
+            return _manifest_binding(os.fstat(parent_fd)) == _manifest_binding(before_directory)
         except OSError:
             return False
 
@@ -1175,12 +1156,6 @@ def _worktree_git_admin_alias_boundary(workdir: str) -> bool:
     directory = getattr(os, "O_DIRECTORY", 0)
     entries_seen = 0
 
-    def binding(info: os.stat_result) -> tuple[int, ...]:
-        return (
-            info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-            info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
-        )
-
     def walk(parent_fd: int, parent_path: str, *, is_root: bool = False) -> bool:
         nonlocal entries_seen
         try:
@@ -1222,7 +1197,7 @@ def _worktree_git_admin_alias_boundary(workdir: str) -> bool:
                             )
                         except OSError:
                             return False
-                        if binding(info) != binding(after_link):
+                        if _manifest_binding(info) != _manifest_binding(after_link):
                             return False
                         if _resolved_path_is_git_administration(root, resolved):
                             return False
@@ -1237,9 +1212,9 @@ def _worktree_git_admin_alias_boundary(workdir: str) -> bool:
                         return False
                     try:
                         if (
-                            binding(os.fstat(child_fd)) != binding(info)
+                            _manifest_binding(os.fstat(child_fd)) != _manifest_binding(info)
                             or not walk(child_fd, os.path.join(parent_path, entry.name))
-                            or binding(os.fstat(child_fd)) != binding(info)
+                            or _manifest_binding(os.fstat(child_fd)) != _manifest_binding(info)
                         ):
                             return False
                     except OSError:
@@ -1252,7 +1227,7 @@ def _worktree_git_admin_alias_boundary(workdir: str) -> bool:
             if scan_fd >= 0:
                 os.close(scan_fd)
         try:
-            return binding(os.fstat(parent_fd)) == binding(before_directory)
+            return _manifest_binding(os.fstat(parent_fd)) == _manifest_binding(before_directory)
         except OSError:
             return False
 
@@ -1262,7 +1237,7 @@ def _worktree_git_admin_alias_boundary(workdir: str) -> bool:
         root_info = os.fstat(root_fd)
         if (
             not stat.S_ISDIR(root_info.st_mode)
-            or binding(os.lstat(root)) != binding(root_info)
+            or _manifest_binding(os.lstat(root)) != _manifest_binding(root_info)
         ):
             return False
         return walk(root_fd, root, is_root=True)
@@ -1391,12 +1366,6 @@ def _safe_git_executable(candidate: str | None = None) -> tuple[str, dict[str, A
     def authority(info: os.stat_result) -> tuple[int, int, int, int, int]:
         return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
 
-    def target_binding(info: os.stat_result) -> tuple[int, ...]:
-        return (
-            info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-            info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
-        )
-
     def bind(selected: str) -> tuple[str, dict[str, Any]] | None:
         """Bind one exact executable spelling without relaxing path authority."""
         selected = os.path.abspath(selected)
@@ -1445,7 +1414,7 @@ def _safe_git_executable(candidate: str | None = None) -> tuple[str, dict[str, A
                     return None
                 return str(current), {
                     "candidate": selected,
-                    "target": target_binding(metadata),
+                    "target": _manifest_binding(metadata),
                     "chain": tuple(chain),
                     "components": tuple(components),
                 }
@@ -1506,11 +1475,7 @@ def _stable_git_authority(info: os.stat_result) -> dict[str, int]:
 
 def _full_stat_binding(info: os.stat_result) -> tuple[int, ...]:
     """Keep transient scan consistency separate from persisted authority."""
-    return (
-        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-        info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
-        info.st_ctime_ns,
-    )
+    return _manifest_binding(info)
 
 
 def _bound_git_worktree_root(
@@ -2099,12 +2064,6 @@ def _git_boundary_identity(workdir: str) -> dict[str, Any] | None:
             os.close(root_fd)
 
 
-def _snapshot_binding(info: os.stat_result) -> tuple[int, ...]:
-    return (
-        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-        info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
-    )
-
 def _snapshot_authority(value: tuple[int, ...]) -> tuple[int, int, int, int, int]:
     """Project stable identity out of a full in-call race binding."""
     return value[0], value[1], value[4], value[5], stat.S_IMODE(value[2])
@@ -2174,12 +2133,12 @@ def _snapshot_git_marker_binding(root_fd: int) -> tuple[bytes, tuple[int, ...], 
     except OSError:
         return None
     if (
-        _snapshot_binding(before) != _snapshot_binding(opened) or _snapshot_binding(opened) != _snapshot_binding(named)
+        _manifest_binding(before) != _manifest_binding(opened) or _manifest_binding(opened) != _manifest_binding(named)
         or (kind == b"directory" and not stat.S_ISDIR(opened.st_mode))
         or (kind == b"file" and (not stat.S_ISREG(opened.st_mode) or len(payload) != opened.st_size))
     ):
         return None
-    return kind, _snapshot_binding(opened), hashlib.sha256(payload).digest()
+    return kind, _manifest_binding(opened), hashlib.sha256(payload).digest()
 
 def _snapshot_one_path(root: str, raw: bytes, *, resolve: bool = True) -> str | None:
     if not raw.endswith(b"\n") or raw.count(b"\n") != 1 or b"\0" in raw:
@@ -2216,11 +2175,11 @@ def _snapshot_directory_boundary(path: str) -> tuple[str, tuple[int, ...]] | Non
     except OSError:
         return None
     if (
-        _snapshot_binding(named) != _snapshot_binding(opened)
-        or _snapshot_binding(opened) != _snapshot_binding(after)
+        _manifest_binding(named) != _manifest_binding(opened)
+        or _manifest_binding(opened) != _manifest_binding(after)
     ):
         return None
-    return canonical_path, _snapshot_binding(opened)
+    return canonical_path, _manifest_binding(opened)
 
 def _snapshot_index_binding(path: str) -> tuple[bytes | None, tuple[int, ...] | None] | None:
     try:
@@ -2250,9 +2209,9 @@ def _snapshot_index_binding(path: str) -> tuple[bytes | None, tuple[int, ...] | 
         named = os.lstat(path)
     except OSError:
         return None
-    if _snapshot_binding(before) != _snapshot_binding(after) or _snapshot_binding(after) != _snapshot_binding(named):
+    if _manifest_binding(before) != _manifest_binding(after) or _manifest_binding(after) != _manifest_binding(named):
         return None
-    return b"".join(chunks), _snapshot_binding(after)
+    return b"".join(chunks), _manifest_binding(after)
 
 class _SnapshotGitContext:
     """Borrow the held root and own one deadline and cumulative Git-read budget."""
@@ -2605,17 +2564,17 @@ def _snapshot_directory_manifest(root_fd: int, deadline: float) -> tuple[bytes, 
                         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                     except OSError:
                         return None
-                    metadata = _snapshot_binding(info)
+                    metadata = _manifest_binding(info)
                     if stat.S_ISDIR(info.st_mode):
                         try:
                             child_fd = os.open(name, os.O_RDONLY | directory | nofollow, dir_fd=parent_fd)
                         except OSError:
                             return None
                         try:
-                            if _snapshot_binding(os.fstat(child_fd)) != metadata:
+                            if _manifest_binding(os.fstat(child_fd)) != metadata:
                                 return None
                             payload = walk(child_fd)
-                            if payload is None or _snapshot_binding(os.fstat(child_fd)) != metadata:
+                            if payload is None or _manifest_binding(os.fstat(child_fd)) != metadata:
                                 return None
                         finally:
                             os.close(child_fd)
@@ -2627,7 +2586,7 @@ def _snapshot_directory_manifest(root_fd: int, deadline: float) -> tuple[bytes, 
                         except OSError:
                             return None
                         manifest_bytes += len(target_raw)
-                        if manifest_bytes > MAX_STREAM_BYTES or _snapshot_binding(named) != metadata:
+                        if manifest_bytes > MAX_STREAM_BYTES or _manifest_binding(named) != metadata:
                             return None
                         payload = hashlib.sha256(target_raw).digest()
                         kind = b"symlink"
@@ -2650,7 +2609,7 @@ def _snapshot_directory_manifest(root_fd: int, deadline: float) -> tuple[bytes, 
             if scan_fd >= 0:
                 os.close(scan_fd)
         try:
-            if _snapshot_binding(os.fstat(parent_fd)) != _snapshot_binding(before_directory):
+            if _manifest_binding(os.fstat(parent_fd)) != _manifest_binding(before_directory):
                 return None
         except OSError:
             return None
@@ -2725,11 +2684,11 @@ def _snapshot_observe_content(
                     observed_paths[relative] = (b"missing",)
                     differs = indexed is not None
                 else:
-                    metadata = _snapshot_binding(before); observation.update(canonical(list(_snapshot_persistent_metadata(metadata))))
+                    metadata = _manifest_binding(before); observation.update(canonical(list(_snapshot_persistent_metadata(metadata))))
                     if stat.S_ISLNK(before.st_mode):
                         target_raw = os.fsencode(os.readlink(name, dir_fd=parent_fd))
                         content_bytes += len(target_raw)
-                        if content_bytes > MAX_STREAM_BYTES or _snapshot_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata:
+                        if content_bytes > MAX_STREAM_BYTES or _manifest_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata:
                             return None
                         observation.update(b"symlink\0"); observation.update(len(target_raw).to_bytes(8, "big")); observation.update(target_raw)
                         observed_paths[relative] = (b"symlink", metadata, target_raw)
@@ -2752,7 +2711,7 @@ def _snapshot_observe_content(
                             after = os.fstat(descriptor)
                         finally:
                             os.close(descriptor)
-                        if _snapshot_binding(after) != metadata or _snapshot_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata:
+                        if _manifest_binding(after) != metadata or _manifest_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata:
                             return None
                         content_digest = content.digest()
                         observation.update(b"file\0"); observation.update(content_digest)
@@ -2788,13 +2747,13 @@ def _snapshot_revalidate_content(
                 except FileNotFoundError:
                     current = (b"missing",)
                 else:
-                    metadata = _snapshot_binding(before)
+                    metadata = _manifest_binding(before)
                     if stat.S_ISLNK(before.st_mode):
                         target_raw = os.fsencode(os.readlink(name, dir_fd=parent_fd))
                         revalidated_bytes += len(target_raw)
                         if (
                             revalidated_bytes > MAX_STREAM_BYTES
-                            or _snapshot_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata
+                            or _manifest_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata
                         ):
                             return False
                         current = (b"symlink", metadata, target_raw)
@@ -2817,8 +2776,8 @@ def _snapshot_revalidate_content(
                         finally:
                             os.close(descriptor)
                         if (
-                            _snapshot_binding(after) != metadata
-                            or _snapshot_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata
+                            _manifest_binding(after) != metadata
+                            or _manifest_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != metadata
                         ):
                             return False
                         current = (b"file", metadata, content.digest())
@@ -2928,8 +2887,8 @@ def _worktree_snapshot_raw(
         if not stat.S_ISDIR(root_info.st_mode):
             return None
 
-        root_binding = _snapshot_binding(root_info)
-        if _snapshot_binding(os.lstat(workdir)) != root_binding:
+        root_binding = _manifest_binding(root_info)
+        if _manifest_binding(os.lstat(workdir)) != root_binding:
             return None
         # Do not start Git plumbing until a no-follow, marker-only traversal
         # established that the sole marker has the exact root spelling.  The
@@ -3001,13 +2960,13 @@ def _worktree_snapshot_raw(
             return None
         if (
             os.path.realpath(workdir) != root
-            or _snapshot_binding(os.fstat(root_fd)) != root_binding
-            or _snapshot_binding(os.lstat(workdir)) != root_binding
+            or _manifest_binding(os.fstat(root_fd)) != root_binding
+            or _manifest_binding(os.lstat(workdir)) != root_binding
             or _snapshot_git_marker_binding(root_fd) != root_git_marker
             or _snapshot_directory_boundary(git.git_dir_path) != git.git_dir_boundary
             or _snapshot_directory_boundary(git.common_path) != git.common_dir_boundary
             or _snapshot_index_binding(git.index_path) != git.before_index
-            or _snapshot_binding(os.lstat(target)) != target_binding
+            or _manifest_binding(os.lstat(target)) != target_binding
             or not context.bound_worktree()
         ):
             return None
