@@ -37,6 +37,7 @@ from candidate_state import (  # noqa: E402
     GIT_EXECUTABLE,
     candidate_state_digest,
     candidate_state_is_empty,
+    stat_binding,
 )
 from evidence_receipt import (  # noqa: E402
     ValidationFailure,
@@ -249,12 +250,6 @@ def validate_private_parent(parent: Path) -> tuple[Path, int]:
     return parent, descriptor
 
 
-def _read_identity(metadata: os.stat_result) -> tuple[int, ...]:
-    # Reading may advance atime; all other content/identity facts must stay bound.
-    return (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink,
-            metadata.st_uid, metadata.st_gid, metadata.st_size,
-            metadata.st_mtime_ns, metadata.st_ctime_ns)
-
 
 def read_regular(path: Path, maximum: int, label: str, *, private: bool) -> tuple[bytes, os.stat_result]:
     return read_regular_at(None, str(path), maximum, label, private=private)
@@ -280,7 +275,7 @@ def read_regular_at(
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
             raise JobError(f"{label} must be one real file")
-        if _read_identity(metadata) != _read_identity(before):
+        if stat_binding(metadata) != stat_binding(before):
             raise JobError(f"{label} changed while opened")
         if private and (
             metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600
@@ -297,9 +292,9 @@ def read_regular_at(
             chunks.append(chunk)
             remaining -= len(chunk)
         if (os.read(descriptor, 1)
-                or _read_identity(os.fstat(descriptor)) != _read_identity(metadata)
-                or _read_identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
-                != _read_identity(metadata)):
+                or stat_binding(os.fstat(descriptor)) != stat_binding(metadata)
+                or stat_binding(os.stat(name, dir_fd=parent_fd, follow_symlinks=False))
+                != stat_binding(metadata)):
             raise JobError(f"{label} changed while read")
         return b"".join(chunks), metadata
     finally:

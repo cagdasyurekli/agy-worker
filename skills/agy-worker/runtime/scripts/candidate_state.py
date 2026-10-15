@@ -41,6 +41,15 @@ class GitCommitState(TypedDict):
 GitReader = Callable[[Path, str], bytes]
 
 
+def stat_binding(info: os.stat_result) -> tuple[int, ...]:
+    """Bind transient content/identity facts; reads may advance the excluded atime."""
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+        info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
 def _checked_git_reader(repo: Path) -> Callable[..., bytes]:
     # Caller Git variables can redirect even `git -C`; local configuration can
     # execute helpers or make a dirty worktree appear clean. A reader belongs
@@ -261,11 +270,6 @@ def candidate_state_digest(
             git_reader=git_reader,
         )
     )
-    def binding(info: os.stat_result) -> tuple[int, ...]:
-        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-                info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
-                info.st_ctime_ns)
-
     root_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     root_before = os.fstat(root_fd)
     try:
@@ -289,7 +293,7 @@ def candidate_state_digest(
                     child_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                        dir_fd=parent_fd)
                     descriptors.append(child_fd)
-                    if binding(os.fstat(child_fd)) != binding(before):
+                    if stat_binding(os.fstat(child_fd)) != stat_binding(before):
                         raise CandidateStateError("candidate ancestor changed while opened")
                     ancestors.append((parent_fd, part, before))
                 parent_fd = descriptors[-1]
@@ -309,7 +313,7 @@ def candidate_state_digest(
                                          dir_fd=parent_fd)
                         try:
                             opened = os.fstat(handle)
-                            if not stat.S_ISREG(opened.st_mode) or binding(opened) != binding(metadata):
+                            if not stat.S_ISREG(opened.st_mode) or stat_binding(opened) != stat_binding(metadata):
                                 raise CandidateStateError("candidate file changed while opened")
                             remaining = opened.st_size
                             while remaining:
@@ -318,24 +322,24 @@ def candidate_state_digest(
                                     raise CandidateStateError("candidate file changed while read")
                                 digest.update(chunk)
                                 remaining -= len(chunk)
-                            if os.read(handle, 1) or binding(os.fstat(handle)) != binding(metadata):
+                            if os.read(handle, 1) or stat_binding(os.fstat(handle)) != stat_binding(metadata):
                                 raise CandidateStateError("candidate file changed while read")
                         finally:
                             os.close(handle)
                     else:
                         digest.update(b"non-regular")
-                    if binding(os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)) != binding(metadata):
+                    if stat_binding(os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)) != stat_binding(metadata):
                         raise CandidateStateError("candidate path changed while read")
                 for parent, name, before in ancestors:
-                    if binding(os.stat(name, dir_fd=parent, follow_symlinks=False)) != binding(before):
+                    if stat_binding(os.stat(name, dir_fd=parent, follow_symlinks=False)) != stat_binding(before):
                         raise CandidateStateError("candidate ancestor changed while read")
             except OSError as exc:
                 raise CandidateStateError("candidate path is unavailable or changed") from exc
             finally:
                 for descriptor in reversed(descriptors):
                     os.close(descriptor)
-        if (binding(os.fstat(root_fd)) != binding(root_before)
-                or binding(os.stat(repo, follow_symlinks=False)) != binding(root_before)):
+        if (stat_binding(os.fstat(root_fd)) != stat_binding(root_before)
+                or stat_binding(os.stat(repo, follow_symlinks=False)) != stat_binding(root_before)):
             raise CandidateStateError("candidate root changed while read")
     finally:
         os.close(root_fd)
@@ -774,12 +778,6 @@ def _diagnostic_facts(repo: Path) -> dict[str, object]:
     except OSError:
         return {"complete": False, "items": []}
 
-    def binding(info: os.stat_result) -> tuple[int, ...]:
-        # Reads may advance atime; it is not evidence of a path replacement.
-        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-                info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
-                info.st_ctime_ns)
-
     def scan(directory_fd: int, prefix: bytes) -> bool:
         nonlocal path_bytes, content_bytes
         with os.scandir(directory_fd) as entries:
@@ -805,16 +803,16 @@ def _diagnostic_facts(repo: Path) -> dict[str, object]:
                     descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW,
                                          dir_fd=directory_fd)
                     try:
-                        if binding(os.fstat(descriptor)) != binding(metadata):
+                        if stat_binding(os.fstat(descriptor)) != stat_binding(metadata):
                             return False
                         while chunk := os.read(descriptor, 1024 * 1024):
                             content_bytes += len(chunk)
                             if content_bytes > 8 * 1024 * 1024 or time.monotonic() > deadline:
                                 return False
                             fingerprint.update(chunk)
-                        if (binding(os.fstat(descriptor)) != binding(metadata)
-                                or binding(os.stat(name, dir_fd=directory_fd,
-                                                    follow_symlinks=False)) != binding(metadata)):
+                        if (stat_binding(os.fstat(descriptor)) != stat_binding(metadata)
+                                or stat_binding(os.stat(name, dir_fd=directory_fd,
+                                                    follow_symlinks=False)) != stat_binding(metadata)):
                             return False
                     finally:
                         os.close(descriptor)
@@ -826,19 +824,19 @@ def _diagnostic_facts(repo: Path) -> dict[str, object]:
                     child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                                        dir_fd=directory_fd)
                     try:
-                        if (binding(os.fstat(child_fd)) != binding(metadata)
+                        if (stat_binding(os.fstat(child_fd)) != stat_binding(metadata)
                                 or not scan(child_fd, path + b"/")):
                             return False
                     finally:
                         os.close(child_fd)
-                    if (binding(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
-                            != binding(metadata)):
+                    if (stat_binding(os.stat(name, dir_fd=directory_fd, follow_symlinks=False))
+                            != stat_binding(metadata)):
                         return False
         return True
 
     try:
         original = os.fstat(root_fd)
-        complete = scan(root_fd, b"") and binding(os.fstat(root_fd)) == binding(original)
+        complete = scan(root_fd, b"") and stat_binding(os.fstat(root_fd)) == stat_binding(original)
     except (OSError, UnicodeError, RecursionError):
         complete = False
     finally:

@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from typing import Any, Callable
 
 
@@ -2012,6 +2013,32 @@ for read_variant in ("path", "at"):
 for mutation in ("fifo", "symlink", "regular", "ancestor", "inplace", "grow", "shrink", "ancestor-read", "replace-read"):
     check(f"candidate digest rejects {mutation} without outside reads or hang",
           lambda mutation=mutation: bounded_read_probe("candidate_state", "candidate", mutation))
+
+def stat_binding_contract() -> bool:
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_uid", "st_gid",
+              "st_size", "st_mtime_ns", "st_ctime_ns")
+    expected = (11, 22, stat.S_IFREG | 0o640, 44, 55, 66, 77, 888, 999)
+    facts = dict(zip(fields, expected))
+    facts.update(st_atime=123, st_atime_ns=123456)
+    worktree = sys.modules["agy_dispatch_worktree"]
+    helpers = (CANDIDATE.stat_binding, worktree._manifest_binding,
+               worktree._full_stat_binding)
+    for helper in helpers:
+        assert helper(SimpleNamespace(**facts)) == expected
+        for position, field in enumerate(fields):
+            changed = {**facts, field: facts[field] + 1}
+            wanted = list(expected)
+            wanted[position] += 1
+            assert helper(SimpleNamespace(**changed)) == tuple(wanted)
+        for field in ("st_atime", "st_atime_ns"):
+            assert helper(SimpleNamespace(**{**facts, field: 987654321})) == expected
+        changed_type = {**facts, "st_mode": stat.S_IFDIR | 0o640}
+        assert helper(SimpleNamespace(**changed_type))[2] == stat.S_IFDIR | 0o640
+    return True
+
+
+check("shared stat binding preserves all nine ordered facts and excludes atime",
+      stat_binding_contract)
 
 clean_fixture(fixture)
 shutil.rmtree(TMP)
