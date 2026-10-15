@@ -4192,7 +4192,7 @@ fi
 extend_after_first_ready="$TMP/extend-active.after-first-ready"
 extend_after_first_release="$TMP/extend-active.after-first-release"
 printf 'extend active deadline\n' | FAKE_DISPATCH_MODE=heartbeat-success \
-    FAKE_HEARTBEAT_COUNT=2 FAKE_HEARTBEAT_DELAY=1.00 \
+    FAKE_HEARTBEAT_COUNT=2 FAKE_HEARTBEAT_DELAY=0.01 \
     FAKE_HEARTBEAT_AFTER_FIRST_READY="$extend_after_first_ready" \
     FAKE_HEARTBEAT_AFTER_FIRST_RELEASE="$extend_after_first_release" \
     start_worker extend-active --idle-timeout 20s --hard-timeout 30s --max-runtime 60s \
