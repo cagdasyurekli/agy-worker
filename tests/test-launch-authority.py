@@ -645,6 +645,62 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
             with self.assertRaisesRegex(module.DispatchError, "executable provider configuration.*README.md"):
                 module.WORKTREE._check_provider_config_entries(entries, scope=scope)
 
+    def copy_config_candidate_for_verification(self):
+        module = dispatch_module()
+        config = self.config_path(".agents/mcp_config.json")
+        raw = json.dumps({"schema_version": 1, "kind": "agy-worker-provider-scope",
+            "read": [{"path": ".agents", "kind": "tree"}, {"path": "README.md", "kind": "file"}],
+            "write": [{"path": ".agents", "kind": "tree"}]}).encode()
+        self.scope.write_bytes(raw)
+        scope = module._parse_provider_scope(raw)
+        selected = module._build_selected_content_manifest(self.worktree, scope)
+        command = {"workdir": str(self.worktree), "provider_scope_path": str(self.scope),
+                   "provider_scope_sha256": module.digest(raw),
+                   "provider_scope_identity": list(module._identity(self.scope.stat()))}
+        state = {"selected_content_sha256": module._selected_content_digest(selected),
+                 "selected_file_count": sum(entry["kind"] == "file" for entry in selected),
+                 "selected_tree_count": sum(entry["kind"] == "directory" for entry in selected)}
+        destination = self.root / "verification-copy"
+        with mock.patch.object(module, "_bound_current_candidate") as bound, mock.patch.object(
+                module.subprocess, "Popen", side_effect=AssertionError("verification copy started a provider")) as popen:
+            try:
+                module.SELF_VERIFICATION._copy_candidate(module.VERIFICATION_API, self.logs,
+                                                         command, state, destination)
+            except module.DispatchError as exc:
+                self.fail(f"legitimate scoped verification copy was rejected: {exc}")
+            popen.assert_not_called()
+            bound.assert_called_once_with(self.logs, state)
+        self.assertEqual((destination / ".agents/mcp_config.json").read_bytes(), config.read_bytes())
+        self.assertEqual((destination / "README.md").read_bytes(), (self.worktree / "README.md").read_bytes())
+        copied = module._build_selected_content_manifest(destination, scope, is_stage=True)
+        self.assertEqual(module._selected_content_digest(copied), state["selected_content_sha256"])
+        return module
+
+    def test_workspace_config_scoped_verification_copy_remains_allowed(self) -> None:
+        self.copy_config_candidate_for_verification()
+
+    def test_workspace_config_next_launch_rejects_verified_candidate(self) -> None:
+        module = self.copy_config_candidate_for_verification()
+        stderr = self.root / "verified-candidate-stderr"
+        with stderr.open("wb") as handle, contextlib.ExitStack() as stack:
+            binding = module._ControllerBinding(state={"attempt_origin": "resume",
+                "conversation_id": "same", "provider_scope_path": None},
+                command={"schema_version": 16, "workdir": str(self.worktree), "base_commit": None,
+                         "provider_isolation": "session"})
+            for name in ("_reprobe_direct_selection", "_bound_worktree_baseline",
+                         "_confirm_whole_controller_approval", "_confirm_launch_authority", "_bind_workspace_prompt"):
+                stack.enter_context(mock.patch.object(module, name))
+            spawn = stack.enter_context(mock.patch.object(module, "_spawn_controller_provider"))
+            streams = module._ControllerStreams(self.root / "stream", stderr, self.root / "envelope",
+                                                 stderr_fd=handle.fileno())
+            outcome = module._ControllerOutcome()
+            module._launch_controller_provider(self.logs, binding, module._ProviderExecution(), streams,
+                                                module._ScopedLaunch(argv=["agy"]), outcome)
+            self.assertFalse(spawn.called, "provider launch accepted executable configuration from the verified candidate")
+            self.assertEqual(outcome.reason, "status_unavailable")
+        self.assertIn(b"executable provider configuration", stderr.read_bytes())
+        self.assertIn(b".agents/mcp_config.json", stderr.read_bytes())
+
     def test_workspace_config_worker_created_candidate_remains_inspectable(self) -> None:
         module = dispatch_module()
         stage = self.root / "post-provider-stage"

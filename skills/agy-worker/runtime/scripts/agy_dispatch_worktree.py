@@ -3557,6 +3557,7 @@ def _compute_v11_launch_approval_sha256(
 
 def _materialize_stage(
     source_root: str | Path, stage_dir: str | Path, scope: dict[str, Any], selected_manifest: list[dict[str, Any]],
+    *, provider_configuration: bool = False,
 ) -> tuple[tuple[int, int, int, int, int], str]:
     """Materialize 0700 Git-less stage with descriptor-relative safe copies."""
     directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -3567,7 +3568,8 @@ def _materialize_stage(
     deadline = time.monotonic() + SELECTED_CONTENT_SCAN_SECONDS
     copied_bytes = 0
 
-    _check_provider_config_entries(selected_manifest)
+    if provider_configuration:
+        _check_provider_config_entries(selected_manifest)
     if len(selected_manifest) > SELECTED_CONTENT_MAX_ENTRIES:
         raise DispatchError("selected content entry limit exceeded")
     src_root_fd = -1
@@ -3694,7 +3696,8 @@ def _materialize_stage(
                 finally:
                     os.close(src_fd)
 
-        rescan = _build_selected_content_manifest(stage_str, scope, is_stage=True, provider_configuration=True)
+        rescan = _build_selected_content_manifest(
+            stage_str, scope, is_stage=True, provider_configuration=provider_configuration)
         if rescan != selected_manifest:
             raise DispatchError("materialized stage content does not match source selected content")
 

@@ -5068,7 +5068,10 @@ def _prepare_scoped_controller_launch(
     )
     launch.narrow_source_snapshot = WORKTREE._worktree_snapshot(binding.command["workdir"])
     launch.stage_dir = job / f"stage-{binding.state['attempt']:03d}"
-    launch.stage_identity, launch.stage_manifest_sha = WORKTREE._materialize_stage(binding.command["workdir"], launch.stage_dir, launch.scope, launch.selected_manifest)
+    launch.stage_identity, launch.stage_manifest_sha = WORKTREE._materialize_stage(
+        binding.command["workdir"], launch.stage_dir, launch.scope, launch.selected_manifest,
+        provider_configuration=True,
+    )
     launch.launch_cwd = str(launch.stage_dir)
     if launch.executable_binding is None:
         try:

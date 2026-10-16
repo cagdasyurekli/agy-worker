@@ -446,10 +446,11 @@ original_containment = dispatch.CONTAINMENT
 dispatch.CONTAINMENT = adapter
 original_materialize = dispatch.WORKTREE._materialize_stage
 if fixture_kind == "copy-drift":
-    def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest):
+    def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest, *, provider_configuration=False):
         (Path(source_root) / "payload.bin").write_bytes(b"copy-window-source-drift\n")
         (job / "copy-drift-injected").write_text("injected\n", encoding="ascii")
-        return original_materialize(source_root, stage_dir, scope, selected_manifest)
+        return original_materialize(source_root, stage_dir, scope, selected_manifest,
+                                     provider_configuration=provider_configuration)
     dispatch.WORKTREE._materialize_stage = drift_immediately_before_copy
 try:
     raise SystemExit(dispatch.controller(job, ownership_fd))
@@ -500,10 +501,11 @@ def run_scoped_controller(
         return run_controller(job, bin_dir)
     original_materialize = MODULE.WORKTREE._materialize_stage
 
-    def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest):
+    def drift_immediately_before_copy(source_root, stage_dir, scope, selected_manifest, *, provider_configuration=False):
         (Path(source_root) / "payload.bin").write_bytes(b"copy-window-source-drift\n")
         (job / "copy-drift-injected").write_text("injected\n", encoding="ascii")
-        return original_materialize(source_root, stage_dir, scope, selected_manifest)
+        return original_materialize(source_root, stage_dir, scope, selected_manifest,
+                                     provider_configuration=provider_configuration)
 
     MODULE.WORKTREE._materialize_stage = drift_immediately_before_copy
     try:
