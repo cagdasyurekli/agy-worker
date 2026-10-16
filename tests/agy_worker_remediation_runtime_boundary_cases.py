@@ -2225,9 +2225,11 @@ def run(context: dict[str, object]) -> None:
         )
         original_prompt_reap = MODULE._reap_controller_provider
         original_prompt_reconcile = MODULE._reconcile_worktree
+        original_prompt_observe = MODULE._observe_source_checkout
         original_prompt_print_json = MODULE.print_json
         prompt_cancelled = threading.Event()
         prompt_cancel_output: list[dict] = []
+        prompt_source_observations: list[bool] = []
         prompt_scan_calls = 0
         prompt_reap_calls = 0
 
@@ -2248,8 +2250,13 @@ def run(context: dict[str, object]) -> None:
             time.sleep(2.5)
             raise AssertionError("no-candidate cancellation entered reconciliation")
 
+        def observe_prompt_source(workdir):
+            prompt_source_observations.append(prompt_cancelled.is_set())
+            return original_prompt_observe(workdir)
+
         MODULE._reap_controller_provider = cancel_after_actual_reap
         MODULE._reconcile_worktree = prohibited_slow_reconciliation
+        MODULE._observe_source_checkout = observe_prompt_source
         MODULE.print_json = lambda value: prompt_cancel_output.append(value)
         prompt_cancel_started = time.monotonic()
         try:
@@ -2260,10 +2267,14 @@ def run(context: dict[str, object]) -> None:
             prompt_cancel_elapsed = time.monotonic() - prompt_cancel_started
             MODULE._reap_controller_provider = original_prompt_reap
             MODULE._reconcile_worktree = original_prompt_reconcile
+            MODULE._observe_source_checkout = original_prompt_observe
             MODULE.print_json = original_prompt_print_json
         prompt_terminal, _raw, _sha = MODULE.load_state(prompt_cancel_job)
         MODULE.validate_state(prompt_terminal)
         assert prompt_reap_calls == 1 and prompt_cancelled.is_set() and prompt_scan_calls == 0
+        assert prompt_source_observations == [False], {
+            "source_observations_after_approved_cancel": prompt_source_observations,
+        }
         assert prompt_cancel_elapsed < 2.0, {
             "elapsed_seconds": prompt_cancel_elapsed, "cancelled": prompt_cancelled.is_set(),
             "reconciliation_calls": prompt_scan_calls, "reason": prompt_terminal["reason"],
@@ -2279,6 +2290,56 @@ def run(context: dict[str, object]) -> None:
         assert prompt_terminal["worktree_changes_present"] is None
         assert prompt_terminal["worktree_changed_since_dispatch"] is None
         assert prompt_cancel_calls.read_text(encoding="utf-8").splitlines() == [
+            "version", "help", "provider",
+        ]
+
+        # A cancellation arriving after source completion and stage cleanup
+        # still needs the later read; the earlier snapshot cannot cover it.
+        late_cancel_job, late_cancel_bin, late_cancel_calls, _fake, _command = fixture(
+            "after-stage-cleanup-cancel", idle_seconds=0.50,
+            hard_seconds=3, max_seconds=5,
+        )
+        original_late_cleanup = MODULE._cleanup_controller_stage
+        original_late_observe_cancel = MODULE._observe_controller_cancel
+        original_late_snapshot = MODULE._state_worktree_snapshot
+        late_cancelled = threading.Event()
+        late_cancel_reads: list[bool] = []
+        late_source_observations: list[bool] = []
+
+        def observe_late_source(workdir):
+            late_source_observations.append(late_cancelled.is_set())
+            return original_prompt_observe(workdir)
+
+        def cancel_after_stage_cleanup(*args, **kwargs):
+            assert args[4].result_binding is not None
+            assert late_source_observations == [False, False]
+            result = original_late_cleanup(*args, **kwargs)
+            _current, _raw, approval = MODULE.load_state(late_cancel_job)
+            assert MODULE.command_control(late_cancel_job, "cancel", approval, None) == 0
+            late_cancelled.set()
+            return result
+
+        def observe_late_cancel(*args, **kwargs):
+            late_cancel_reads.append(late_cancelled.is_set())
+            return original_late_observe_cancel(*args, **kwargs)
+
+        def prohibit_cancelled_snapshot(*args, **kwargs):
+            assert not late_cancelled.is_set(), "late cancellation entered candidate snapshot"
+            return original_late_snapshot(*args, **kwargs)
+
+        with mock.patch.object(MODULE, "_cleanup_controller_stage", side_effect=cancel_after_stage_cleanup), \
+                mock.patch.object(MODULE, "_observe_controller_cancel", side_effect=observe_late_cancel), \
+                mock.patch.object(MODULE, "_observe_source_checkout", side_effect=observe_late_source), \
+                mock.patch.object(MODULE, "_state_worktree_snapshot", side_effect=prohibit_cancelled_snapshot), \
+                mock.patch.object(MODULE, "_reconcile_worktree", side_effect=AssertionError("late cancellation reconciled")), \
+                mock.patch.object(MODULE, "print_json"):
+            assert run_controller(late_cancel_job, late_cancel_bin) == MODULE.EXIT_BY_REASON["cancelled"]
+        late_terminal, _raw, _sha = MODULE.load_state(late_cancel_job)
+        assert late_cancelled.is_set() and late_cancel_reads == [False, True]
+        assert late_terminal["source_checkout_guard"]["status"] == "unchanged"
+        assert (late_terminal["status"], late_terminal["reason"]) == ("cancelled", "cancelled")
+        assert not late_terminal["candidate_recognized"] and not late_terminal["result_available"]
+        assert late_cancel_calls.read_text(encoding="utf-8").splitlines() == [
             "version", "help", "provider",
         ]
 
@@ -2579,7 +2640,9 @@ def run(context: dict[str, object]) -> None:
                 else:
                     text = text.replace("'status':'SUCCESS'", f"'status':{terminal!r}")
                 fake.write_text(text)
-                code = run_controller(job, bin_dir)
+                with mock.patch.object(MODULE, "_observe_source_checkout", wraps=MODULE._observe_source_checkout) as observations:
+                    code = run_controller(job, bin_dir)
+                assert observations.call_count == 2, (terminal, mutated, observations.call_count)
                 if mutated:
                     assert code == 28
                     assert_source_veto(job)
@@ -2595,7 +2658,9 @@ def run(context: dict[str, object]) -> None:
             ignored = origin / "ignored"; ignored.mkdir(); (ignored / "data").write_text("old")
             fake = bin_dir / "agy"
             fake.write_text(fake.read_text().replace("print(json.dumps({'event':'init'", "(origin / 'ignored' / 'data').write_text('new')\nprint(json.dumps({'event':'init'"))
-            assert run_controller(job, bin_dir) == 0
+            with mock.patch.object(MODULE, "_observe_source_checkout", wraps=MODULE._observe_source_checkout) as observations:
+                assert run_controller(job, bin_dir) == 0
+            assert observations.call_count == 2
             state, _raw, _sha = MODULE.load_state(job)
             assert state["candidate_recognized"] and state["result_available"]
             assert (candidate / "candidate.txt").read_text() == "candidate\n"
@@ -2774,6 +2839,104 @@ def run(context: dict[str, object]) -> None:
                     assert run_controller(job, bin_dir) == MODULE.EXIT_BY_REASON[expected], MODULE.load_state(job)[0]
                 assert_source_veto(job, expected)
                 assert calls.read_text() == "call\n", "prelaunch stop/veto race started a provider"
+
+        # A report cancelled at actual reap must discard its scoped writes.
+        # A repair keeps the exact inherited candidate and defers its proof.
+        for continuation in (False, True):
+            _origin, candidate, job, bin_dir, calls = source_fixture(
+                f"post-reap-scoped-cancel-{continuation}", scoped=True,
+            )
+            if continuation:
+                assert run_controller(job, bin_dir) == 0
+                state, _raw, sha = MODULE.load_state(job)
+                fake = bin_dir / "agy"
+                fake.write_text(fake.read_text().replace("write_text('candidate\\n')", "write_text('repair\\n')"))
+                MODULE.create_state(job, "conversation-continue", resume=True,
+                                    approve_sha=sha, verification=feedback(state))
+            before, _raw, _sha = MODULE.load_state(job)
+            inherited_keys = (
+                "result_path", "result_sha256", "result_identity", "candidate_source",
+                "candidate_worktree_sha256", "candidate_worktree_entries",
+                "candidate_worktree_path_facts", "last_success_path", "last_success_sha256",
+                "last_success_identity", "repair_lineage_sha256", "repair_parent_result_sha256",
+                "repair_parent_worktree_sha256", "repair_lineage_attempt",
+                "reconciliation_manifest_sha256",
+            )
+            inherited = {key: copy.deepcopy(before[key]) for key in inherited_keys}
+            target_before = (candidate / "candidate.txt").read_bytes()
+            cancelled = threading.Event()
+            observations = []
+            reap = MODULE._reap_controller_provider
+            cleanup = MODULE._cleanup_controller_stage
+            observe = MODULE._observe_source_checkout
+
+            def cancel_scoped_report(*args, reap=reap, job=job, cancelled=cancelled, **kwargs):
+                result = reap(*args, **kwargs)
+                execution = args[2]
+                assert execution.process is None and execution.runtime_frozen
+                _current, _raw, approval = MODULE.load_state(job)
+                assert MODULE.command_control(job, "cancel", approval, None) == 0
+                cancelled.set()
+                return result
+
+            def observe_scoped_source(workdir, observations=observations, cancelled=cancelled, observe=observe):
+                observations.append(cancelled.is_set())
+                return observe(workdir)
+
+            def discard_cancelled_stage(*args, cancelled=cancelled, continuation=continuation, cleanup=cleanup, **kwargs):
+                binding, launch, outcome = args[1], args[3], args[4]
+                assert cancelled.is_set() and binding.state["cancel_requested"]
+                assert outcome.saw_terminal and outcome.result_binding is None
+                assert launch.stage_identity == MODULE._identity(launch.stage_dir.stat())
+                assert (launch.stage_dir / "candidate.txt").read_text() == (
+                    "repair\n" if continuation else "candidate\n"
+                )
+                checks = [
+                    (MODULE.WORKTREE, "_worktree_snapshot"),
+                    (MODULE.WORKTREE, "_scan_stage_mutations"),
+                    (MODULE.WORKTREE, "_cleanup_stage"),
+                    (MODULE, "_load_bound_command"), (MODULE, "_bound_schemas"),
+                ]
+                if continuation:
+                    checks.append((MODULE, "_bound_verification"))
+                with contextlib.ExitStack() as stack:
+                    proofs = [stack.enter_context(mock.patch.object(owner, name, wraps=getattr(owner, name)))
+                              for owner, name in checks]
+                    reconciled = stack.enter_context(mock.patch.object(
+                        MODULE.WORKTREE, "_reconcile_stage_to_source",
+                        wraps=MODULE.WORKTREE._reconcile_stage_to_source,
+                    ))
+                    result = cleanup(*args, **kwargs)
+                assert all(proof.call_count for proof in proofs)
+                reconciled.assert_not_called()
+                assert not outcome.cleanup_failed and not launch.stage_dir.exists()
+                return result
+
+            with mock.patch.object(MODULE, "_reap_controller_provider", side_effect=cancel_scoped_report), \
+                    mock.patch.object(MODULE, "_observe_source_checkout", side_effect=observe_scoped_source), \
+                    mock.patch.object(MODULE, "_cleanup_controller_stage", side_effect=discard_cancelled_stage), \
+                    mock.patch.object(MODULE, "print_json"):
+                assert run_controller(job, bin_dir) == 22, MODULE.load_state(job)[0]
+            state, _raw, sha = MODULE.load_state(job)
+            assert observations == [False] and cancelled.is_set()
+            assert (state["status"], state["reason"]) == ("cancelled", "cancelled")
+            assert state["source_checkout_guard"]["status"] == "deferred"
+            assert state["source_checkout_guard"]["after_sha256"] is None
+            assert state["candidate_recognized"] == state["result_available"] == continuation
+            assert (candidate / "candidate.txt").read_bytes() == target_before
+            assert not (job / f"stage-{state['attempt']:03d}").exists()
+            assert calls.read_text() == "call\n" * (2 if continuation else 1)
+            if continuation:
+                assert {key: state[key] for key in inherited_keys} == inherited
+                candidate_binding = MODULE._bound_candidate_worktree
+                with mock.patch.object(MODULE, "_deferred_candidate_proof", wraps=MODULE._deferred_candidate_proof) as proof:
+                    def bind_after_proof(*args, proof=proof, candidate_binding=candidate_binding, **kwargs):
+                        assert proof.call_count, "inherited candidate used before deferred proof"
+                        return candidate_binding(*args, **kwargs)
+                    with mock.patch.object(MODULE, "_bound_candidate_worktree", side_effect=bind_after_proof):
+                        _command, result = MODULE._bound_current_candidate(job, state)
+                assert MODULE.digest(result) == inherited["result_sha256"]
+                assert MODULE.load_state(job)[2] == sha
 
         # A no-report repair cancellation retains only its inherited candidate.
         # The cancel path defers that source proof; every later use settles it

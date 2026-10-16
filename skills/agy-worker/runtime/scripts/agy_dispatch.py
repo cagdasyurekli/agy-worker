@@ -5922,9 +5922,9 @@ def _observe_controller_cancel(
     outcome: _ControllerOutcome,
 ) -> None:
     # A SHA-approved cancellation may arrive after the last pipe-loop
-    # observation (or after reaping) and before candidate work begins.
-    # Observe it under the short ownership lock before selecting the
-    # expensive reconciliation path.  The final transition reloads
+    # observation (or after reaping) and before source or candidate work.
+    # Observe it under the short ownership lock before selecting an
+    # after-source proof or expensive reconciliation. The final transition reloads
     # again, but that later check is too late to keep a cheap cancel
     # from being delayed by a repository-controlled Git probe.
     with state_lock(job):
@@ -6458,6 +6458,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                 _reap_controller_provider(job, binding, execution, streams, launch, outcome)
                 _observe_controller_terminal(binding, execution, streams, launch, outcome)
                 _begin_controller_completion(execution, streams, outcome, candidate_data, prior_handlers)
+                _observe_controller_cancel(job, binding, outcome)
                 _finish_controller_source(binding, execution, report=outcome.result_binding is not None)
                 source_reason = _source_guard_reason({"source_checkout_guard": execution.source_guard_result or {}})
                 if source_reason is not None:
