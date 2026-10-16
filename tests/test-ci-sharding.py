@@ -49,15 +49,15 @@ def check(label: str, test: Callable[[], bool] | bool) -> None:
 
 
 # 1. Shard Partition Invariants
-check("inventory has 23 ordered unique stage IDs", len(MODULE.STAGES) == 23 and len({s.id for s in MODULE.STAGES}) == 23)
-check("exactly four frozen shard IDs exist", set(MODULE.SHARDS) == {"dispatcher", "dispatcher-remediation", "other-a", "other-b"})
+check("inventory has 26 ordered unique stage IDs", len(MODULE.STAGES) == 26 and len({s.id for s in MODULE.STAGES}) == 26)
+check("exactly seven frozen shard IDs exist", set(MODULE.SHARDS) == {"dispatcher-a", "dispatcher-b", "dispatcher-remediation-a", "dispatcher-remediation-b", "dispatcher-remediation-c", "other-a", "other-b"})
 
 all_shard_stages: list[str] = []
 for shard_id, stages in MODULE.SHARDS.items():  # noqa: B007 -- retain tuple binding; this pass uses only the other field
     all_shard_stages.extend(stages)
 
-check("total stage count across four shards is 23", len(all_shard_stages) == 23)
-check("all stages across four shards are disjoint and unique", len(set(all_shard_stages)) == 23)
+check("total stage count across seven shards is 26", len(all_shard_stages) == 26)
+check("all stages across seven shards are disjoint and unique", len(set(all_shard_stages)) == 26)
 check("union of shard stages equals canonical inventory stages", set(all_shard_stages) == {s.id for s in MODULE.STAGES})
 
 canonical_order_index = {stage.id: idx for idx, stage in enumerate(MODULE.STAGES)}
@@ -66,12 +66,6 @@ for shard_id, stages in MODULE.SHARDS.items():
     check(f"shard {shard_id} stages strictly preserve canonical inventory order", indexes == sorted(indexes))
 
 check("inventory digest is lowercase SHA-256", MODULE.SHA256_RE.fullmatch(MODULE.inventory_digest()) is not None)
-check(
-    "receipt v1 inventory digest remains frozen-base compatible",
-    MODULE.receipt_v1_inventory_digest()
-    == "452ecfe85d9b5896280341aaef06bf54a58448d824af69329ab924cfcd2d240d",
-)
-
 
 def _stage_environment_isolated() -> bool:
     ambient = {
@@ -81,7 +75,7 @@ def _stage_environment_isolated() -> bool:
     }
     pycache = Path("/private/ci-python-cache")
     syntax_stage = next(stage for stage in MODULE.STAGES if stage.id == "python-syntax")
-    dispatcher_stage = next(stage for stage in MODULE.STAGES if stage.id == "dispatcher")
+    dispatcher_stage = next(stage for stage in MODULE.STAGES if stage.id == "dispatcher-a")
     syntax_env = STAGE_MODULE.stage_environment(ambient, syntax_stage, pycache)
     dispatcher_env = STAGE_MODULE.stage_environment(ambient, dispatcher_stage, pycache)
     return (
@@ -183,7 +177,7 @@ def _stage_manifest_announcements() -> list[str]:
 
 
 check(
-    "stage manifest announcements match canonical 23 stages exactly",
+    "stage manifest announcements match canonical 26 stages exactly",
     _stage_manifest_announcements() == [s.announcement for s in MODULE.STAGES],
 )
 
@@ -200,13 +194,15 @@ def valid_receipt(shard_id: str = "other-a", outcome: str = "passed", failed_ind
         for stage_id in observed
     ]
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "agy-worker-ci-shard-receipt",
         "head_sha": "a" * 40,
         "inventory_sha256": MODULE.inventory_digest(),
         "shard_id": shard_id,
         "expected_stage_ids": expected,
         "observed_stage_ids": observed,
+        "expected_case_ids": [case for stage in expected for case in STAGE_MODULE.stage_case_ids(stage)],
+        "observed_case_ids": [case for stage in observed for case in STAGE_MODULE.stage_case_ids(stage)] if outcome == "passed" else [],
         "stage_durations": stage_durations,
         "outcome": outcome,
         "integrity": {
@@ -225,73 +221,22 @@ def receipt_rejected(receipt: dict[str, Any], expected_head: str = "a" * 40) -> 
     return False
 
 
-def valid_v1_receipt(shard_id: str = "other-a") -> dict[str, Any]:
-    expected = list(MODULE.SHARDS[shard_id])
-    return {
-        "schema_version": 1,
-        "kind": "agy-worker-ci-shard-receipt",
-        "head_sha": "a" * 40,
-        "inventory_sha256": MODULE.receipt_v1_inventory_digest(),
-        "shard_id": shard_id,
-        "expected_stage_ids": expected,
-        "observed_stage_ids": expected,
-        "outcome": "passed",
-        "integrity": {
-            "signed": False,
-            "tamper_evident": False,
-            "statement": MODULE.INTEGRITY_STATEMENT,
-        },
-    }
+def legacy_receipt(shard_id: str, version: int) -> dict[str, Any]:
+    receipt = valid_receipt(shard_id)
+    receipt["schema_version"] = version
+    receipt.pop("expected_case_ids")
+    receipt.pop("observed_case_ids")
+    if version == 1:
+        receipt.pop("stage_durations")
+    return receipt
 
 
-legacy_v1_receipt = valid_v1_receipt()
-check(
-    "standalone validator preserves frozen-base receipt v1 compatibility",
-    lambda: (MODULE.validate_receipt(legacy_v1_receipt, "a" * 40) or True),
-)
-legacy_v1_with_current_digest = copy.deepcopy(legacy_v1_receipt)
-legacy_v1_with_current_digest["inventory_sha256"] = MODULE.inventory_digest()
-check(
-    "receipt v1 rejects the manifest-expanded current digest",
-    lambda: receipt_rejected(legacy_v1_with_current_digest),
-)
-legacy_v1_with_durations = copy.deepcopy(legacy_v1_receipt)
-legacy_v1_with_durations["stage_durations"] = []
-check(
-    "receipt v1 rejects receipt-v2 duration fields",
-    lambda: receipt_rejected(legacy_v1_with_durations),
-)
+for legacy_version in (1, 2):
+    check(f"standalone validator rejects historical receipt v{legacy_version}",
+          receipt_rejected(legacy_receipt("other-a", legacy_version)))
 
 
-def _legacy_v1_cli_validates() -> bool:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        receipt_path = Path(temp_dir) / "legacy-v1.json"
-        receipt_path.write_text(json.dumps(legacy_v1_receipt), encoding="utf-8")
-        result = subprocess.run(
-            [
-                "/usr/bin/python3",
-                "-I",
-                "-S",
-                "-B",
-                os.fspath(SCRIPT),
-                "validate-receipt",
-                os.fspath(receipt_path),
-                "--expected-head",
-                "a" * 40,
-            ],
-            cwd=ROOT,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        return result.returncode == 0 and result.stdout == b"ok: receipt is valid\n"
-
-
-check("validate-receipt CLI accepts a frozen-base receipt v1", _legacy_v1_cli_validates)
-
-
-for shard in ("dispatcher", "dispatcher-remediation", "other-a", "other-b"):
+for shard in tuple(MODULE.SHARDS):
     rec = valid_receipt(shard)
     check(f"valid passed receipt for {shard} validates", not receipt_rejected(rec))
     failed_rec = valid_receipt(shard, "failed", 1)
@@ -303,7 +248,7 @@ failed_receipt = valid_receipt("other-a", "failed", 3)
 for label, mutate in (
     ("extra root field is rejected", lambda r: r.__setitem__("path", "/private/example")),
     ("missing root field is rejected", lambda r: r.pop("shard_id")),
-    ("wrong schema_version is rejected", lambda r: r.__setitem__("schema_version", 3)),
+    ("wrong schema_version is rejected", lambda r: r.__setitem__("schema_version", 4)),
     ("wrong kind is rejected", lambda r: r.__setitem__("kind", "wrong-kind")),
     ("malformed head_sha is rejected", lambda r: r.__setitem__("head_sha", "A" * 40)),
     ("short head_sha is rejected", lambda r: r.__setitem__("head_sha", "a" * 39)),
@@ -384,6 +329,59 @@ check(
 
 for forbidden in ("command", "environment", "logs", "credential", "provider", "account", "timestamp", "hostname", "cost", "path"):
     check(f"receipt schema excludes {forbidden}", forbidden not in json.dumps(passed_receipt, sort_keys=True).lower())
+
+
+privacy_receipts = []
+for shard_id, stage_ids in MODULE.SHARDS.items():
+    nonce = "d" * 64
+    raw = b"".join(
+        f"@@agy-worker-ci-shard:{nonce}:{MODULE.STAGE_MAP[stage_id]}\n".encode()
+        + b"".join(
+            f"@@agy-worker-ci-case:{nonce}:{stage_id}:{identity}\n".encode()
+            for identity in STAGE_MODULE.stage_case_ids(stage_id)
+        )
+        for stage_id in stage_ids
+    )
+    return_code, observed_receipt = MODULE.observe_stream(
+        io.BytesIO(raw), lambda: 0, "a" * 40, shard_id, nonce, io.BytesIO(),
+    )
+    privacy_receipts.append(observed_receipt)
+    case_fields = observed_receipt["expected_case_ids"] + observed_receipt["observed_case_ids"]
+    serialized_cases = json.dumps(case_fields).lower()
+    check(
+        f"observer receipt case fields contain only neutral identities for {shard_id}",
+        return_code == 0
+        and len(case_fields) == 2 * sum(len(STAGE_MODULE.stage_case_ids(stage)) for stage in stage_ids)
+        and all(MODULE.re.fullmatch(r"dispatcher(?:-remediation)?:[0-9a-f]{64}", identity) for identity in case_fields)
+        and not any(word in serialized_cases for word in ("command", "environment", "logs", "credential", "provider", "account", "timestamp", "hostname", "cost", "path"))
+        and not any(label in serialized_cases for stage in stage_ids for label in STAGE_MODULE.CASE_LABELS.get(stage, ())),
+    )
+check("all seven observer-produced neutral receipt fields still aggregate", lambda: (
+    MODULE.validate_aggregate_receipts(privacy_receipts, "a" * 40) or True))
+
+
+def _shell_success_emits_neutral_completion() -> bool:
+    source = (ROOT / "tests/test-agy-worker.sh").read_text(encoding="utf-8")
+    body = source.split("ok() {\n", 1)[1].split("\n}\n", 1)[0]
+    label = STAGE_MODULE.CASE_LABELS["dispatcher-a"][0]
+    nonce = "d" * 64
+    with tempfile.TemporaryDirectory() as temporary:
+        result = subprocess.run(
+            ["bash", "-c", 'ROOT="$1"; TMP="$2"; pass=0\nok() {\n' + body + '\n}\nok "$3"',
+             "success-fixture", str(ROOT), temporary, label],
+            env=dict(os.environ, AGY_WORKER_CI_CASE_NONCE=nonce, AGY_WORKER_CI_CASE_STAGE="dispatcher-a"),
+            capture_output=True, check=False,
+        )
+        identity = STAGE_MODULE.case_identity("dispatcher", label)
+        return (
+            result.returncode == 0
+            and MODULE.re.fullmatch(r"dispatcher:[0-9a-f]{64}", identity) is not None
+            and result.stdout == f"  ok   {label}\n@@agy-worker-ci-case:{nonce}:dispatcher-a:{identity}\n".encode()
+            and Path(temporary, "completed-cases").read_text() == label + "\n"
+        )
+
+
+check("actual shell success path emits a neutral case ID and keeps its human label", _shell_success_emits_neutral_completion)
 
 
 # 3. Publication Security
@@ -479,6 +477,8 @@ def observed_shard(
         ann = MODULE.STAGE_MAP[s]
         lines.append(f"==> {ann}\n".encode())
         lines.append(f"@@agy-worker-ci-shard:{NONCE}:{ann}\n".encode())
+        for case in STAGE_MODULE.stage_case_ids(s):
+            lines.append(f"@@agy-worker-ci-case:{NONCE}:{s}:{case}\n".encode())
     raw = b"".join(lines)
     return MODULE.observe_stream(
         io.BytesIO(raw), lambda: return_code, "c" * 40, shard_id, NONCE, io.BytesIO()
@@ -509,19 +509,19 @@ check(
 )
 check(
     "ordinary stdout cannot spoof shard control marker",
-    lambda: observed_shard("dispatcher", 0, 1, spoof_stdout=True)[1]["outcome"] == "passed",
+    lambda: observed_shard("dispatcher-a", 0, 1, spoof_stdout=True)[1]["outcome"] == "passed",
 )
 
 
 def _duplicate_control_rejected() -> bool:
-    ann = MODULE.STAGE_MAP[MODULE.SHARDS["dispatcher"][0]]
+    ann = MODULE.STAGE_MAP[MODULE.SHARDS["dispatcher-a"][0]]
     raw = (
         f"@@agy-worker-ci-shard:{NONCE}:{ann}\n"
         f"@@agy-worker-ci-shard:{NONCE}:{ann}\n"
     ).encode()
     try:
         MODULE.observe_stream(
-            io.BytesIO(raw), lambda: 1, "c" * 40, "dispatcher", NONCE, output=io.BytesIO()
+            io.BytesIO(raw), lambda: 1, "c" * 40, "dispatcher-a", NONCE, output=io.BytesIO()
         )
     except MODULE.ShardingError:
         return True
@@ -558,7 +558,7 @@ def _deterministic_stage_durations() -> bool:
     return (
         return_code == 1
         and output.getvalue() == b"ordinary output\n"
-        and receipt["schema_version"] == 2
+        and receipt["schema_version"] == 3
         and receipt["stage_durations"]
         == [
             {"id": stages[0], "duration_seconds": 1.25},
@@ -575,17 +575,17 @@ check(
 
 
 # 6. Aggregate Verification
-def all_four_passed_receipts(head_sha: str = "a" * 40) -> list[dict[str, Any]]:
+def all_seven_passed_receipts(head_sha: str = "a" * 40) -> list[dict[str, Any]]:
     res = []
-    for shard in ("dispatcher", "dispatcher-remediation", "other-a", "other-b"):
+    for shard in tuple(MODULE.SHARDS):
         rec = valid_receipt(shard)
         rec["head_sha"] = head_sha
         res.append(rec)
     return res
 
 
-valid_aggregate = all_four_passed_receipts()
-check("valid four-shard aggregate passes validation", lambda: (MODULE.validate_aggregate_receipts(valid_aggregate, "a" * 40) or True))
+valid_aggregate = all_seven_passed_receipts()
+check("valid seven-shard aggregate passes validation", lambda: (MODULE.validate_aggregate_receipts(valid_aggregate, "a" * 40) or True))
 
 
 def aggregate_rejected(receipts: list[dict[str, Any]], expected_head: str = "a" * 40) -> bool:
@@ -596,7 +596,7 @@ def aggregate_rejected(receipts: list[dict[str, Any]], expected_head: str = "a" 
     return False
 
 
-legacy_aggregate = [valid_v1_receipt(shard) for shard in MODULE.SHARDS]
+legacy_aggregate = [legacy_receipt(shard, 2) for shard in MODULE.SHARDS]
 check(
     "same-run aggregate rejects otherwise valid legacy receipt v1 artifacts",
     lambda: aggregate_rejected(legacy_aggregate),
@@ -605,11 +605,12 @@ check(
 
 check("missing shard receipt (3 receipts) is rejected", aggregate_rejected(valid_aggregate[:3]))
 
-duplicate_shard_set = [valid_aggregate[0], valid_aggregate[1], valid_aggregate[2], copy.deepcopy(valid_aggregate[2])]
+duplicate_shard_set = copy.deepcopy(valid_aggregate)
+duplicate_shard_set[-1] = copy.deepcopy(valid_aggregate[-2])
 check("duplicate shard receipt in aggregate is rejected", aggregate_rejected(duplicate_shard_set))
 
 failed_shard_set = copy.deepcopy(valid_aggregate)
-failed_shard_set[0] = valid_receipt("dispatcher", "failed", 1)
+failed_shard_set[0] = valid_receipt("dispatcher-a", "failed", 1)
 check("aggregate with a failed shard receipt is rejected", aggregate_rejected(failed_shard_set))
 
 wrong_sha_set = copy.deepcopy(valid_aggregate)
@@ -641,7 +642,7 @@ def _valid_directory_aggregate() -> bool:
         return True
 
 
-check("verify_aggregate accepts exactly four successful bound artifacts", _valid_directory_aggregate)
+check("verify_aggregate accepts exactly seven successful bound artifacts", _valid_directory_aggregate)
 
 
 def _producer_results_fail_closed() -> bool:
@@ -748,7 +749,7 @@ missing_shard_arg = subprocess.run(
 check("ci-offline.sh rejects missing shard argument", missing_shard_arg.returncode == 2 and b"rejected arguments" in missing_shard_arg.stderr)
 
 duplicate_shell_shard = subprocess.run(
-    ["./scripts/ci-offline.sh", "--shard", "dispatcher", "--shard", "other-a"],
+    ["./scripts/ci-offline.sh", "--shard", "dispatcher-a", "--shard", "other-a"],
     cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
 )
 check("ci-offline.sh rejects duplicate shard selection", duplicate_shell_shard.returncode == 2)
@@ -756,7 +757,7 @@ check("ci-offline.sh rejects duplicate shard selection", duplicate_shell_shard.r
 duplicate_run_shard = subprocess.run(
     [
         "/usr/bin/python3", "-I", "-S", "-B", "scripts/ci_sharding.py", "run-shard",
-        "--shard", "dispatcher", "--shard", "other-a", "--receipt", "/tmp/unused.json",
+        "--shard", "dispatcher-a", "--shard", "other-a", "--receipt", "/tmp/unused.json",
     ],
     cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
 )
@@ -780,6 +781,243 @@ duplicate_producer = subprocess.run(
     cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
 )
 check("aggregate CLI rejects duplicate producer result", duplicate_producer.returncode != 0)
+
+# Case identities are completion evidence, independently of stage announcements.
+def _case_stream_rejected(cases: list[str], *, nonce: str = NONCE,
+                          before_stage: bool = False, returncode: int = 0) -> bool:
+    stage = "dispatcher-a"
+    announcement = f"@@agy-worker-ci-shard:{NONCE}:{MODULE.STAGE_MAP[stage]}\n".encode()
+    records = b"".join(f"@@agy-worker-ci-case:{nonce}:{stage}:{case}\n".encode() for case in cases)
+    raw = records + announcement if before_stage else announcement + records
+    try:
+        MODULE.observe_stream(io.BytesIO(raw), lambda: returncode, "c" * 40,
+                              stage, NONCE, io.BytesIO())
+    except MODULE.ShardingError:
+        return True
+    return False
+
+
+case_ids = list(STAGE_MODULE.stage_case_ids("dispatcher-a"))
+for case_label, mutated_cases in (
+    ("omitted", case_ids[:-1]),
+    ("duplicated", case_ids + case_ids[-1:]),
+    ("unassigned", case_ids + ["dispatcher:unassigned new assertion"]),
+    ("renamed", case_ids[:-1] + ["dispatcher:renamed assertion"]),
+    ("wrong partition", case_ids[:-1] + [STAGE_MODULE.stage_case_ids("dispatcher-b")[0]]),
+):
+    check(f"successful stage with {case_label} case completion fails closed",
+          lambda cases=mutated_cases: _case_stream_rejected(cases))
+check("case completion before stage announcement fails closed",
+      lambda: _case_stream_rejected(case_ids, before_stage=True))
+for fake_nonce in ("0" * 64, "short", "G" * 64):
+    check(f"case completion rejects nonce {fake_nonce[:5]}",
+          lambda value=fake_nonce: _case_stream_rejected(case_ids, nonce=value))
+check("all completed cases cannot turn a failed stage into success",
+      lambda: observed_shard("dispatcher-a", 1, 1)[1]["outcome"] == "failed")
+
+for mutation in ("omit", "duplicate", "new"):
+    receipts = copy.deepcopy(valid_aggregate)
+    cases = receipts[0]["observed_case_ids"]
+    if mutation == "omit": cases.pop()
+    elif mutation == "duplicate": cases.append(cases[0])
+    else: cases.append("dispatcher:unassigned new assertion")
+    check(f"seven receipts reject {mutation} case evidence", aggregate_rejected(receipts))
+
+
+def _source_mutation_rejected(relative: str, old: str, new: str) -> bool:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for source in STAGE_MODULE.SHELL_SOURCES:
+            target = root / source
+            target.parent.mkdir(parents=True, exist_ok=True)
+            text = (ROOT / source).read_text(encoding="utf-8")
+            if source == relative:
+                assert old in text
+                text = text.replace(old, new, 1)
+            target.write_text(text, encoding="utf-8")
+        try:
+            STAGE_MODULE.validate_shell_inventory(root)
+        except ValueError:
+            return True
+    return False
+
+
+shell_source = "tests/test-agy-worker.sh"
+multiline_completion = "ok " + chr(92) + '\n    "unassigned multiline assertion"\nfi # part b'
+check("multiline source fixture contains a real shell continuation", lambda: (
+    multiline_completion.encode().startswith(b"ok " + bytes((92, 10)))))
+for description, old, new in (
+    ("literal rename in unselected part", 'ok "installer copies the canonical bundle and records the exact clone path"', 'ok "renamed installer assertion"'),
+    ("new literal in unselected part", 'fi # part b', 'ok "unassigned new assertion"\nfi # part b'),
+    ("duplicate declaration", 'fi # part b', 'ok "installer copies the canonical bundle and records the exact clone path"\nfi # part b'),
+    ("missing declaration", '    ok "installer copies the canonical bundle and records the exact clone path"', ':'),
+    ("helper completion template rename", 'ok "$name (exit $got)"', 'ok "$name changed (exit $got)"'),
+    ("loop completion template rename", 'ok "$preamble_workflow/$preamble_mode provider-bound preamble and existing contract order"', 'ok "$preamble_workflow/$preamble_mode changed contracts"'),
+    ("unknown wrapper invocation", 'fi # part b', 'expect_new_assertion "unassigned literal"\nfi # part b'),
+    ("subshell completion", 'fi # part b', '(ok "unassigned subshell assertion")\nfi # part b'),
+    ("pipeline completion", 'fi # part b', ': | ok "unassigned pipeline assertion"\nfi # part b'),
+    ("multiline completion", 'fi # part b', multiline_completion),
+    ("quoted completion command", 'fi # part b', '"ok" "unassigned new assertion"\nfi # part b'),
+    ("escaped completion command", 'fi # part b', 'o\\k "unassigned new assertion"\nfi # part b'),
+    ("wrapped completion", 'fi # part b', 'command ok "unassigned wrapped assertion"\nfi # part b'),
+    ("unknown assertion wrapper", 'fi # part b', 'new_check() { ok "new assertion wrapper"; }\nnew_check\nfi # part b'),
+    ("unknown sourced subshell", 'fi # part b', '(. "$ROOT/tests/new_cases.sh")\nfi # part b'),
+    ("unknown sourced pipeline", 'fi # part b', ': | source "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("unknown sourced file", 'fi # part b', '. "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("quoted source command", 'fi # part b', '"source" "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("escaped source command", 'fi # part b', 's\\ource "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("assignment-prefixed source command", 'fi # part b', 'FOO=x source "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("multiple assignment and builtin source prefixes", 'fi # part b', 'FOO=x BAR=y builtin source "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("source behind command prefix options", 'fi # part b', 'command -p source "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("dot source behind builtin prefix options", 'fi # part b', 'builtin -- . "$ROOT/tests/new_cases.sh"\nfi # part b'),
+    ("case-producing loop domain addition", 'for capability_case in resume continue scoped-repair effort no-effort restart; do', 'for capability_case in resume continue scoped-repair effort no-effort restart new-case; do'),
+    ("case-producing loop domain omission", 'for capability_case in resume continue scoped-repair effort no-effort restart; do', 'for capability_case in resume continue scoped-repair effort no-effort; do'),
+    ("nested case-producing loop domain change", 'for preamble_mode in whole scoped; do', 'for preamble_mode in whole scoped extra; do'),
+    ("helper public-label third argument rename", 'project continuation rejects a 4097-byte marker before state replacement or provider call', 'renamed oversized marker assertion'),
+    ("helper non-label argument change", 'expect_exit "installer accepts replacement metacharacters in clone path" 0 "$rc"', 'expect_exit "installer accepts replacement metacharacters in clone path" 1 "$rc"'),
+    ("source argument addition", '. "$ROOT/tests/agy_worker_project_lifecycle_cases.sh"', '. "$ROOT/tests/agy_worker_project_lifecycle_cases.sh" extra'),
+    ("unsupported quoted declaration shape", 'fi # part b', '"ok unassigned malformed assertion\nfi # part b'),
+):
+    check(f"source guard rejects {description}",
+          lambda a=old, b=new: _source_mutation_rejected(shell_source, a, b))
+
+artifact_fixture_entry = '    "three-key-direct": {"schema_version": 5, "kind": "agy-worker-selection", "selection_mode": "exact-model"},'
+artifact_fixture_mutations = (
+    ("new literal fixture key", artifact_fixture_entry, artifact_fixture_entry + '\n    "new-unassigned": {"schema_version": 5},'),
+    ("renamed literal fixture key", artifact_fixture_entry, artifact_fixture_entry.replace("three-key-direct", "renamed-unassigned")),
+    ("omitted literal fixture key", artifact_fixture_entry, ""),
+    ("duplicated literal fixture key", artifact_fixture_entry, artifact_fixture_entry + "\n" + artifact_fixture_entry),
+    ("dynamic fixture key", artifact_fixture_entry, artifact_fixture_entry.replace('"three-key-direct"', 'f"three-key-{\'direct\'}"')),
+    ("new retired schema fixture", "for schema in (1, 2, 3, 4):", "for schema in (1, 2, 3, 4, 6):"),
+    ("omitted retired schema fixture", "for schema in (1, 2, 3, 4):", "for schema in (1, 2, 3):"),
+    ("duplicated retired schema fixture", "for schema in (1, 2, 3, 4):", "for schema in (1, 2, 3, 4, 4):"),
+    ("changed retired fixture expansion", 'cases[f"retired-{schema}"]', 'cases[f"old-{schema}"]'),
+    ("changed fixture filename expansion", 'root / f"{name}.json"', 'root / f"renamed-{name}.json"'),
+    ("additional fixture writer", 'for name, value in cases.items():', '(root / "new-unassigned.json").write_text("{}")\nfor name, value in cases.items():'),
+    ("unknown fixture producer header", 'python3 -B - "$VALID_DIRECT_RECORD" "$VALID_DEFAULT_RECORD" "$ARTIFACT_CASES"', 'python3 -I -B - "$VALID_DIRECT_RECORD" "$VALID_DEFAULT_RECORD" "$ARTIFACT_CASES"'),
+    ("malformed fixture producer", 'cases = {\n    "three-key-direct"', 'cases = {\n    ?"three-key-direct"'),
+)
+for description, old, new in artifact_fixture_mutations:
+    check(f"source guard rejects {description} in unselected part a",
+          lambda a=old, b=new: _source_mutation_rejected(shell_source, a, b))
+check("source guard derives all 15 fixture filename labels before selection", lambda: (
+    tuple(label for part, kind, label in STAGE_MODULE.shell_declarations(
+        (ROOT / shell_source).read_text(encoding="utf-8"), "common") if kind == "fixture")
+    == tuple(label for label in STAGE_MODULE.CASE_LABELS["dispatcher-a"]
+             if label.startswith("runtime validator rejects "))))
+check("source guard accepts both complete real shell sources", lambda: (
+    STAGE_MODULE.validate_shell_inventory(ROOT) is None))
+check("source guard accepts the existing non-command dot pattern", lambda: (
+    STAGE_MODULE.shell_declarations("grep -q .\n", "common") == ()))
+check("source guard covers sourced lifecycle assertions", lambda: _source_mutation_rejected(
+    "tests/agy_worker_project_lifecycle_cases.sh",
+    'ok "project workflow exposes pending Codex-owned verification without changing resume semantics"',
+    'ok "renamed sourced assertion"'))
+
+
+def _digest_binds_case_assignment() -> bool:
+    before = MODULE.inventory_digest()
+    original = STAGE_MODULE.CASE_LABELS["dispatcher-a"]
+    try:
+        STAGE_MODULE.CASE_LABELS["dispatcher-a"] = original[::-1]
+        return before != MODULE.inventory_digest()
+    finally:
+        STAGE_MODULE.CASE_LABELS["dispatcher-a"] = original
+
+
+check("case identity/order assignment changes inventory digest", _digest_binds_case_assignment)
+
+
+def _digest_binds_case_identity_encoding() -> bool:
+    before = MODULE.inventory_digest()
+    original = STAGE_MODULE.case_identity
+    try:
+        STAGE_MODULE.case_identity = lambda suite, label: original(suite, label) + "0"
+        return before != MODULE.inventory_digest()
+    finally:
+        STAGE_MODULE.case_identity = original
+
+
+check("case identity encoding changes inventory digest", _digest_binds_case_identity_encoding)
+check("case digest separates logical suite and label boundaries", lambda: (
+    STAGE_MODULE.case_identity("dispatcher", "a:b").rsplit(":", 1)[-1]
+    != STAGE_MODULE.case_identity("dispatcher:a", "b").rsplit(":", 1)[-1]))
+
+
+def _digest_binds_fixture_producer() -> bool:
+    before = MODULE.inventory_digest()
+    original = STAGE_MODULE.SELECTION_ARTIFACT_PRODUCER
+    try:
+        STAGE_MODULE.SELECTION_ARTIFACT_PRODUCER = original.replace(
+            'cases[f"retired-{schema}"]', 'cases[f"old-{schema}"]')
+        return before != MODULE.inventory_digest()
+    finally:
+        STAGE_MODULE.SELECTION_ARTIFACT_PRODUCER = original
+
+
+check("fixture producer structure changes inventory digest", _digest_binds_fixture_producer)
+check("409 explicit case identities are unique and assigned", lambda: (
+    len(STAGE_MODULE.all_case_ids()) == len(set(STAGE_MODULE.all_case_ids())) == 409))
+check("all seven receipts stay within the existing fixed artifact size bound", lambda: all(
+    len(MODULE.canonical_bytes(receipt)) + 1 <= MODULE.MAX_RECEIPT_BYTES for receipt in valid_aggregate))
+
+
+def _remediation_declaration_mutation_rejected(mutation: str) -> bool:
+    source = (ROOT / "tests/test-agy-worker-remediation.py").read_text(encoding="utf-8")
+    label = STAGE_MODULE.CASE_LABELS["dispatcher-remediation-a"][0]
+    if mutation == "rename":
+        source = source.replace(label, "unassigned new remediation assertion", 1)
+    elif mutation == "duplicate":
+        source = source.replace('if tuple(DECLARED_LABELS) != CANONICAL_LABELS:', f'check({label!r}, lambda: None)\nif tuple(DECLARED_LABELS) != CANONICAL_LABELS:', 1)
+    else:
+        source = source.replace('    DECLARED_LABELS.append(label)', '    return\n    DECLARED_LABELS.append(label)', 1)
+    command = (
+        "import sys; sys.argv=['test', '--ci-part', 'c', '--inventory-only']; "
+        "exec(compile(" + repr(source) + ", " + repr(str(ROOT / 'tests/test-agy-worker-remediation.py'))
+        + ", 'exec'), {'__name__':'__main__', '__file__':" + repr(str(ROOT / 'tests/test-agy-worker-remediation.py')) + "})"
+    )
+    result = subprocess.run(["/usr/bin/python3", "-I", "-S", "-B", "-c", command],
+                            capture_output=True, check=False)
+    return result.returncode != 0 and b"declaration inventory" in result.stderr
+
+
+for mutation in ("rename", "duplicate", "omit"):
+    check(f"remediation registers all declarations before filtering: {mutation}",
+          lambda value=mutation: _remediation_declaration_mutation_rejected(value))
+
+def _failed_callback_emits_no_completion() -> bool:
+    import ast
+    from types import SimpleNamespace
+
+    source = (ROOT / "tests/test-agy-worker-remediation.py").read_text(encoding="utf-8")
+    node = next(item for item in ast.parse(source).body
+                if isinstance(item, ast.FunctionDef) and item.name == "check")
+    label = STAGE_MODULE.CASE_LABELS["dispatcher-remediation-a"][0]
+    emitted: list[str] = []
+    namespace: dict[str, Any] = {
+        "CHECKS_RUN": 0, "DECLARED_LABELS": [], "COMPLETED_LABELS": [],
+        "CANONICAL_LABELS": (label,), "PART_LABELS": (label,),
+        "SELECTION": SimpleNamespace(inventory_only=False), "SELECTED_GROUP": None,
+        "FOCUSED_CHECK": None, "emit_case_completion": emitted.append,
+        "case_identity": STAGE_MODULE.case_identity,
+    }
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "callback-fixture", "exec"), namespace)
+    def fail_action() -> None:
+        raise RuntimeError("assertion failed")
+    try:
+        namespace["check"](label, fail_action)
+    except AssertionError:
+        return not emitted and not namespace["COMPLETED_LABELS"] and namespace["CHECKS_RUN"] == 0
+    return False
+
+
+check("failed callback emits no success case control record", _failed_callback_emits_no_completion)
+check("heredoc embedded fake assertions are data, not source declarations", lambda: (
+    STAGE_MODULE.shell_declarations("cat <<'DATA'\nok \"fake assertion\"\nDATA\n", "common") == ()))
+check("source guard rejects inline conditional unassigned assertion", lambda: _source_mutation_rejected(
+    shell_source, 'fi # part b', 'if ok "unassigned inline assertion"; then :; fi\nfi # part b'))
+check("source guard rejects malformed assertion declaration", lambda: _source_mutation_rejected(
+    shell_source, 'fi # part b', 'ok\nfi # part b'))
 
 print()
 print(f"PASSED: {passed} tests")

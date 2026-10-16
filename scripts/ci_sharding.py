@@ -27,7 +27,11 @@ from ci_stages import (  # noqa: E402 -- sibling imports follow startup isolatio
     STAGES,
     canonical_bytes,
     inventory_digest,
-    receipt_v1_inventory_digest,
+    CASE_CONTROL,
+    all_case_ids,
+    parse_case_completion,
+    stage_case_ids,
+    validate_case_sequence,
 )
 
 MAX_RECEIPT_BYTES = 64 * 1024
@@ -70,18 +74,20 @@ def validate_receipt(
         "observed_stage_ids",
         "outcome",
         "integrity",
+        "expected_case_ids",
+        "observed_case_ids",
     }
     if not isinstance(data, dict):
         raise ShardingError("shard receipt root keys mismatch")
     schema_version = data.get("schema_version")
-    if schema_version not in (1, 2) or data.get("kind") != "agy-worker-ci-shard-receipt":
+    if schema_version != 3 or data.get("kind") != "agy-worker-ci-shard-receipt":
         raise ShardingError("shard receipt identity mismatch")
     if required_schema_version is not None and schema_version != required_schema_version:
         raise ShardingError(
             f"shard receipt schema_version {schema_version} is not current version "
             f"{required_schema_version}"
         )
-    root_keys = common_root_keys | ({"stage_durations"} if schema_version == 2 else set())
+    root_keys = common_root_keys | {"stage_durations"}
     if not isinstance(data, dict) or set(data) != root_keys:
         raise ShardingError("shard receipt root keys mismatch")
     if not isinstance(data["head_sha"], str) or not COMMIT_RE.fullmatch(data["head_sha"]):
@@ -91,9 +97,7 @@ def validate_receipt(
     digest = data["inventory_sha256"]
     if not isinstance(digest, str) or not SHA256_RE.fullmatch(digest):
         raise ShardingError("inventory_sha256 must be lowercase SHA-256")
-    schema_inventory_sha = (
-        receipt_v1_inventory_digest() if schema_version == 1 else inventory_digest()
-    )
+    schema_inventory_sha = inventory_digest()
     if digest != schema_inventory_sha:
         raise ShardingError("inventory_sha256 does not match receipt schema inventory")
     if expected_inventory_sha is not None and digest != expected_inventory_sha:
@@ -125,7 +129,21 @@ def validate_receipt(
         if observed_stages != list(expected_stages[: len(observed_stages)]):
             raise ShardingError("failed shard receipt observed stages must be a prefix of expected stages")
 
-    if schema_version == 2:
+    expected_cases = [identity for stage_id in expected_stages for identity in stage_case_ids(stage_id)]
+    if data["expected_case_ids"] != expected_cases:
+        raise ShardingError("expected_case_ids does not match canonical shard membership")
+    observed_cases = data["observed_case_ids"]
+    if not isinstance(observed_cases, list) or not all(isinstance(case, str) for case in observed_cases):
+        raise ShardingError("observed_case_ids must be a list of strings")
+    try:
+        validate_case_sequence(observed_cases, expected_cases, complete=outcome == "passed")
+    except ValueError as exc:
+        raise ShardingError(str(exc)) from exc
+    announced_cases = {identity for stage_id in observed_stages for identity in stage_case_ids(stage_id)}
+    if any(identity not in announced_cases for identity in observed_cases):
+        raise ShardingError("case completion preceded its stage announcement")
+
+    if schema_version == 3:
         stage_durations = data["stage_durations"]
         if not isinstance(stage_durations, list):
             raise ShardingError("stage_durations must be a list")
@@ -178,7 +196,7 @@ def publish_receipt(target_path: Path, receipt: dict[str, Any]) -> None:
     validate_receipt(
         receipt,
         expected_inventory_sha=inventory_digest(),
-        required_schema_version=2,
+        required_schema_version=3,
     )
     target = validate_publication_target(target_path)
     raw = canonical_bytes(receipt) + b"\n"
@@ -261,13 +279,30 @@ def observe_stream(
     expected_stage_ids = SHARDS[shard_id]
     expected_announces = [STAGE_MAP[s].encode("utf-8") for s in expected_stage_ids]
     control_prefix = CONTROL_LABEL + nonce.encode("ascii") + b":"
+    if not SHA256_RE.fullmatch(nonce):
+        raise ShardingError("invalid case completion nonce")
     observed_stage_ids: list[str] = []
+    observed_case_ids: list[str] = []
+    expected_case_ids = [identity for stage_id in expected_stage_ids for identity in stage_case_ids(stage_id)]
     started: list[float] = []
     durations: list[float] = []
     control_error = False
 
     for line in iter(lambda: stream.readline(8192), b""):
         stripped = line.rstrip(b"\r\n")
+        if stripped.startswith(CASE_CONTROL):
+            try:
+                if not observed_stage_ids:
+                    raise ValueError("case completion preceded its stage announcement")
+                identity = parse_case_completion(stripped, nonce, observed_stage_ids[-1])
+                if identity not in stage_case_ids(observed_stage_ids[-1]):
+                    raise ValueError("case completion belongs to another stage")
+                if len(observed_case_ids) >= len(expected_case_ids) or identity != expected_case_ids[len(observed_case_ids)]:
+                    raise ValueError("case completion inventory is duplicated, reordered, or unassigned")
+                observed_case_ids.append(identity)
+            except (ValueError, UnicodeDecodeError):
+                control_error = True
+            continue
         if stripped.startswith(CONTROL_LABEL):
             next_index = len(observed_stage_ids)
             if (
@@ -297,19 +332,26 @@ def observe_stream(
     if return_code != 0 and not observed_stage_ids:
         raise ShardingError("shard failed before the first stage announcement")
 
+    try:
+        validate_case_sequence(observed_case_ids, expected_case_ids, complete=return_code == 0)
+    except ValueError as exc:
+        raise ShardingError(str(exc)) from exc
+
     stage_durations = [
         {"id": s_id, "duration_seconds": dur}
         for s_id, dur in zip(observed_stage_ids, durations)
     ]
 
     receipt = {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "agy-worker-ci-shard-receipt",
         "head_sha": head_sha,
         "inventory_sha256": inventory_digest(),
         "shard_id": shard_id,
         "expected_stage_ids": list(expected_stage_ids),
         "observed_stage_ids": list(observed_stage_ids),
+        "expected_case_ids": expected_case_ids,
+        "observed_case_ids": observed_case_ids,
         "stage_durations": stage_durations,
         "outcome": "passed" if return_code == 0 else "failed",
         "integrity": {
@@ -322,7 +364,7 @@ def observe_stream(
         receipt,
         head_sha,
         inventory_digest(),
-        required_schema_version=2,
+        required_schema_version=3,
     )
     return return_code, receipt
 
@@ -372,13 +414,14 @@ def validate_aggregate_receipts(
 
     observed_shard_ids: set[str] = set()
     all_observed_stages: list[str] = []
+    all_observed_cases: list[str] = []
 
     for receipt in receipts:
         validate_receipt(
             receipt,
             expected_head_sha,
             expected_inventory_sha,
-            required_schema_version=2,
+            required_schema_version=3,
         )
         shard_id = receipt["shard_id"]
         if shard_id in observed_shard_ids:
@@ -389,11 +432,16 @@ def validate_aggregate_receipts(
             raise ShardingError(f"shard {shard_id!r} reported outcome {receipt['outcome']!r}")
 
         all_observed_stages.extend(receipt["observed_stage_ids"])
+        all_observed_cases.extend(receipt["observed_case_ids"])
 
     if observed_shard_ids != set(SHARDS):
         missing = set(SHARDS) - observed_shard_ids
         raise ShardingError(f"missing shard receipts: {sorted(missing)}")
 
+    if len(all_observed_cases) != len(all_case_ids()) or set(all_observed_cases) != set(all_case_ids()):
+        raise ShardingError("aggregate case inventory is missing or duplicated")
+    if len(set(all_observed_cases)) != len(all_observed_cases):
+        raise ShardingError("duplicate case identity observed across shards")
     expected_all_stage_ids = [s.id for s in STAGES]
     if len(all_observed_stages) != len(expected_all_stage_ids):
         raise ShardingError(

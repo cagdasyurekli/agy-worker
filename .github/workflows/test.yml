@@ -67,8 +67,11 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          - dispatcher
-          - dispatcher-remediation
+          - dispatcher-a
+          - dispatcher-b
+          - dispatcher-remediation-a
+          - dispatcher-remediation-b
+          - dispatcher-remediation-c
           - other-a
           - other-b
     steps:

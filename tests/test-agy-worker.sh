@@ -13,6 +13,14 @@ unset AGY_WORKER_MAX_ATTEMPTS AGY_WORKER_JOB_ID AGY_WORKER_LOG_DIR
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$HERE/.."
+CI_PART="full"
+if [[ "$#" == 2 && "$1" == --ci-part && ( "$2" == a || "$2" == b ) ]]; then
+    CI_PART="$2"
+elif [[ "$#" != 0 ]]; then
+    printf '%s\n' 'dispatcher suite: rejected arguments' >&2
+    exit 2
+fi
+python3 -I -S -B "$ROOT/scripts/ci_stages.py" --validate-shell-inventory || exit 1
 WORKER="$ROOT/agy-worker.sh"
 SELECTOR="$ROOT/model-selection.sh"
 TMP="$(mktemp -d -t agyworker-dispatch.XXXXXX)" || exit 1
@@ -42,7 +50,24 @@ else
 fi
 pass=0; fail=0
 
-ok() { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
+ok() {
+    printf '  ok   %s\n' "$1"
+    printf '%s\n' "$1" >> "$TMP/completed-cases"
+    if [[ -n "${AGY_WORKER_CI_CASE_NONCE:-}" ]]; then
+        if ! python3 -I -S -B - "$ROOT/scripts" "$1" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from ci_stages import case_identity, emit_case_completion
+
+emit_case_completion(case_identity("dispatcher", sys.argv[2]))
+PY
+        then
+            exit 1
+        fi
+    fi
+    pass=$((pass+1))
+}
 bad() { printf '  FAIL %s\n' "$1"; fail=$((fail+1)); }
 expect_exit() {
     local name="$1" want="$2" got="$3"
@@ -151,6 +176,7 @@ whole_worktree_manifest_sha() {
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["launch_approval_sha256"])'
 }
 
+if [[ "$CI_PART" != b ]]; then
 echo "transmission preview boundary:"
 if python3 -I -S -B - "$WORKER" "$ROOT" "$PRIMARY_WORKTREE" \
         "$PREVIEW_WORKTREE" "$DETACHED_WORKTREE" "$TMP" <<'PY'
@@ -781,6 +807,7 @@ if [[ "$help_ok" == 1 && "$invalid_help_rc" == 64 && ! -s "$TMP/help-invalid.out
 else
     bad "help stdout contract or sanitized invalid usage"
 fi
+fi # first assertions in part a; shared fake provider setup follows
 cat > "$TMP/bin/agy" <<'FAKE'
 #!/usr/bin/env bash
 set -u
@@ -1330,6 +1357,11 @@ run_worker() {
         ${transmission_approval_args+"${transmission_approval_args[@]}"} "$@"
 }
 
+literal_smoke_setup() {
+    printf 'small task\n' | run_worker literal-smoke --model gemini-3.6-flash-low > "$TMP/literal-smoke.out" 2> "$TMP/literal-smoke.err"
+}
+
+if [[ "$CI_PART" != b ]]; then
 echo "agy-worker.sh offline test suite"
 echo
 
@@ -1409,7 +1441,7 @@ else
     bad "post-preview whole content binding failure boundary"
 fi
 
-printf 'small task\n' | run_worker literal-smoke --model gemini-3.6-flash-low > "$TMP/literal-smoke.out" 2> "$TMP/literal-smoke.err"
+literal_smoke_setup
 rc=$?
 if [[ "$rc" != "0" ]]; then
     # Keep the first synthetic dispatch actionable in remote CI.  This fixture
@@ -3617,6 +3649,11 @@ printf 'bad envelope\n' | PATH="$TMP/bin:$PATH" \
 rc=$?
 expect_exit "dispatcher independently rejects schema-invalid output" 4 "$rc"
 
+fi # part a
+if [[ "$CI_PART" == b ]]; then
+    literal_smoke_setup || exit 1
+fi
+if [[ "$CI_PART" != a ]]; then
 echo
 echo "progress-aware local dispatch lifecycle tests:"
 
@@ -5684,6 +5721,9 @@ if [[ "$(<"$TMP/installed/agy-worker/.pipeline-root")" == "$SPECIAL_REAL" ]] \
 else
     bad "installer copies the canonical bundle and records the exact clone path"
 fi
+
+fi # part b
+python3 -I -S -B "$ROOT/scripts/ci_stages.py" --validate-shell-completions "$CI_PART" "$TMP/completed-cases" || exit 1
 
 echo
 if (( fail )); then
