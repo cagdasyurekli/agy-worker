@@ -86,11 +86,38 @@ jobs with their creating release; see
 Default `--provider-isolation session` retains the caller's existing HOME/session
 and normal filesystem/network authority. Environment filtering and selected staging
 cannot prevent or exhaustively observe host access.
-A scoped session run on AGY 1.3.5 offered MCP, plugin, browser and web tools in its
-initialization stream. Tool availability does not establish execution; installed-plugin
-hooks and repository configuration auto-loading were not tested. The controller supplies
-no plugin, hook or MCP suppression policy; disabling slash commands does not provide
-that isolation.
+AGY 1.3.5 was observed starting workspace `.agents/mcp_config.json` commands
+before worker activity, including a whole-worktree session explore/plan run. It also
+started MCP servers from enabled user-installed plugins in session mode. Disabling slash
+commands does not suppress those servers. Hook execution remains unresolved.
+
+Preview rejects known executable provider configuration in provider content; every
+launch, including repairs, additionally checks the actual cwd and bounded ancestors.
+The same policy applies in session and native modes. Reserved
+leaves anywhere below `.agents/` are `mcp_config.json`, `hooks.json`, `skills.json`,
+`rules.json`, `agents.json` and `plugins.json`; `plugin.json` below `.agents/plugins/`
+is also rejected, including nested plugin manifest directories. The policy rejects
+these nodes regardless of contents/type, symlinked `.agents`, and symlinks at/below
+`.agents/plugins/`, using NFC/casefold path classification. Only workspace MCP startup
+was confirmed live; the other reserved paths are conservative execution candidates.
+Plain instructions, skills/rules Markdown and `marketplace.json` remain content.
+
+Use scoped mode excluding `.agents/` configuration; otherwise use a disposable
+worktree without it. Unselected source configuration is allowed when it is not an
+actual provider ancestor. Scoped preview checks known selected content; the final
+stage/job path is resolved later and its actual ancestry is checked before launch.
+Ancestors stop at the nearest `.git` file or directory, or conservatively at the
+filesystem root for Gitless stages; this overapproximation can reject configuration
+beyond AGY's actual project root. Trusted ambient HOME is exempt only as an ancestor,
+never as the actual cwd or a repository/job-controlled directory. No user settings,
+`.gemini` configuration or installed plugins are read, modified or suppressed by
+this rejection. Finite checks do not isolate a hostile same-user process replacing
+paths after observation or adding previously absent subtrees after enumeration.
+
+Native's private HOME and generated private settings exclude ambient plugins.
+`tests/test-provider-containment.py` cases `profile_and_environment_are_private` and
+`native_boundary_is_enforced` prove that local mechanism; they are not a live AGY
+1.3.5 native plugin negative canary.
 
 For each attempt, the controller derives the owning main worktree from the bound
 workdir's Git common directory and compares a bounded source observation against

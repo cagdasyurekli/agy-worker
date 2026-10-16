@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -73,6 +74,16 @@ EXPECTED_OUTPUT_CONTRACT = """OUTPUT CONTRACT — non-negotiable:
 
 TASK FOLLOWS:
 """
+
+
+def dispatch_module():
+    source = WORKER.with_name("scripts") / "agy_dispatch.py"
+    spec = importlib.util.spec_from_file_location("config_regression_dispatch", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def authority_module():
@@ -315,6 +326,338 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
             del arguments[index:index + 2]
         return subprocess.run([str(WORKER), *arguments], input=task, env=environment,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+    def config_path(self, relative: str, *, directory: bool = False) -> Path:
+        target = self.worktree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if directory:
+            target.mkdir()
+        else:
+            target.write_text('{"private-payload":"must-not-be-diagnosed"}')
+        return target
+
+    def config_preview(self, extra: list[str] | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([str(WORKER), "transmission-preview", *self.common, *(extra or [])],
+            input=b"initial synthetic task", env=self.environment, capture_output=True, check=False)
+
+    def assert_config_rejected(self, result: subprocess.CompletedProcess, path: str) -> None:
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"executable provider configuration", result.stderr)
+        self.assertIn(path.encode("unicode_escape").lower(), result.stderr.lower())
+        self.assertIn(b"use scoped mode excluding .agents/ configuration", result.stderr)
+        self.assertNotIn(b"must-not-be-diagnosed", result.stderr)
+        self.assertFalse(self.called.exists())
+
+    def select_config(self, path: str, kind: str) -> list[str]:
+        self.scope.write_text(json.dumps({"schema_version": 1, "kind": "agy-worker-provider-scope",
+            "read": [{"path": path, "kind": kind}], "write": []}))
+        return ["--provider-scope", str(self.scope)]
+
+    def test_workspace_config_preview_rejects_reserved_nodes_and_aliases(self) -> None:
+        paths = [f".agents/{leaf}.json" for leaf in
+                 ("mcp_config", "hooks", "skills", "rules", "agents", "plugins")]
+        paths += ["src/.agents/mcp_config.json", ".AGENTS/MCP_CONFIG.JSON",
+                  ".agents/plugins/example/mcp_config.json", ".agents/plugins/example/plugin.json",
+                  ".agents/plugins/example/.antigravity-plugin/plugin.json",
+                  ".agents/plugins/example/.gemini-plugin/plugin.json"]
+        for relative in paths:
+            with self.subTest(path=relative):
+                target = self.config_path(relative)
+                target.write_text("{}")
+                try:
+                    self.assert_config_rejected(self.config_preview(), relative)
+                finally:
+                    target.unlink()
+    def test_workspace_config_preview_rejects_reserved_directory_and_special_node(self) -> None:
+        directory = self.config_path(".agents/hooks.json", directory=True)
+        self.assert_config_rejected(self.config_preview(), ".agents/hooks.json")
+        directory.rmdir()
+        special = self.worktree / ".agents/hooks.json"
+        os.mkfifo(special)
+        self.assert_config_rejected(self.config_preview(), ".agents/hooks.json")
+        special.unlink()
+    def test_workspace_config_preview_rejects_loader_aliases(self) -> None:
+        aliases = [("nested/.agents", "../safe"), (".agents/mcp_config.json", "../safe/note"),
+                   (".agents/plugins", "../safe"), (".agents/plugins/example", "../../safe")]
+        (self.worktree / "safe").mkdir()
+        (self.worktree / "safe/note").write_text("ordinary text")
+        # Remove the empty ordinary directories from earlier cases first.
+        import shutil
+        if (self.worktree / ".agents").exists():
+            shutil.rmtree(self.worktree / ".agents")
+        for relative, destination in aliases:
+            with self.subTest(alias=relative):
+                target = self.worktree / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(destination)
+                try:
+                    self.assert_config_rejected(self.config_preview(), relative)
+                finally:
+                    target.unlink()
+
+    def test_workspace_config_diagnostic_is_escaped_bounded_and_content_free(self) -> None:
+        relative = "/".join(["segment" * 15] * 5) + "/line\nname/.agents/mcp_config.json"
+        self.config_path(relative)
+        result = self.config_preview()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"executable provider configuration", result.stderr)
+        self.assertIn(b"\\nname/.agents/mcp_config.json", result.stderr)
+        self.assertNotIn(b"must-not-be-diagnosed", result.stderr)
+        self.assertEqual(result.stderr.count(b"\n"), 1)
+        self.assertLessEqual(len(result.stderr), 768)
+
+    def test_workspace_config_scoped_preview_rejects_file_tree_and_nested_selection(self) -> None:
+        for relative, selected, kind in ((".agents/mcp_config.json", ".agents/mcp_config.json", "file"),
+                (".agents/mcp_config.json", ".agents", "tree"),
+                ("src/.agents/hooks.json", "src", "tree")):
+            target = self.config_path(relative)
+            try:
+                for isolation in ("session", "native"):
+                    with self.subTest(path=relative, kind=kind, isolation=isolation):
+                        extra = self.select_config(selected, kind) + ["--provider-isolation", isolation]
+                        self.assert_config_rejected(self.config_preview(extra), relative)
+            finally:
+                target.unlink()
+
+    def test_workspace_config_scoped_symlink_diagnostic_precedes_generic_rejection(self) -> None:
+        (self.worktree / "safe").mkdir()
+        (self.worktree / ".agents").symlink_to("safe")
+        extra = self.select_config(".agents", "tree")
+        self.assert_config_rejected(self.config_preview(extra), ".agents")
+
+    def test_workspace_config_plain_content_and_unselected_config_remain_allowed(self) -> None:
+        for path in (".agents/skills/example/SKILL.md", ".agents/rules/example.md",
+                     ".agents/plugins/marketplace.json", "config/mcp_config.json", "GEMINI.md"):
+            self.config_path(path)
+        internal_link = self.worktree / ".agents/rules/internal-link.md"
+        internal_link.symlink_to("../../README.md")
+        self.preview()
+        internal_link.unlink()
+        self.config_path(".agents/mcp_config.json")
+        for isolation in ("session", "native"):
+            with self.subTest(isolation=isolation):
+                _raw, preview = self.preview(extra=["--provider-scope", str(self.scope),
+                                                   "--provider-isolation", isolation])
+                self.assertEqual([entry["path"] for entry in preview["selected_content_manifest"]], ["README.md"])
+        raw, preview = self.preview(extra=["--provider-scope", str(self.scope)])
+        launched = self.launch(raw, preview["launch_approval_sha256"],
+                               extra=["--provider-scope", str(self.scope)])
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        self.assertFalse((self.logs / "fixture-1/stage-001/.agents").exists())
+
+    def test_workspace_config_ordinary_regular_loader_containers_remain_allowed(self) -> None:
+        for relative in (".agents", ".agents/plugins"):
+            with self.subTest(path=relative):
+                target = self.config_path(relative)
+                raw, preview = self.preview()
+                launched = self.launch(raw, preview["launch_approval_sha256"])
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                target.unlink()
+        self.assertEqual(self.called.read_text().splitlines(), ["provider-started"] * 2)
+
+    def test_workspace_config_whole_disposable_git_file_stops_ancestor_probe(self) -> None:
+        self.assertTrue((self.worktree / ".git").is_file())
+        outside = self.root / ".agents/mcp_config.json"
+        outside.parent.mkdir()
+        outside.write_text("{}")
+        raw, preview = self.preview()
+        result = self.launch(raw, preview["launch_approval_sha256"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.called.exists())
+
+    def test_workspace_config_every_whole_launch_origin_rechecks_without_extra_tree_walk(self) -> None:
+        module = dispatch_module()
+        for origin, conversation in (("initial", None), ("resume", "same"),
+                ("conversation-continue", "same"), ("fresh-attempt", None)):
+            with self.subTest(origin=origin):
+                raw, _preview = self.preview()
+                self.assertTrue(raw)
+                target = self.config_path(".agents/mcp_config.json")
+                stderr = self.root / "config-stderr"
+                with stderr.open("wb") as handle, contextlib.ExitStack() as stack:
+                    binding = module._ControllerBinding(state={"attempt_origin": origin,
+                        "conversation_id": conversation, "provider_scope_path": None},
+                        command={"schema_version": 16, "workdir": str(self.worktree), "base_commit": None,
+                                 "provider_isolation": "session"})
+                    launch = module._ScopedLaunch(argv=["agy"])
+                    streams = module._ControllerStreams(self.root / "stream", stderr, self.root / "envelope",
+                                                         stderr_fd=handle.fileno())
+                    for name in ("_reprobe_direct_selection", "_bound_worktree_baseline",
+                                 "_confirm_whole_controller_approval", "_confirm_launch_authority", "_bind_workspace_prompt"):
+                        stack.enter_context(mock.patch.object(module, name))
+                    spawn = stack.enter_context(mock.patch.object(module, "_spawn_controller_provider"))
+                    walker = stack.enter_context(mock.patch.object(module.WORKTREE.os, "scandir",
+                                                   wraps=module.WORKTREE.os.scandir))
+                    outcome = module._ControllerOutcome()
+                    module._launch_controller_provider(self.logs, binding, module._ProviderExecution(),
+                                                        streams, launch, outcome)
+                    self.assertFalse(spawn.called, f"provider launch bypass: {origin}")
+                    self.assertEqual(outcome.reason, "status_unavailable")
+                    # Existing launch boundary visits root and .agents exactly once.
+                    self.assertLessEqual(walker.call_count, 2)
+                self.assertIn(b"executable provider configuration", stderr.read_bytes())
+                self.assertIn(b".agents/mcp_config.json", stderr.read_bytes())
+                target.unlink()
+
+    def test_workspace_config_final_spawn_checks_actual_ancestors_and_late_mutations(self) -> None:
+        module = dispatch_module()
+        stage = self.logs / "stage"
+        stage.mkdir()
+        (stage / ".agents").mkdir()
+        # The session's ambient HOME is trusted only as an ancestor, never as cwd.
+        home = self.root / "ambient-home"
+        home.mkdir()
+        (home / ".agents").mkdir()
+        (home / ".agents/hooks.json").write_text("{}")
+        (home / "safe-stage").mkdir()
+        safe_agents = self.root / "safe-agents"
+        safe_agents.mkdir()
+        loader = stage / ".agents/plugins/marketplace.json"
+        cases = [(stage, self.logs / ".agents/hooks.json", None),
+                 (stage, self.logs / ".agents/hooks.json", str(self.logs)),
+                 (stage, stage / ".agents", None),
+                 (stage, stage / ".agents/mcp_config.json", None),
+                 (home, None, str(home)),
+                 (stage, loader, None)]
+        for cwd, introduced, ambient_home in cases:
+            with self.subTest(cwd=cwd, introduced=introduced), contextlib.ExitStack() as stack:
+                if introduced == loader:
+                    loader.parent.mkdir(exist_ok=True)
+                    loader.write_text("{}")
+                state = {"attempt": 1, "controller_pid": os.getpid(), "status": "queued",
+                         "source_checkout_guard": {}, "cancel_requested": False, "hard_seconds": 30, "max_seconds": 30, "provider_elapsed_seconds": 0}
+                binding = module._ControllerBinding(state=state, command={"provider_env": [], "max_seconds": 30,
+                                                                         "child_umask": "022", "workdir": str(self.worktree)})
+                execution = module._ProviderExecution(source_guard_expected={})
+                launch = module._ScopedLaunch(argv=["agy", "--print", "task"], expected_print="task",
+                                              launch_cwd=str(cwd))
+                # A known safe directory is replaced during slow source preparation.
+                if hasattr(launch, "provider_config_paths"):
+                    launch.provider_config_paths = {".agents": "directory"}
+                    if introduced == loader:
+                        launch.provider_config_paths.update({".agents/plugins": "directory",
+                            ".agents/plugins/marketplace.json": "file"})
+                def prepare(*_args, introduced=introduced):
+                    if introduced is not None:
+                        introduced.parent.mkdir(exist_ok=True)
+                        if introduced == loader:
+                            introduced.unlink()
+                            introduced.symlink_to(safe_agents)
+                        elif introduced.is_dir():
+                            introduced.rmdir()
+                            introduced.symlink_to(safe_agents)
+                        else:
+                            introduced.write_text("must-not-be-diagnosed")
+                    return {"status": "unchanged"}
+                stack.enter_context(mock.patch.object(module, "_prepare_controller_source", side_effect=prepare))
+                stack.enter_context(mock.patch.object(module, "state_lock", return_value=contextlib.nullcontext()))
+                stack.enter_context(mock.patch.object(module, "load_state", return_value=(state, b"", "sha")))
+                stack.enter_context(mock.patch.object(module, "_transition_locked", side_effect=lambda _job, current, raw, _updates: (current, raw, "sha")))
+                stack.enter_context(mock.patch.object(module, "_provider_environment", return_value={}))
+                stack.enter_context(mock.patch.dict(os.environ, {"HOME": ambient_home or str(home)}))
+                popen = stack.enter_context(mock.patch.object(module.subprocess, "Popen",
+                    side_effect=AssertionError("provider Popen reached before configuration rejection")))
+                with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                    module._spawn_controller_provider(self.logs, binding, execution,
+                        module._ControllerStreams(self.root / "stream", self.root / "stderr", self.root / "envelope"),
+                        launch, module._ControllerOutcome())
+                popen.assert_not_called()
+                self.assertIsNone(execution.started_mono)
+                if introduced is not None:
+                    was_link = introduced.is_symlink()
+                    introduced.unlink()
+                    if was_link and introduced != loader:
+                        introduced.mkdir()
+        # Existing spawn entrypoint accepts trusted ambient HOME and safe siblings.
+        # Exercise its final probe via the same preparation, with Popen stopped by a sentinel.
+        (self.root / "sibling").mkdir()
+        (self.root / "sibling/.agents").mkdir()
+        (self.root / "sibling/.agents/hooks.json").write_text("{}")
+        for safe_cwd in (home / "safe-stage", stage):
+            state = {"attempt": 1, "controller_pid": os.getpid(), "status": "queued", "source_checkout_guard": {},
+                     "cancel_requested": False, "hard_seconds": 30, "max_seconds": 30, "provider_elapsed_seconds": 0}
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(module, "_prepare_controller_source", return_value={"status": "unchanged"}))
+                stack.enter_context(mock.patch.object(module, "state_lock", return_value=contextlib.nullcontext()))
+                stack.enter_context(mock.patch.object(module, "load_state", return_value=(state, b"", "sha")))
+                stack.enter_context(mock.patch.object(module, "_transition_locked", side_effect=lambda _job, current, raw, _updates: (current, raw, "sha")))
+                stack.enter_context(mock.patch.object(module, "_provider_environment", return_value={}))
+                stack.enter_context(mock.patch.dict(os.environ, {"HOME": str(home)}))
+                popen = stack.enter_context(mock.patch.object(module.subprocess, "Popen", side_effect=RuntimeError("safe spawn reached")))
+                stack.enter_context(mock.patch.object(module.WORKTREE.os, "scandir",
+                    side_effect=AssertionError("extra directory enumeration before Popen")))
+                safe_launch = module._ScopedLaunch(argv=["agy", "--print", "task"],
+                    expected_print="task", launch_cwd=str(safe_cwd))
+                if hasattr(safe_launch, "provider_config_paths"):
+                    safe_launch.provider_config_paths = {".agents": "directory"}
+                with self.assertRaisesRegex(RuntimeError, "safe spawn reached"):
+                    module._spawn_controller_provider(self.logs, module._ControllerBinding(state=state,
+                        command={"provider_env": [], "max_seconds": 30, "child_umask": "022", "workdir": str(self.worktree)}), module._ProviderExecution(source_guard_expected={}),
+                        module._ControllerStreams(self.root / "stream", self.root / "stderr", self.root / "envelope"),
+                        safe_launch,
+                        module._ControllerOutcome())
+                popen.assert_called_once()
+
+    def test_workspace_config_ancestor_plugin_regular_entries_obey_deadline(self) -> None:
+        module = dispatch_module()
+        stage = self.logs / "deadline-stage"
+        stage.mkdir()
+        plugins = self.logs / ".agents/plugins"
+        plugins.mkdir(parents=True)
+        (plugins / "marketplace.json").write_text("{}")
+        (self.logs / ".git").write_text("marker contents must not be parsed")
+        state = {"attempt": 1, "controller_pid": os.getpid(), "status": "queued",
+                 "source_checkout_guard": {}, "cancel_requested": False, "hard_seconds": 30, "max_seconds": 30}
+        elapsed = [0.0]
+        real_scandir = module.WORKTREE.os.scandir
+        @contextlib.contextmanager
+        def late_regular_entries(path):
+            self.assertEqual(Path(path), plugins)
+            with real_scandir(path) as scanned:
+                elapsed[0] = module.WORKTREE.READABLE_MANIFEST_SCAN_SECONDS + 1
+                yield scanned
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(module, "_prepare_controller_source", return_value={"status": "unchanged"}))
+            stack.enter_context(mock.patch.object(module, "state_lock", return_value=contextlib.nullcontext()))
+            stack.enter_context(mock.patch.object(module, "load_state", return_value=(state, b"", "sha")))
+            stack.enter_context(mock.patch.object(module, "_transition_locked", side_effect=lambda _job, current, raw, _updates: (current, raw, "sha")))
+            stack.enter_context(mock.patch.object(module, "_provider_environment", return_value={}))
+            stack.enter_context(mock.patch.object(module.WORKTREE.os, "scandir", side_effect=late_regular_entries))
+            stack.enter_context(mock.patch.object(module.WORKTREE.time, "monotonic", side_effect=lambda: elapsed[0]))
+            popen = stack.enter_context(mock.patch.object(module.subprocess, "Popen",
+                side_effect=AssertionError("provider Popen reached after configuration deadline")))
+            with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                module._spawn_controller_provider(self.logs, module._ControllerBinding(state=state,
+                    command={"provider_env": [], "child_umask": "022", "workdir": str(self.worktree)}),
+                    module._ProviderExecution(source_guard_expected={}),
+                    module._ControllerStreams(self.root / "stream", self.root / "stderr", self.root / "envelope"),
+                    module._ScopedLaunch(argv=["agy", "--print", "task"], expected_print="task", launch_cwd=str(stage)),
+                    module._ControllerOutcome())
+            popen.assert_not_called()
+
+    def test_provider_configuration_selected_classification_obeys_deadline(self) -> None:
+        module = dispatch_module()
+        entries = [{"kind": "file", "path": "README.md"}]
+        scope = {"read": [{"kind": "file", "path": "unselected.md"}]}
+        with mock.patch.object(module.WORKTREE.time, "monotonic", side_effect=[
+            0.0, module.WORKTREE.READABLE_MANIFEST_SCAN_SECONDS + 1,
+        ]):
+            with self.assertRaisesRegex(module.DispatchError, "executable provider configuration.*README.md"):
+                module.WORKTREE._check_provider_config_entries(entries, scope=scope)
+
+    def test_workspace_config_worker_created_candidate_remains_inspectable(self) -> None:
+        module = dispatch_module()
+        stage = self.root / "post-provider-stage"
+        stage.mkdir(mode=0o700)
+        (stage / ".agents").mkdir(mode=0o700)
+        (stage / ".agents/mcp_config.json").write_text("{}")
+        scope = {"schema_version": 1, "kind": "agy-worker-provider-scope",
+                 "read": [{"path": ".agents", "kind": "tree"}],
+                 "write": [{"path": ".agents", "kind": "tree"}]}
+        manifest = module.WORKTREE._build_selected_content_manifest(stage, scope, is_stage=True)
+        self.assertIn(".agents/mcp_config.json", [entry["path"] for entry in manifest])
+        mutations, _digest = module.WORKTREE._scan_stage_mutations(stage, scope, [])
+        self.assertIn(".agents/mcp_config.json", [entry["path"] for entry in mutations])
 
     def test_retired_inputs_reject_all_launch_routes_before_provider(self) -> None:
         routes = [

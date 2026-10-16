@@ -4178,7 +4178,7 @@ def _revalidate_scoped_provider_stage(
     ):
         raise DispatchError("provider stage binding changed before launch")
     mutations, _operation_sha = WORKTREE._scan_stage_mutations(
-        stage_dir, scope, selected_manifest,
+        stage_dir, scope, selected_manifest, provider_configuration=True,
     )
     if mutations:
         raise DispatchError("provider stage changed before launch")
@@ -4722,6 +4722,7 @@ class _ControllerStreams:
 class _ScopedLaunch:
     argv: list[str] = dataclasses.field(default_factory=list)
     expected_print: str | None = None
+    provider_config_paths: dict[str, str] = dataclasses.field(default_factory=dict)
     launch_cwd: str = ""
     executable_binding: tuple[str, dict[str, Any]] | None = None
     stage_dir: Path | None = None
@@ -5049,8 +5050,11 @@ def _prepare_scoped_controller_launch(
     launch.scope = WORKTREE._parse_provider_scope(raw_scope)
     readable_manifest = WORKTREE._scan_readable_worktree(binding.command["workdir"])
     manifest_sha = WORKTREE._manifest_digest(readable_manifest)
+    WORKTREE._check_provider_config_entries(readable_manifest, scope=launch.scope)
     WORKTREE._validate_scope_against_worktree(launch.scope, binding.command["workdir"], readable_manifest)
-    launch.selected_manifest = WORKTREE._build_selected_content_manifest(binding.command["workdir"], launch.scope)
+    launch.selected_manifest = WORKTREE._build_selected_content_manifest(
+        binding.command["workdir"], launch.scope, provider_configuration=True)
+    launch.provider_config_paths = WORKTREE._check_provider_config_entries(launch.selected_manifest)
     selected_sha = WORKTREE._selected_content_digest(launch.selected_manifest)
     policy_sha = WORKTREE._canonical_digest(launch.scope)
     transmission_sha = _bound_transmission_sha256(
@@ -5245,6 +5249,10 @@ def _spawn_controller_provider(
             if (launch.expected_print is None or provider_argv.count("--print") != 1
                     or provider_argv[provider_argv.index("--print") + 1] != launch.expected_print):
                 raise DispatchError("dispatch final transport prompt changed")
+            WORKTREE._recheck_provider_configuration(
+                provider_cwd, launch.provider_config_paths, ambient_home=os.environ.get("HOME"),
+                controlled_roots=(str(job), binding.command["workdir"]),
+            )
             launch_mono = time.monotonic()
             execution.process = subprocess.Popen(
                 provider_argv,
@@ -5376,7 +5384,11 @@ def _launch_controller_provider(
         # pins the safe, freshly-probed target for this one process.
         launch.executable_binding = _reprobe_direct_selection(binding.command, binding.state, launch.argv)
         _bound_worktree_baseline(binding.state, binding.command)
-        if not WORKTREE._worktree_symlink_boundary(binding.command["workdir"]):
+        if not WORKTREE._worktree_symlink_boundary(
+            binding.command["workdir"],
+            provider_config_paths=(launch.provider_config_paths
+                if binding.state.get("provider_scope_path") is None else None),
+        ):
             raise DispatchError("dispatch worktree symlink boundary changed")
         launch.launch_cwd = binding.command["workdir"]
         if binding.state.get("provider_scope_path") is not None:
@@ -5421,6 +5433,11 @@ def _launch_controller_provider(
         outcome.reason = "resolve_undo_present" if isinstance(exc, ResolveUndoPresentError) else "status_unavailable"
         outcome.failure_stage = "binding_failure"
         execution.returncode = EXIT_BY_REASON[outcome.reason]
+    except WORKTREE.ExecutableProviderConfigurationError as exc:
+        with contextlib.suppress(OSError):
+            os.write(streams.stderr_fd, (str(exc) + "\n").encode("ascii"))
+        outcome.reason = "status_unavailable"
+        execution.returncode = EXIT_BY_REASON["status_unavailable"]
     except (DispatchError, CONTAINMENT.ContainmentError) as exc:
         message = str(exc)
         if re.fullmatch(r"launch authority changed: [a-z0-9_]+(?:\.[a-z0-9_]+)?", message):
