@@ -393,9 +393,9 @@ prove the worker's architecture prose or completeness.
 | `--approval-record FILE` | — | Raw initial launches require the reviewed preview JSON, canonical absolute path and private mode `0600`; the facade retains its own record. |
 | `--provider-env NAME` | — | Repeatable exact-name opt-in for an additional caller variable passed to local `agy` probes and provider launches. |
 | `--allow-slash-commands` | — | Expert-only opt-in for a fully caller-controlled prompt; disables the normal embedded slash-command protection. |
-| `--idle-timeout DURATION` | `AGY_WORKER_IDLE_TIMEOUT` | No valid progress deadline; default `10m`. |
-| `--hard-timeout DURATION` | `AGY_WORKER_HARD_TIMEOUT`; `AGY_WORKER_TIMEOUT` | Initial attempt deadline; default `2h`. |
-| `--max-runtime DURATION` | `AGY_WORKER_MAX_RUNTIME` | Absolute caller-owned cap; default `12h`. |
+| `--idle-timeout DURATION` | `AGY_WORKER_IDLE_TIMEOUT` | No valid progress deadline; positive integer + `s`, `m` or `h` (for example `30m`); default `10m`. |
+| `--hard-timeout DURATION` | `AGY_WORKER_HARD_TIMEOUT`; `AGY_WORKER_TIMEOUT` | Initial attempt deadline; positive integer + `s`, `m` or `h`; default `2h`. |
+| `--max-runtime DURATION` | `AGY_WORKER_MAX_RUNTIME` | Absolute caller-owned cap; positive integer + `s`, `m` or `h`; default `12h`. |
 | — | `AGY_WORKER_JOB_ID` | Safe artifact-directory name. |
 
 The source-owned option contract is the bundled

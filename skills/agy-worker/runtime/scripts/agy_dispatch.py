@@ -6432,6 +6432,10 @@ def controller(job: Path, ownership_fd: int) -> int:
     }
     for number in prior_handlers:
         signal.signal(number, interrupted)
+    # spawn() protects the fresh interpreter's import/handler interval. Deliver
+    # pending lifecycle signals only after their controller owner exists; the
+    # provider and local proof children must inherit these signals unblocked.
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, tuple(prior_handlers))
     try:
         with inherited_lifecycle_lock(job, ownership_fd):
             early_exit = _claim_controller_attempt(job, binding)
@@ -6669,12 +6673,19 @@ def spawn(
                 sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()),
                 "controller", "--job-dir", str(job), "--ownership-fd", str(ownership_fd),
             ]
-            controller_process = subprocess.Popen(
-                controller_argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
-                pass_fds=(ownership_fd,),
-                env=controller_environment,
-            )
+            # The child inherits the blocked mask across exec and installs its
+            # handlers before unblocking. Restore the caller's exact mask even
+            # if process creation fails; its pending signals then reach latch.
+            spawn_mask = signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+            try:
+                controller_process = subprocess.Popen(
+                    controller_argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+                    pass_fds=(ownership_fd,),
+                    env=controller_environment,
+                )
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, spawn_mask)
         deadline = time.monotonic() + 5.0
         forwarded = False
         while time.monotonic() < deadline:

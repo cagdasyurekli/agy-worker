@@ -2,6 +2,9 @@
 """Runtime-boundary cases loaded by the canonical remediation suite."""
 from __future__ import annotations
 
+import contextlib
+from unittest import mock
+
 from typing import TYPE_CHECKING
 
 # run() receives these names from test-agy-worker-remediation.py globals.
@@ -509,6 +512,210 @@ def run(context: dict[str, object]) -> None:
         assert (claimed["status"], claimed["reason"]) == ("cancelled", "cancelled")
         assert claimed["controller_pid"] is None and claimed["status"] != "orphaned"
         assert not claim_calls.exists(), "cancel-at-claim reached a provider"
+
+        # A real child waits before dispatcher import. The parent forwards its
+        # signal at that exact boundary, while the wrapper leaves inherited
+        # masks/handlers untouched. No provider may start through this window.
+        startup_wrapper = root / "startup-signal-controller.py"
+        startup_wrapper.write_text(
+            "import os, signal, sys\n"
+            "ready, release, source, job, ownership = sys.argv[1:]\n"
+            "os.write(int(ready), b'1')\n"
+            "os.close(int(ready))\n"
+            "assert os.read(int(release), 1) == b'1'\n"
+            "os.close(int(release))\n"
+            "import importlib.util\n"
+            "from pathlib import Path\n"
+            "spec = importlib.util.spec_from_file_location('startup_signal_dispatch', source)\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = module\n"
+            "spec.loader.exec_module(module)\n"
+            "raise SystemExit(module.controller(Path(job), int(ownership)))\n",
+            encoding="utf-8",
+        )
+        real_startup_popen = MODULE.subprocess.Popen
+        real_startup_killpg = MODULE.os.killpg
+        watched_startup = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+        original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGUSR1,))
+        expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+        try:
+            def exercise_startup_signal(startup_signal, continuation):
+                startup_label = f"startup-signal-{startup_signal}-{continuation}"
+                startup_job, startup_bin, startup_calls, _, _ = fixture(
+                    startup_label, workflow="project", max_cycles=3, max_seconds=20,
+                )
+                startup_approval = None
+                startup_verification = None
+                preserved_startup = {}
+                if continuation:
+                    assert run_controller(startup_job, startup_bin) == 0
+                    previous, _, startup_approval = MODULE.load_state(startup_job)
+                    preserved_startup = {key: previous[key] for key in (
+                        "result_path", "result_sha256", "result_identity", "candidate_source",
+                        "candidate_worktree_sha256", "candidate_worktree_entries",
+                        "candidate_worktree_path_facts", "result_available", "driver_disposition",
+                    )}
+                    startup_verification = {
+                        "schema_version": 2, "summary": "driver requests repair",
+                        "passed_checks": [], "failed_checks": ["fixture"],
+                        "advisory_checks": 0, "missing_checks": 0,
+                        "candidate_sha256": previous["result_sha256"], "coverage": "partial",
+                        "verified_findings": 1, "unresolved_gaps": 1,
+                        "diff_review_complete": True,
+                    }
+                else:
+                    (startup_job / MODULE.STATE_NAME).unlink()
+                startup_calls.unlink(missing_ok=True)
+                ready_read, ready_write = os.pipe()
+                release_read, release_write = os.pipe()
+                startup_children = []
+                startup_delivered = []
+
+                def start_at_import(arguments, *args, **kwargs):
+                    if not isinstance(arguments, list) or "--ownership-fd" not in arguments:
+                        return real_startup_popen(arguments, *args, **kwargs)
+                    ownership = arguments[arguments.index("--ownership-fd") + 1]
+                    kwargs["pass_fds"] = (*kwargs["pass_fds"], ready_write, release_read)
+                    child = real_startup_popen([
+                        sys.executable, "-I", "-S", "-B", str(startup_wrapper),
+                        str(ready_write), str(release_read), str(SOURCE),
+                        str(startup_job), ownership,
+                    ], *args, **kwargs)
+                    startup_children.append(child)
+                    with MODULE.selectors.DefaultSelector() as ready_selector:
+                        ready_selector.register(ready_read, MODULE.selectors.EVENT_READ)
+                        assert ready_selector.select(3), "controller wrapper was not ready"
+                    assert os.read(ready_read, 1) == b"1"
+                    os.kill(os.getpid(), startup_signal)
+                    return child
+
+                def forward_before_import(pid, number):
+                    result = real_startup_killpg(pid, number)
+                    if startup_children and pid == startup_children[0].pid and number == startup_signal:
+                        startup_delivered.append(number)
+                        with contextlib.suppress(BrokenPipeError):
+                            os.write(release_write, b"1")
+                    return result
+
+                previous_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = f"{startup_bin}{os.pathsep}{previous_path}"
+                try:
+                    with mock.patch.object(MODULE.subprocess, "Popen", side_effect=start_at_import), \
+                            mock.patch.object(MODULE.os, "killpg", side_effect=forward_before_import):
+                        assert MODULE.spawn(
+                            startup_job, "conversation-continue" if continuation else "initial",
+                            resume=continuation, foreground=False,
+                            approve_sha=startup_approval, verification=startup_verification,
+                        ) == 128 + startup_signal
+                    assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == expected_mask
+                    terminal, _, _ = MODULE.load_state(startup_job)
+                    assert (terminal["status"], terminal["reason"]) == ("cancelled", "interrupted"), terminal
+                    assert terminal["exit_code"] == 128 + startup_signal
+                    assert terminal["controller_pid"] is None
+                    assert startup_delivered == [startup_signal]
+                    assert all(terminal[key] == value for key, value in preserved_startup.items())
+                    assert terminal["candidate_recognized"] == continuation
+                    assert not startup_calls.exists() or "provider" not in startup_calls.read_text().splitlines()
+                    assert len(startup_children) == 1 and startup_children[0].poll() is not None
+                    try:
+                        real_startup_killpg(startup_children[0].pid, 0)
+                    except ProcessLookupError:
+                        pass
+                    else:
+                        raise AssertionError("startup cancellation left an owned group")
+                finally:
+                    os.environ["PATH"] = previous_path
+                    for descriptor in (ready_read, ready_write, release_read, release_write):
+                        os.close(descriptor)
+                    for child in startup_children:
+                        if child.poll() is None:
+                            MODULE._terminate(child)
+
+            for startup_signal in watched_startup:
+                for continuation in (False, True):
+                    exercise_startup_signal(startup_signal, continuation)
+
+            # The controller itself owns unblocking before its proof/provider
+            # Popen calls. Observe the actual inherited mask at that boundary.
+            mask_job, mask_bin, _, _, _ = fixture("startup-provider-mask")
+            mask_observed = []
+            def observe_provider_mask(arguments, *args, **kwargs):
+                if isinstance(arguments, list) and arguments and arguments[0] == "agy":
+                    inherited = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+                    mask_observed.append(inherited)
+                    assert not set(watched_startup) & inherited
+                    assert signal.SIGUSR1 in inherited
+                return real_startup_popen(arguments, *args, **kwargs)
+
+            prior_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{mask_bin}{os.pathsep}{prior_path}"
+            descriptor = os.open(mask_job / MODULE.LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            signal.pthread_sigmask(signal.SIG_BLOCK, watched_startup)
+            try:
+                with mock.patch.object(MODULE.subprocess, "Popen", side_effect=observe_provider_mask):
+                    assert MODULE.controller(mask_job, descriptor) == 0
+                descriptor = -1
+                assert len(mask_observed) == 1
+            finally:
+                os.environ["PATH"] = prior_path
+                signal.pthread_sigmask(signal.SIG_SETMASK, expected_mask)
+                if descriptor >= 0:
+                    os.close(descriptor)
+
+            # Pre-spawn signals never create a controller; the no-signal
+            # startup crash remains status_unavailable instead of interrupted.
+            real_create_state = MODULE.create_state
+            for early_signal in watched_startup:
+                early_job, _, _, _, _ = fixture(f"startup-early-{early_signal}")
+                (early_job / MODULE.STATE_NAME).unlink()
+                def signal_after_create(*args, early_signal=early_signal, **kwargs):
+                    result = real_create_state(*args, **kwargs)
+                    os.kill(os.getpid(), early_signal)
+                    return result
+                with mock.patch.object(MODULE, "create_state", side_effect=signal_after_create), \
+                        mock.patch.object(MODULE.subprocess, "Popen", wraps=real_startup_popen) as spy:
+                    assert MODULE.spawn(early_job, "initial", resume=False, foreground=False) == 128 + early_signal
+                assert not any("--ownership-fd" in call.args[0] for call in spy.call_args_list)
+                early_state, _, _ = MODULE.load_state(early_job)
+                assert (early_state["reason"], early_state["exit_code"]) == ("interrupted", 128 + early_signal)
+
+            crash_job, _, _, _, _ = fixture("startup-unrelated-crash")
+            (crash_job / MODULE.STATE_NAME).unlink()
+            def crash_controller(arguments, *args, **kwargs):
+                if isinstance(arguments, list) and "--ownership-fd" in arguments:
+                    arguments = [sys.executable, "-I", "-S", "-B", "-c", "raise SystemExit(47)"]
+                return real_startup_popen(arguments, *args, **kwargs)
+            with mock.patch.object(MODULE.subprocess, "Popen", side_effect=crash_controller):
+                try:
+                    MODULE.spawn(crash_job, "initial", resume=False, foreground=False)
+                except MODULE.DispatchError as exc:
+                    assert str(exc) == "controller exited before startup handshake"
+                else:
+                    raise AssertionError("unrelated controller crash accepted")
+            crashed, _, _ = MODULE.load_state(crash_job)
+            assert (crashed["reason"], crashed["exit_code"]) == ("status_unavailable", 20)
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == expected_mask
+
+            # A Popen error restores the exact caller mask too; it is not a
+            # signal result and cannot be presented as successful cancellation.
+            failed_spawn_job, _, _, _, _ = fixture("startup-popen-failure")
+            (failed_spawn_job / MODULE.STATE_NAME).unlink()
+            def fail_controller_popen(arguments, *args, **kwargs):
+                if isinstance(arguments, list) and "--ownership-fd" in arguments:
+                    raise OSError("fixture Popen failure")
+                return real_startup_popen(arguments, *args, **kwargs)
+
+            with mock.patch.object(MODULE.subprocess, "Popen", side_effect=fail_controller_popen):
+                try:
+                    MODULE.spawn(failed_spawn_job, "initial", resume=False, foreground=False)
+                except OSError as exc:
+                    assert str(exc) == "fixture Popen failure"
+                else:
+                    raise AssertionError("Popen failure accepted")
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == expected_mask
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
 
         # The intentionally slow help probe remains outside the provider
         # lease.  Keep the lease well above host scheduling jitter while making
@@ -1878,25 +2085,24 @@ def run(context: dict[str, object]) -> None:
             "post-reap-cancel-skips-reconciliation", idle_seconds=0.50,
             hard_seconds=3, max_seconds=5,
         )
-        original_prompt_selector = MODULE.selectors.DefaultSelector
+        original_prompt_reap = MODULE._reap_controller_provider
         original_prompt_reconcile = MODULE._reconcile_worktree
         original_prompt_print_json = MODULE.print_json
         prompt_cancelled = threading.Event()
         prompt_cancel_output: list[dict] = []
         prompt_scan_calls = 0
+        prompt_reap_calls = 0
 
-        class CancelBeforeTerminalReconciliation(original_prompt_selector):
-            def select(self, timeout=None):
-                if (
-                    not prompt_cancelled.is_set()
-                    and {key.data for key in self.get_map().values()} == {"stdout", "stderr"}
-                ):
-                    _current, _raw, approval = MODULE.load_state(prompt_cancel_job)
-                    assert MODULE.command_control(
-                        prompt_cancel_job, "cancel", approval, None,
-                    ) == 0
-                    prompt_cancelled.set()
-                return super().select(timeout)
+        def cancel_after_actual_reap(*args, **kwargs):
+            nonlocal prompt_reap_calls
+            result = original_prompt_reap(*args, **kwargs)
+            prompt_reap_calls += 1
+            execution = args[2]
+            assert execution.process is None and execution.runtime_frozen
+            _current, _raw, approval = MODULE.load_state(prompt_cancel_job)
+            assert MODULE.command_control(prompt_cancel_job, "cancel", approval, None) == 0
+            prompt_cancelled.set()
+            return result
 
         def prohibited_slow_reconciliation(*args, **kwargs):
             nonlocal prompt_scan_calls
@@ -1904,7 +2110,7 @@ def run(context: dict[str, object]) -> None:
             time.sleep(2.5)
             raise AssertionError("no-candidate cancellation entered reconciliation")
 
-        MODULE.selectors.DefaultSelector = CancelBeforeTerminalReconciliation
+        MODULE._reap_controller_provider = cancel_after_actual_reap
         MODULE._reconcile_worktree = prohibited_slow_reconciliation
         MODULE.print_json = lambda value: prompt_cancel_output.append(value)
         prompt_cancel_started = time.monotonic()
@@ -1914,13 +2120,16 @@ def run(context: dict[str, object]) -> None:
             ]
         finally:
             prompt_cancel_elapsed = time.monotonic() - prompt_cancel_started
-            MODULE.selectors.DefaultSelector = original_prompt_selector
+            MODULE._reap_controller_provider = original_prompt_reap
             MODULE._reconcile_worktree = original_prompt_reconcile
             MODULE.print_json = original_prompt_print_json
         prompt_terminal, _raw, _sha = MODULE.load_state(prompt_cancel_job)
         MODULE.validate_state(prompt_terminal)
-        assert prompt_cancelled.is_set() and prompt_scan_calls == 0
-        assert prompt_cancel_elapsed < 2.0
+        assert prompt_reap_calls == 1 and prompt_cancelled.is_set() and prompt_scan_calls == 0
+        assert prompt_cancel_elapsed < 2.0, {
+            "elapsed_seconds": prompt_cancel_elapsed, "cancelled": prompt_cancelled.is_set(),
+            "reconciliation_calls": prompt_scan_calls, "reason": prompt_terminal["reason"],
+        }
         assert len(prompt_cancel_output) == 1
         assert (prompt_terminal["status"], prompt_terminal["reason"], prompt_terminal["exit_code"]) == (
             "cancelled", "cancelled", MODULE.EXIT_BY_REASON["cancelled"],
@@ -2076,7 +2285,7 @@ def run(context: dict[str, object]) -> None:
 
     check("direct selections bind public startup, launch replacement windows, and provider runtime boundaries", direct_selection_reprobes_every_controller_attempt)
 
-    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False, max_cycles: int = 2, workflow: str = "task"):
+    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False, max_cycles: int = 2, workflow: str = "task", max_seconds: float = 30):
         origin = (root / f"source-guard-{label}-origin").resolve()
         candidate = (root / f"source-guard-{label}-candidate").resolve()
         origin.mkdir()
@@ -2117,7 +2326,7 @@ def run(context: dict[str, object]) -> None:
         fake.chmod(0o755)
         values = {"job_id": label, "workdir": str(candidate),
                   "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
-                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": max_cycles,
+                  "idle_seconds": min(2, max_seconds), "hard_seconds": min(8, max_seconds), "max_seconds": max_seconds, "max_cycles": max_cycles,
                   "workflow": workflow}
         if native:
             values["provider_isolation"] = "native"
@@ -2198,6 +2407,26 @@ def run(context: dict[str, object]) -> None:
     check("source guard budget exhaustion blocks provider spawn with actionable status", source_budget_closed_before_spawn)
 
     def unchanged_source_controls() -> None:
+        # A report-free maximum-runtime stop discards partial scoped writes.
+        _origin, candidate, job, bin_dir, calls = source_fixture(
+            "partial-max-runtime", scoped=True, terminal="wait", max_seconds=2,
+        )
+        marker = job / "partial-write-observed"
+        fake = bin_dir / "agy"
+        fake.write_text(fake.read_text().replace(
+            "time.sleep(20)",
+            "(pathlib.Path.cwd() / 'candidate.txt').write_text('partial\\n')\n"
+            + f"pathlib.Path({str(marker)!r}).write_text((pathlib.Path.cwd() / 'candidate.txt').read_text())\n"
+            + "time.sleep(20)",
+        ))
+        assert run_controller(job, bin_dir) == 16
+        state, _raw, _sha = MODULE.load_state(job)
+        assert marker.read_text() == "partial\n" and calls.read_text() == "call\n"
+        assert (state["reason"], state["limit_kind"]) == ("hard_deadline_exceeded", "max-runtime")
+        assert not state["candidate_recognized"] and not state["result_available"]
+        assert not (job / "stage-001").exists()
+        assert (candidate / "candidate.txt").read_text() == "base\n"
+
         # Every bound terminal report requires proof regardless of its outer
         # disposition. These are admissible controls and mutation vetoes.
         for terminal in ("SUCCESS", "ERROR", "CANCELLED", "timeout"):

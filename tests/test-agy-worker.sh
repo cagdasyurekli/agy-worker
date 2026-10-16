@@ -1011,6 +1011,11 @@ PY
 fi
 printf 'worker\n' >> "$FAKE_CALLS_FILE"
 printf 'worker\n' >> "$FAKE_WORKER_CALLS_FILE"
+if [[ -p "${FAKE_PROBE_READY_FILE:-}" ]]; then
+    printf '%s\n' "$$" > "${FAKE_PROBE_PGID_FILE:?}"
+    printf 'started %s %s\n' "$$" "$PPID" > "$FAKE_PROBE_READY_FILE"
+    while [[ ! -e "${FAKE_PROBE_RELEASE_FILE:?}" ]]; do sleep 0.01; done
+fi
 : "${FAKE_MODEL_FILE:?}"
 : "${FAKE_PROMPT_FILE:?}"
 : "${FAKE_DIRS_FILE:?}"
@@ -1143,7 +1148,26 @@ case "${FAKE_DISPATCH_MODE:-result}" in
             done
         fi
         if [[ -n "${FAKE_SIDE_EFFECT_FILE:-}" ]]; then
-            ( sleep 3; : > "$FAKE_SIDE_EFFECT_FILE" ) &
+            if [[ -p "${FAKE_PROBE_READY_FILE:-}" ]]; then
+                "$fake_helper_python" -I -S -B - "$FAKE_PROBE_READY_FILE" \
+                    "$FAKE_SIDE_EFFECT_FILE" "$$" "${FAKE_CHILD_PID_FILE:?}" <<'PY' &
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+
+fifo, side_effect, provider_pid, pid_file = sys.argv[1:]
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path(pid_file).write_text(str(os.getpid()) + "\n")
+with open(fifo, "w") as ready:
+    ready.write(f"ready {provider_pid} {os.getpid()}\n")
+time.sleep(3)
+Path(side_effect).touch()
+PY
+            else
+                ( sleep 3; : > "$FAKE_SIDE_EFFECT_FILE" ) &
+            fi
         fi
         while :; do
             printf '{"event":"step_update","step_update":{}}\n'
@@ -4079,47 +4103,17 @@ else
     bad "hard deadline/process-group boundary"
 fi
 
-FOREGROUND_SIGNAL_SIDE_EFFECT="$TMP/foreground-signal-side-effect"
-printf 'foreground signal ownership\n' > "$TMP/foreground-signal.task"
-PATH="$TMP/bin:$PATH" AGY_WORKER_LOG_DIR="$TMP/logs" AGY_WORKER_JOB_ID=foreground-signal \
-    AGY_WORKER_MODE=accept-edits \
-    FAKE_MODEL_FILE="$TMP/foreground-signal.model" \
-    FAKE_PROMPT_FILE="$TMP/foreground-signal.prompt" \
-    FAKE_DIRS_FILE="$TMP/foreground-signal.dirs" \
-    FAKE_ARGV_FILE="$TMP/foreground-signal.argv" \
-    FAKE_STAGE_RESULT_FILE="$TMP/foreground-signal.stage-result" \
-    FAKE_CALLS_FILE="$TMP/foreground-signal.calls" \
-    FAKE_WORKER_CALLS_FILE="$TMP/foreground-signal.worker-calls" \
-    FAKE_VERSION_MODE=ready FAKE_DISPATCH_MODE=heartbeat-forever \
-    FAKE_SIDE_EFFECT_FILE="$FOREGROUND_SIGNAL_SIDE_EFFECT" \
-    python3 -I -S -B "$ROOT/tests/launch_fixture.py" "$WORKER" --workdir "$TMP/repo" \
-    --approve-whole-worktree "$(whole_worktree_manifest_sha "$WORKER" "$TMP/repo")" \
-    --idle-timeout 2s --hard-timeout 4s --max-runtime 4s \
-    --provider-env FAKE_MODEL_FILE --provider-env FAKE_PROMPT_FILE \
-    --provider-env FAKE_DIRS_FILE --provider-env FAKE_ARGV_FILE \
-    --provider-env FAKE_STAGE_RESULT_FILE --provider-env FAKE_CALLS_FILE \
-    --provider-env FAKE_WORKER_CALLS_FILE --provider-env FAKE_VERSION_MODE \
-    --provider-env FAKE_DISPATCH_MODE --provider-env FAKE_SIDE_EFFECT_FILE \
-    < "$TMP/foreground-signal.task" > "$TMP/foreground-signal.out" \
-    2> "$TMP/foreground-signal.err" &
-foreground_wrapper=$!
-for (( foreground_wait=0; foreground_wait<200; foreground_wait++ )); do
-    [[ -s "$TMP/foreground-signal.worker-calls" ]] && break
-    kill -0 "$foreground_wrapper" 2>/dev/null || break
-    sleep 0.01
-done
-kill -TERM "$foreground_wrapper" 2>/dev/null || true
-wait "$foreground_wrapper"
-foreground_rc=$?
-sleep 1
-if [[ "$foreground_rc" == 143 && ! -e "$FOREGROUND_SIGNAL_SIDE_EFFECT" ]] \
-        && python3 - "$TMP/logs/foreground-signal/dispatch-state.json" <<'PY'
-import json
+# The descendant announces its own setup before the outer wrapper is signalled.
+if python3 -I -S -B - "$ROOT" "$TMP" <<'PY'
+import importlib.util
+from pathlib import Path
 import sys
-state = json.load(open(sys.argv[1], encoding="utf-8"))
-assert state["status"] == "cancelled"
-assert state["reason"] == "interrupted"
-assert state["exit_code"] == 143
+
+root, temporary = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("foreground_launch_fixture", root / "tests/launch_fixture.py")
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+fixture.foreground_signal_fixture(root, temporary)
 PY
 then
     ok "foreground TERM is forwarded through the controller and leaves no late process-group side effect"
@@ -4286,58 +4280,138 @@ else
     bad "extend control lifecycle"
 fi
 
-max_barrier_ready="$TMP/max-runtime.barrier-ready"
-max_barrier_release="$TMP/max-runtime.barrier-release"
-printf 'max runtime wins after extension\n' | FAKE_DISPATCH_MODE=heartbeat-forever \
-    FAKE_HEARTBEAT_DELAY=0.60 \
-    FAKE_HEARTBEAT_BARRIER_READY="$max_barrier_ready" \
-    FAKE_HEARTBEAT_BARRIER_RELEASE="$max_barrier_release" \
-    start_worker max-runtime --idle-timeout 3s --hard-timeout 3s --max-runtime 4s \
-    > "$TMP/max-runtime.start" 2> "$TMP/max-runtime.start.err"
-max_barrier_observed=0
-for (( max_barrier_index=0; max_barrier_index<200; max_barrier_index++ )); do
-    if [[ -e "$max_barrier_ready" ]]; then
-        control_worker status max-runtime > "$TMP/max-runtime.status"
-        if [[ "$(status_field "$TMP/max-runtime.status" progress_count)" -ge 1 ]]; then
-            max_barrier_observed=1
-            break
-        fi
-    fi
-    sleep 0.01
-done
-max_extend_rc=64
-max_wait_rc=64
-if [[ "$max_barrier_observed" == 1 ]]; then
-    max_sha="$(status_sha "$TMP/max-runtime.status")"
-    control_worker extend max-runtime --approve-state-sha "$max_sha" --by 1s \
-        > "$TMP/max-runtime.extend"
-    max_extend_rc=$?
-fi
-: > "$max_barrier_release"
-if [[ "$max_extend_rc" == 0 ]]; then
-    max_after="$(status_sha "$TMP/max-runtime.extend")"
-    control_worker wait max-runtime --after-state-sha "$max_after" --timeout 5s \
-        > "$TMP/max-runtime.wait"
-    max_wait_rc=$?
-fi
-for (( max_wait_index=0; max_wait_index<20; max_wait_index++ )); do
-    [[ "$max_wait_rc" == 0 ]] || break
-    max_status="$(status_field "$TMP/max-runtime.wait" status)"
-    [[ "$max_status" == "running" || "$max_status" == "cancel-requested" ]] || break
-    max_after="$(status_sha "$TMP/max-runtime.wait")"
-    control_worker wait max-runtime --after-state-sha "$max_after" --timeout 1s \
-        > "$TMP/max-runtime.wait.next"
-    max_wait_rc=$?
-    mv "$TMP/max-runtime.wait.next" "$TMP/max-runtime.wait"
-done
-if [[ "$max_extend_rc" == 0 && "$max_wait_rc" == 0 ]] && python3 - "$TMP/max-runtime.wait" <<'PY'
-import json
+# Keep the short 3/3/4 lease, but drive its control/monitor boundaries
+# explicitly: fresh command subprocess scheduling is not part of cap semantics.
+if python3 -I -S -B - "$ROOT" "$TMP/repo" "$TMP/max-runtime-control" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import selectors
+import subprocess
 import sys
-state = json.load(open(sys.argv[1], encoding="utf-8"))
-assert state["status"] == "failed"
-assert state["reason"] == "hard_deadline_exceeded"
-assert state["limit_kind"] == "max-runtime"
-assert state["hard_seconds"] == 4.0 == state["max_seconds"]
+import time
+from unittest import mock
+from types import SimpleNamespace
+
+root, workdir, job = map(Path, sys.argv[1:])
+source = root / 'skills/agy-worker/runtime/scripts/agy_dispatch.py'
+spec = importlib.util.spec_from_file_location('max_extension_dispatch', source)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+job.mkdir(mode=0o700)
+# No launch is attempted: initial_state supplies the full current schema for
+# real control, lock/CAS, monitor refresh, reap and terminal publication.
+command = {
+    'schema_version': module.CURRENT_COMMAND_SCHEMA, 'job_id': 'max-runtime',
+    'workdir': str(workdir), 'provider_isolation': 'session',
+    'provider_scope_path': None, 'idle_seconds': 3, 'hard_seconds': 3,
+    'max_seconds': 4, 'notice_seconds': 30, 'stage_dir': None,
+}
+state = module.initial_state(
+    command, 'initial', 1, command_sha='a' * 64,
+    command_identity=(1, 1, 1, 1, 1), stage_sha=None, stage_identity=None,
+)
+state.update(status='running', controller_pid=os.getpid(),
+             started_epoch=1000.0, last_progress_epoch=1000.5, progress_count=1)
+module.validate_state(state)
+module.write_atomic(job, module.STATE_NAME, state)
+clock = [1001.0]
+
+def rejected(approval, seconds, message):
+    before = (job / module.STATE_NAME).read_bytes()
+    try:
+        module.command_control(job, 'extend', approval, seconds)
+    except module.DispatchError as exc:
+        assert message in str(exc), str(exc)
+    else:
+        raise AssertionError('ineligible extension accepted')
+    assert (job / module.STATE_NAME).read_bytes() == before
+
+clock_api = SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0] - 1000, monotonic_ns=time.monotonic_ns, sleep=time.sleep)
+with mock.patch.object(module, 'time', clock_api), mock.patch.object(module, 'print_json'):
+    current, raw, sha = module.load_state(job)
+    rejected('0' * 64, 1, 'state approval is missing or stale')
+    rejected(sha, 2, 'deadline extension exceeds max runtime')
+    for changes in ({'progress_count': 0}, {'last_progress_epoch': 997.0}):
+        invalid = {**current, **changes}
+        module.validate_state(invalid)
+        module.write_atomic(job, module.STATE_NAME, invalid)
+        rejected(module.load_state(job)[2], 1, 'deadline extension requires fresh progress')
+    module.write_atomic(job, module.STATE_NAME, current)
+    clock[0] = 1002.01
+    rejected(module.load_state(job)[2], 1, 'deadline extension requires fresh progress')
+    clock[0] = 1001.0
+    binding = module._ControllerBinding()
+    binding.command = command
+    binding.state, binding.prior_raw, _ = module.load_state(job)
+    execution = module._ProviderExecution(started_mono=0.0, heartbeat_mono=0.5, next_notice=30.0)
+    outcome = module._ControllerOutcome()
+    launch = module._ScopedLaunch()
+    crossed_old_hard = []
+
+    class ControlledSelector(selectors.DefaultSelector):
+        calls = 0
+
+        def select(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                _, _, approval = module.load_state(job)
+                assert module.command_control(job, 'extend', approval, 1.0) == 0
+                clock[0] = 1003.2
+            elif self.calls == 2:
+                # This can only be reached if the actual post-select state
+                # refresh consumed hard=4 and did not stop at old hard=3.
+                crossed_old_hard.append((execution.elapsed, binding.state['hard_seconds']))
+                clock[0] = 1004.0
+            else:
+                raise AssertionError("monitor did not stop at the maximum")
+            return []
+
+    child = subprocess.Popen(['/bin/sleep', '30'], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+    execution.process = child
+    streams = module._ControllerStreams(job / 'stdout', job / 'stderr', job / 'envelope')
+    streams.stdout_fd = os.open(streams.stream_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    streams.stderr_fd = os.open(streams.stderr_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    streams.selector = ControlledSelector()
+    streams.selector.register(child.stdout, selectors.EVENT_READ, 'stdout')
+    streams.selector.register(child.stderr, selectors.EVENT_READ, 'stderr')
+    try:
+        module._monitor_controller_provider(job, binding, execution, streams, launch, outcome)
+        assert (
+            len(crossed_old_hard) == 1 and 3 < crossed_old_hard[0][0] < 4
+            and crossed_old_hard[0][1] == 4
+        )
+        assert (outcome.reason, outcome.limit_kind, execution.elapsed) == (
+            'hard_deadline_exceeded', 'max-runtime', 4.0,
+        )
+        reap_start = time.monotonic()
+        clock_api.monotonic = lambda: 4 + time.monotonic() - reap_start
+        module._reap_controller_provider(job, binding, execution, streams, launch, outcome)
+        assert execution.process is None and child.poll() is not None
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise AssertionError('cap left an owned process group')
+        outcome.final_status, outcome.exit_code = module._controller_terminal_status(outcome.reason, None)
+        assert module._publish_controller_terminal(
+            job, binding, execution, streams, outcome, module._CandidateReconciliation(),
+        ) == module.EXIT_BY_REASON['hard_deadline_exceeded']
+        terminal, _, _ = module.load_state(job)
+        assert (terminal['status'], terminal['reason'], terminal['limit_kind']) == (
+            'failed', 'hard_deadline_exceeded', 'max-runtime',
+        )
+        assert terminal['hard_seconds'] == terminal['max_seconds'] == 4.0
+        assert terminal['elapsed_seconds'] >= 4.0
+        assert terminal['started_epoch'] is None and terminal['controller_pid'] is None
+    finally:
+        # Failure must reap too: a fixed diagnostic clock cannot freeze grace.
+        cleanup_start = time.monotonic()
+        clock_api.monotonic = lambda: 4 + time.monotonic() - cleanup_start
+        module._cleanup_controller_resources(binding, execution, streams, launch)
 PY
 then
     ok "max runtime remains an absolute cap even after an approved hard-deadline extension"
