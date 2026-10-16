@@ -79,8 +79,10 @@ limits, verifier environments and no-follow boundaries. Workspace MCP startup wa
 observed on AGY 1.3.5: preview rejects known executable configuration; each launch
 also checks actual cwd ancestry, in both modes. Prefer scoped mode excluding
 `.agents/` configuration, then a disposable worktree without it; ancestors must
-also be clear. Session mode can start enabled user-plugin MCP servers; the guide
-owns the reserved paths, native exclusion evidence and unresolved hook behavior. Read the required
+also be clear. Session mode can start enabled user-plugin MCP servers and run global
+and enabled-plugin hooks in headless mode with slash commands disabled; hooks can
+observe or rewrite tool calls, including shell commands. The guide owns the reserved
+paths, native plugin/hook exclusion evidence and remaining limits. Read the required
 [launch notices](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#approval-bindings-and-launch-notices)
 before initial, resume, continue or restart attempts; notices do not repeat approvals.
 

@@ -7,8 +7,12 @@ not a claim about every version or configuration of the third-party tools it cal
 ## What the project itself does
 
 The repository does not operate a hosted service, collect analytics, or send
-telemetry on its own. Evidence Receipt v2 creation and validation, and all offline
-test suites run locally without a network or provider.
+telemetry on its own. Evidence Receipt v2 parsing, serialization, publication and
+validation, and all offline test suites run locally without a network or provider.
+Receipt creation can also invoke user-authorized, driver-selected verifier commands
+that run untrusted candidate code with the user's authority, including access to
+host files and the network; see
+[environments and verification](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#environments-and-verification).
 Installing the skill copies its public workflow files and a local pointer to
 the checkout; it does not contact a network service or change agy, Codex or Claude Code
 configuration.
@@ -39,10 +43,11 @@ before worker activity. Preview rejects known provider executable configuration;
 every launch additionally checks the actual cwd and bounded ancestors, in both
 isolation modes. Prefer scoped mode excluding `.agents/` configuration, then a
 disposable worktree without it; actual provider ancestors must also be clear.
-Session mode can start MCP servers from enabled user-installed agy plugins;
-ambient HOME configuration is not suppressed and hook behavior remains unresolved.
+Session mode can start MCP servers from enabled user-installed agy plugins and run
+global and enabled-plugin hooks in headless mode with slash commands disabled.
+Hooks can observe or rewrite tool calls, including shell commands.
 [Security and compatibility](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#session-and-native-modes)
-owns the reserved paths, native plugin exclusion evidence and remaining limits.
+owns the reserved paths, native plugin/hook exclusion evidence and remaining limits.
 
 Explicit `--provider-isolation native` requires supported macOS scoped containment
 with private HOME/TMP and never falls back to session mode. In native mode, the bound agy image receives non-local TCP
