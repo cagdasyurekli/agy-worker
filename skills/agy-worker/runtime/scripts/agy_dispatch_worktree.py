@@ -43,6 +43,157 @@ TERM_GRACE = 1.0
 class DispatchError(ValueError):
     pass
 
+class ExecutableProviderConfigurationError(DispatchError):
+    """A provider startup path crosses the content/execution boundary."""
+
+    def __init__(self, path: str) -> None:
+        escaped = path.encode("unicode_escape").decode("ascii")
+        if len(escaped) > 320:
+            escaped = escaped[:120] + "..." + escaped[-197:]
+        super().__init__(
+            f"executable provider configuration rejected: {escaped}; "
+            "use scoped mode excluding .agents/ configuration; otherwise use a "
+            "disposable worktree without it (actual cwd ancestors must also be clear)"
+        )
+
+
+_PROVIDER_CONFIG_LEAVES = frozenset({
+    "mcp_config.json", "hooks.json", "skills.json", "rules.json", "agents.json", "plugins.json",
+})
+
+
+def _provider_config_parts(path: str) -> list[str]:
+    return [unicodedata.normalize("NFC", part).casefold() for part in path.split("/")]
+
+
+def _check_provider_config_node(path: str, *, symlink: bool = False) -> None:
+    parts = _provider_config_parts(path)
+    for index, part in enumerate(parts):
+        if part != ".agents":
+            continue
+        tail = parts[index + 1:]
+        if ((symlink and not tail)
+                or (tail and tail[-1] in _PROVIDER_CONFIG_LEAVES)
+                or (tail and tail[0] == "plugins" and (symlink or tail[-1] == "plugin.json"))):
+            raise ExecutableProviderConfigurationError(path)
+
+
+def _check_provider_config_entries(
+    entries: list[dict[str, Any]], *, scope: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Retain known .agents directories and plugin loader nodes for the final probe."""
+    paths: dict[str, str] = {}
+    deadline = time.monotonic() + READABLE_MANIFEST_SCAN_SECONDS
+    for entry in entries:
+        path = entry["path"]
+        selected = scope is None or any(
+            path == selector["path"] or selector["path"].startswith(path + "/")
+            or (selector["kind"] == "tree" and path.startswith(selector["path"] + "/"))
+            for selector in scope["read"]
+        )
+        if time.monotonic() > deadline:
+            raise ExecutableProviderConfigurationError(path)
+        if not selected:
+            continue
+        _check_provider_config_node(path, symlink=entry["kind"] == "symlink")
+        parts = _provider_config_parts(path)
+        if ((entry["kind"] == "directory" and ".agents" in parts) or any(
+            parts[index:index + 2] == [".agents", "plugins"] for index in range(len(parts) - 1)
+        )):
+            paths[path] = entry["kind"]
+    return paths
+
+
+def _recheck_provider_configuration(
+    cwd: str, known_paths: dict[str, str], *, ambient_home: str | None,
+    controlled_roots: tuple[str, ...] = (),
+) -> None:
+    """Recheck fixed startup names, known directories and bounded cwd ancestry.
+
+    Gitless ancestry conservatively extends to the filesystem root; no provider
+    project-root discovery algorithm is assumed. No worktree is walked again.
+    """
+    deadline = time.monotonic() + READABLE_MANIFEST_SCAN_SECONDS
+    package_count = 0
+    if len(known_paths) > MAX_BOUNDARY_ENTRIES:
+        raise ExecutableProviderConfigurationError(cwd)
+    root = Path(os.path.realpath(cwd))
+    home = Path(os.path.realpath(ambient_home)) if ambient_home else None
+    home_is_controlled = home is not None and any(
+        home == Path(os.path.realpath(controlled)) or Path(os.path.realpath(controlled)) in home.parents
+        for controlled in controlled_roots
+    )
+
+    def info(node: Path) -> os.stat_result | None:
+        if time.monotonic() > deadline:
+            raise ExecutableProviderConfigurationError(str(node))
+        try:
+            return node.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise ExecutableProviderConfigurationError(str(node)) from exc
+
+    def probe(directory: Path, *, expected_kind: str | None = None) -> bool:
+        observed = info(directory)
+        if observed is None:
+            return False
+        _check_provider_config_node(str(directory), symlink=stat.S_ISLNK(observed.st_mode))
+        is_directory = stat.S_ISDIR(observed.st_mode)
+        is_file = stat.S_ISREG(observed.st_mode)
+        if ((expected_kind == "directory" and not is_directory)
+                or (expected_kind is not None and expected_kind != "directory" and not is_file)
+                or not (is_directory or is_file)):
+            raise ExecutableProviderConfigurationError(str(directory))
+        if not is_directory:
+            return False
+        leaves = _PROVIDER_CONFIG_LEAVES
+        parts = _provider_config_parts(str(directory))
+        if any(parts[index:index + 2] == [".agents", "plugins"] for index in range(len(parts) - 1)):
+            leaves = leaves | {"plugin.json"}
+        for leaf in leaves:
+            target = directory / leaf
+            if info(target) is not None:
+                raise ExecutableProviderConfigurationError(str(target))
+        return True
+
+    for relative in sorted(known_paths, key=lambda path: (path.count("/"), path)):
+        probe(root / relative, expected_kind=known_paths[relative])
+    ancestor = root
+    for _depth in range(READABLE_MANIFEST_MAX_DEPTH):
+        marker = info(ancestor / ".git")
+        if marker is not None and not (stat.S_ISREG(marker.st_mode) or stat.S_ISDIR(marker.st_mode)):
+            raise DispatchError("provider cwd ancestor Git marker is invalid")
+        # Read neither .git file contents nor directory control data.
+        if ancestor != home or ancestor == root or home_is_controlled or marker is not None:
+            agents = ancestor / ".agents"
+            if probe(agents):
+                plugins = agents / "plugins"
+                if probe(plugins) and ancestor != root:
+                    # Only unknown ancestor plugin package names need enumeration.
+                    # Fixed loader names are probed; contents are never read.
+                    try:
+                        with os.scandir(plugins) as scanned:
+                            for entry in scanned:
+                                if time.monotonic() > deadline:
+                                    raise ExecutableProviderConfigurationError(str(plugins))
+                                package_count += 1
+                                if package_count > MAX_BOUNDARY_ENTRIES:
+                                    raise ExecutableProviderConfigurationError(str(plugins))
+                                _check_provider_config_node(entry.path, symlink=entry.is_symlink())
+                                if entry.is_dir(follow_symlinks=False):
+                                    package = Path(entry.path)
+                                    probe(package, expected_kind="directory")
+                                    probe(package / ".antigravity-plugin")
+                                    probe(package / ".gemini-plugin")
+                    except OSError as exc:
+                        raise ExecutableProviderConfigurationError(str(plugins)) from exc
+        if marker is not None or ancestor.parent == ancestor:
+            return
+        ancestor = ancestor.parent
+    raise ExecutableProviderConfigurationError(str(ancestor))
+
+
 class WorktreeBaselineError(DispatchError):
     """The queued worktree baseline is unavailable or no longer exact."""
 
@@ -409,7 +560,9 @@ def _preview_worktree_authority(root: str) -> tuple[Any, ...]:
     return control, registration
 
 
-def _scan_readable_paths(root: str) -> tuple[list[dict[str, str]], tuple[Any, ...]]:
+def _scan_readable_paths(
+    root: str, *, provider_configuration: bool = False, provider_scope: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, str]], tuple[Any, ...]]:
     deadline = time.monotonic() + READABLE_MANIFEST_SCAN_SECONDS
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -465,6 +618,11 @@ def _scan_readable_paths(root: str) -> tuple[list[dict[str, str]], tuple[Any, ..
             relative = name if not prefix else prefix + b"/" + name
             listing.append(name)
             info = os.stat(entry_name, dir_fd=parent_fd, follow_symlinks=False)
+            if provider_configuration:
+                _check_provider_config_entries([{
+                    "path": os.fsdecode(relative),
+                    "kind": "symlink" if stat.S_ISLNK(info.st_mode) else "file",
+                }], scope=provider_scope)
             binding = _manifest_binding(info)
             full_path = os.path.join(parent_path, entry_name)
             if stat.S_ISDIR(info.st_mode):
@@ -538,7 +696,9 @@ def _scan_readable_paths(root: str) -> tuple[list[dict[str, str]], tuple[Any, ..
     return public_entries, tuple(observations)
 
 
-def readable_path_manifest(workdir: str) -> dict[str, Any]:
+def readable_path_manifest(
+    workdir: str, *, provider_configuration: bool = False, provider_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return a stable content-free provider-readable path manifest preview."""
 
     if (
@@ -554,8 +714,14 @@ def readable_path_manifest(workdir: str) -> dict[str, Any]:
     if not stat.S_ISDIR(root_info.st_mode):
         raise ReadableManifestError("worktree root is not a directory")
     authority_before = _preview_worktree_authority(workdir)
-    first_entries, first_observation = _scan_readable_paths(workdir)
-    second_entries, second_observation = _scan_readable_paths(workdir)
+    if provider_configuration:
+        first_entries, first_observation = _scan_readable_paths(
+            workdir, provider_configuration=True, provider_scope=provider_scope)
+        second_entries, second_observation = _scan_readable_paths(
+            workdir, provider_configuration=True, provider_scope=provider_scope)
+    else:
+        first_entries, first_observation = _scan_readable_paths(workdir)
+        second_entries, second_observation = _scan_readable_paths(workdir)
     authority_after = _preview_worktree_authority(workdir)
     if (
         first_entries != second_entries
@@ -862,6 +1028,9 @@ def _manifest_digest(manifest: Any) -> str:
 def _preview_validation_error(exc: ReadableManifestError | DispatchError |
                               LAUNCH_AUTHORITY.LaunchAuthorityError) -> None:
     """Expose bounded validation reasons without emitting control bytes or file contents."""
+    if isinstance(exc, ExecutableProviderConfigurationError):
+        print(f"agy-worker.sh: transmission preview invalid: {exc}", file=sys.stderr)
+        return
     reason = str(exc).encode("unicode_escape").decode("ascii")
     if len(reason) > 512:
         reason = "validation detail is too long"
@@ -884,7 +1053,11 @@ def _preview_main(argv: list[str]) -> int:
         print("agy-worker.sh: transmission preview unavailable", file=sys.stderr)
         return 64
     try:
-        result = readable_path_manifest(workdir)
+        scope = None
+        if scope_path is not None:
+            _resolved_scope, raw_scope, _scope_info = _read_provider_scope_file(scope_path, 512 * 1024)
+            scope = _parse_provider_scope(raw_scope)
+        result = readable_path_manifest(workdir, provider_configuration=True, provider_scope=scope)
         native_grant_profile = (
             "baseline" if provider_isolation == "session"
             else CONTAINMENT.NEW_NATIVE_GRANT_PROFILE
@@ -896,13 +1069,10 @@ def _preview_main(argv: list[str]) -> int:
             if provider_isolation == "session" else
             "native scoped provider containment with private HOME, Seatbelt, and AGY sandbox"
         )
-        if scope_path is not None:
-            _resolved_scope, raw_scope, _scope_info = _read_provider_scope_file(
-                scope_path, 512 * 1024,
-            )
-            scope = _parse_provider_scope(raw_scope)
+        if scope is not None:
+            _check_provider_config_entries(result["manifest"]["entries"], scope=scope)
             _validate_scope_against_worktree(scope, workdir, result["manifest"]["entries"])
-            selected_manifest = _build_selected_content_manifest(workdir, scope)
+            selected_manifest = _build_selected_content_manifest(workdir, scope, provider_configuration=True)
             selected_sha = _selected_content_digest(selected_manifest)
             policy_sha = _canonical_digest(scope)
             manifest_sha = result["manifest_sha256"]
@@ -918,6 +1088,9 @@ def _preview_main(argv: list[str]) -> int:
             result["selected_content_sha256"] = selected_sha
             result["transmission_sha256"] = transmission_sha
         if scope_path is None:
+            known_paths = _check_provider_config_entries(result["manifest"]["entries"])
+            _recheck_provider_configuration(
+                workdir, known_paths, ambient_home=os.environ.get("HOME"), controlled_roots=(workdir,))
             content = whole_worktree_content_manifest(workdir)
             result["contents_read"] = True
             result["content_manifest"] = content["manifest"]
@@ -1091,7 +1264,9 @@ def _resolved_path_is_git_administration(root: str, resolved: str) -> bool:
     return any(part.lower() == ".git" for part in relative.split(os.sep))
 
 
-def _worktree_symlink_boundary(workdir: str) -> bool:
+def _worktree_symlink_boundary(
+    workdir: str, *, provider_config_paths: dict[str, str] | None = None,
+) -> bool:
     """Boundedly reject a link whose resolved target leaves ``workdir``.
 
     This is intentionally a no-follow directory walk, not a worktree snapshot:
@@ -1117,6 +1292,16 @@ def _worktree_symlink_boundary(workdir: str) -> bool:
                     count += 1
                     if count > MAX_BOUNDARY_ENTRIES:
                         return False
+                    if provider_config_paths is not None:
+                        relative = os.path.relpath(entry.path, root)
+                        _check_provider_config_node(relative, symlink=entry.is_symlink())
+                        parts = _provider_config_parts(relative)
+                        kind = "directory" if entry.is_dir(follow_symlinks=False) else "file"
+                        if ((kind == "directory" and ".agents" in parts) or any(
+                            parts[index:index + 2] == [".agents", "plugins"]
+                            for index in range(len(parts) - 1)
+                        )):
+                            provider_config_paths[relative] = kind
                     if entry.is_symlink():
                         # `mktemp` commonly returns /var/... on macOS while
                         # realpath canonicalizes the worktree to /private/var.
@@ -3197,6 +3382,7 @@ def _validate_scope_against_worktree(
 
 def _build_selected_content_manifest(
     root_dir: str | Path, scope: dict[str, Any], *, is_stage: bool = False,
+    provider_configuration: bool = False,
 ) -> list[dict[str, Any]]:
     """Build canonical selected-content manifest using descriptor-relative O_NOFOLLOW operations."""
     directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -3242,11 +3428,13 @@ def _build_selected_content_manifest(
             if name_str in {".git", ".gitmodules"} and not is_stage:
                 continue
             st = os.stat(name_str, dir_fd=parent_fd, follow_symlinks=False)
+            selected, _ = is_selected_path(rel)
+            if selected and provider_configuration:
+                _check_provider_config_node(rel, symlink=stat.S_ISLNK(st.st_mode))
             if stat.S_ISLNK(st.st_mode):
                 raise DispatchError(f"symlink rejected in selected content scan: {rel}")
             if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
                 raise DispatchError(f"special node rejected in selected content scan: {rel}")
-            selected, _ = is_selected_path(rel)
             if not selected:
                 continue
             if stat.S_ISDIR(st.st_mode):
@@ -3369,6 +3557,7 @@ def _compute_v11_launch_approval_sha256(
 
 def _materialize_stage(
     source_root: str | Path, stage_dir: str | Path, scope: dict[str, Any], selected_manifest: list[dict[str, Any]],
+    *, provider_configuration: bool = False,
 ) -> tuple[tuple[int, int, int, int, int], str]:
     """Materialize 0700 Git-less stage with descriptor-relative safe copies."""
     directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -3379,6 +3568,8 @@ def _materialize_stage(
     deadline = time.monotonic() + SELECTED_CONTENT_SCAN_SECONDS
     copied_bytes = 0
 
+    if provider_configuration:
+        _check_provider_config_entries(selected_manifest)
     if len(selected_manifest) > SELECTED_CONTENT_MAX_ENTRIES:
         raise DispatchError("selected content entry limit exceeded")
     src_root_fd = -1
@@ -3505,7 +3696,8 @@ def _materialize_stage(
                 finally:
                     os.close(src_fd)
 
-        rescan = _build_selected_content_manifest(stage_str, scope, is_stage=True)
+        rescan = _build_selected_content_manifest(
+            stage_str, scope, is_stage=True, provider_configuration=provider_configuration)
         if rescan != selected_manifest:
             raise DispatchError("materialized stage content does not match source selected content")
 
@@ -3558,6 +3750,7 @@ def _materialize_stage(
 
 def _scan_stage_mutations(
     stage_dir: str | Path, scope: dict[str, Any], pre_launch_manifest: list[dict[str, Any]],
+    *, provider_configuration: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Rescan stage, detect mutations, and authorize against scope write policy."""
     directory_flag = getattr(os, "O_DIRECTORY", 0)
@@ -3587,6 +3780,8 @@ def _scan_stage_mutations(
                 raise DispatchError("stage mutation entry limit exceeded")
             rel = posixpath.normpath(posixpath.join(rel_prefix, name_str)) if rel_prefix else name_str
             st = os.stat(name_str, dir_fd=parent_fd, follow_symlinks=False)
+            if provider_configuration:
+                _check_provider_config_node(rel, symlink=stat.S_ISLNK(st.st_mode))
             if stat.S_ISLNK(st.st_mode):
                 raise DispatchError(f"symlink mutation rejected in stage: {rel}")
             if name_str.lower() in {".git", ".gitmodules"}:

@@ -34,9 +34,15 @@ reconciliation do not enforce a host read/write boundary. Disclose this mode in 
 initial approval alongside the task and selected content; the job cannot silently
 switch modes later.
 
-Session mode supplies no plugin, hook or MCP suppression policy. See the observed
-[session tool exposure](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#session-and-native-modes)
-before approving a launch.
+AGY 1.3.5 was observed starting workspace `.agents/mcp_config.json` commands
+before worker activity. Preview rejects known provider executable configuration;
+every launch additionally checks the actual cwd and bounded ancestors, in both
+isolation modes. Prefer scoped mode excluding `.agents/` configuration, then a
+disposable worktree without it; actual provider ancestors must also be clear.
+Session mode can start MCP servers from enabled user-installed agy plugins;
+ambient HOME configuration is not suppressed and hook behavior remains unresolved.
+[Security and compatibility](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#session-and-native-modes)
+owns the reserved paths, native plugin exclusion evidence and remaining limits.
 
 Explicit `--provider-isolation native` requires supported macOS scoped containment
 with private HOME/TMP and never falls back to session mode. In native mode, the bound agy image receives non-local TCP
