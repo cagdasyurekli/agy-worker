@@ -59,7 +59,13 @@ def worktree_function_source(name: str) -> str:
     return segment
 
 
+sys.path.insert(0, str(ROOT / "scripts"))
+from ci_stages import CASE_LABELS, case_identity, emit_case_completion  # noqa: E402 -- isolated CI inventory path
+
 EXPECTED_CHECKS = 160
+DECLARED_LABELS: list[str] = []
+COMPLETED_LABELS: list[str] = []
+CANONICAL_LABELS = tuple(label for part in "abc" for label in CASE_LABELS[f"dispatcher-remediation-{part}"])
 CHECKS_RUN = 0
 FOCUSED_CHECK = os.environ.get("AGY_WORKER_REMEDIATION_FOCUSED_CHECK")
 # This test-only switch exercises portable controller mechanics on macOS when
@@ -72,21 +78,34 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 60}
 
 
-def selected_group(arguments: list[str]) -> str | None:
+def selected_group(arguments: list[str]):
     """Parse the optional natural suite partition without changing the default run."""
     parser = argparse.ArgumentParser(
         description="Run a remediation-controller test group.",
     )
     parser.add_argument("--group", choices=tuple(GROUP_CHECKS))
-    return parser.parse_args(arguments).group
+    parser.add_argument("--ci-part", choices=("a", "b", "c"))
+    parser.add_argument("--inventory-only", action="store_true")
+    selected = parser.parse_args(arguments)
+    if selected.ci_part and (selected.group or FOCUSED_CHECK):
+        parser.error("CI partition cannot be combined with a group or focused check")
+    return selected
 
 
-SELECTED_GROUP = selected_group(sys.argv[1:])
+SELECTION = selected_group(sys.argv[1:])
+SELECTED_GROUP = SELECTION.group
+PART_LABELS = CASE_LABELS[f"dispatcher-remediation-{SELECTION.ci_part}"] if SELECTION.ci_part else CANONICAL_LABELS
 ACTIVE_GROUP = "core"
 
 
 def check(label: str, action) -> None:
     global CHECKS_RUN
+    index = len(DECLARED_LABELS)
+    if index >= len(CANONICAL_LABELS) or label != CANONICAL_LABELS[index]:
+        raise AssertionError(f"remediation declaration inventory mismatch at {index}: {label}")
+    DECLARED_LABELS.append(label)
+    if SELECTION.inventory_only or label not in PART_LABELS:
+        return
     if SELECTED_GROUP is not None and ACTIVE_GROUP != SELECTED_GROUP:
         return
     if FOCUSED_CHECK is not None and label != FOCUSED_CHECK:
@@ -96,6 +115,8 @@ def check(label: str, action) -> None:
     except Exception as exc:  # pragma: no cover - direct failure context
         raise AssertionError(f"{label}: {exc}") from exc
     CHECKS_RUN += 1
+    COMPLETED_LABELS.append(label)
+    emit_case_completion(case_identity("dispatcher-remediation", label))
     print(f"ok: {label}")
 
 
@@ -6723,13 +6744,20 @@ with tempfile.TemporaryDirectory() as temporary:
     ACTIVE_GROUP = "recovery"
     recovery_cases.run(globals())
 
+if tuple(DECLARED_LABELS) != CANONICAL_LABELS:
+    raise AssertionError("remediation declaration inventory omitted case(s)")
+if SELECTION.inventory_only:
+    raise SystemExit(0)
+
 expected_checks = (
     1 if FOCUSED_CHECK is not None
     else GROUP_CHECKS[SELECTED_GROUP] if SELECTED_GROUP is not None
-    else EXPECTED_CHECKS
+    else len(PART_LABELS)
 )
 if CHECKS_RUN != expected_checks:
     raise AssertionError(
         f"remediation controller inventory drifted: expected {expected_checks}, ran {CHECKS_RUN}"
     )
+if not FOCUSED_CHECK and not SELECTED_GROUP and tuple(COMPLETED_LABELS) != PART_LABELS:
+    raise AssertionError("remediation completion inventory mismatch")
 print(f"PASS: remediation controller focused checks ({CHECKS_RUN} cases)")

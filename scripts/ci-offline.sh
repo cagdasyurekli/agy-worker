@@ -98,7 +98,7 @@ done
 
 if [[ -n "$target_shard" ]]; then
     case "$target_shard" in
-        dispatcher|dispatcher-remediation|other-a|other-b) ;;
+        dispatcher-a|dispatcher-b|dispatcher-remediation-a|dispatcher-remediation-b|dispatcher-remediation-c|other-a|other-b) ;;
         *)
             printf '%s\n' 'ci offline: rejected arguments' >&2
             exit 2

@@ -156,7 +156,7 @@ path = Path(sys.argv[1])
 info = path.lstat()
 assert stat.S_ISREG(info.st_mode)
 data = path.read_bytes()
-assert sha256(data).hexdigest() == "67b5f4309e1f36898e8ca8f4b0a3ec165c5bd291f626a05dcb3ecffa0359c356"
+assert sha256(data).hexdigest() == "2f817f816398c246725d35cc1b2c5a5b0b93d4c4e9c7aa2406582ab55cbed535"
 text = data.decode("utf-8")
 required = (
     "name: test\n",
@@ -308,6 +308,7 @@ PY
 
 ci_offline_contract() {
     python3 - "$1" "$ROOT/scripts/ci_stages.py" <<'PY'
+import ast
 from pathlib import Path
 import sys
 
@@ -327,20 +328,61 @@ assert not any(token in offline_text for token in ("curl ", "wget ", "git fetch"
 sys.path.insert(0, str(stages_file.parent))
 import ci_stages
 
-assert len(ci_stages.STAGES) == 23
-assert len({s.id for s in ci_stages.STAGES}) == 23
-assert set(ci_stages.SHARDS) == {"dispatcher", "dispatcher-remediation", "other-a", "other-b"}
+assert len(ci_stages.STAGES) == 26
+assert len({s.id for s in ci_stages.STAGES}) == 26
+assert set(ci_stages.SHARDS) == {
+    "dispatcher-a", "dispatcher-b", "dispatcher-remediation-a",
+    "dispatcher-remediation-b", "dispatcher-remediation-c", "other-a", "other-b",
+}
 
 required_stage_ids = (
     "diff-hygiene", "shell-syntax", "python-syntax", "qa-gate", "evidence-receipt",
     "evidence-report", "job-lifecycle",
-    "dispatcher", "dispatcher-remediation", "provider-containment", "self-verification", "self-verification-lifecycle",
+    "dispatcher-a", "dispatcher-b", "dispatcher-remediation-a", "dispatcher-remediation-b",
+    "dispatcher-remediation-c", "provider-containment", "self-verification", "self-verification-lifecycle",
     "updater", "update-notifier",
     "delegation-policy", "workflow", "workflow-integration", "launch-authority", "packaging",
     "doctor", "conformance", "proof-demo", "bytecode-hygiene",
 )
 assert tuple(s.id for s in ci_stages.STAGES) == required_stage_ids
-stages_text = stages_file.read_text(encoding="utf-8")
+
+def stage_source_without_literal_inventory(source):
+    # Case/declaration labels are data; keep computed expressions and argv visible.
+    lines = source.encode("utf-8").splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    spans = []
+    seen = set()
+
+    def omit_literal(node):
+        try:
+            ast.literal_eval(node)
+        except (ValueError, TypeError):
+            return
+        spans.append((offsets[node.lineno - 1] + node.col_offset,
+                      offsets[node.end_lineno - 1] + node.end_col_offset))
+
+    for node in ast.parse(source).body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        names = {target.id for target in targets if isinstance(target, ast.Name)}
+        for name in names & {"CASE_LABELS", "SHELL_DECLARATIONS"}:
+            assert name not in seen and isinstance(node, ast.AnnAssign)
+            seen.add(name)
+            if name == "CASE_LABELS":
+                omit_literal(node.value)
+            elif isinstance(node.value, ast.Dict):
+                for declarations in node.value.values:
+                    if isinstance(declarations, ast.Tuple):
+                        for item in declarations.elts:
+                            omit_literal(item)
+    assert seen == {"CASE_LABELS", "SHELL_DECLARATIONS"}
+    raw = source.encode("utf-8")
+    for start, end in sorted(spans, reverse=True):
+        raw = raw[:start] + b"None" + raw[end:]
+    return raw.decode("utf-8")
+
+stages_text = stage_source_without_literal_inventory(stages_file.read_text(encoding="utf-8"))
 assert "HOME" not in stages_text
 assert not any(token in stages_text for token in ("curl ", "wget ", "git fetch", "agy "))
 PY
@@ -3142,10 +3184,14 @@ suite_commands = [
 ]
 
 valid = (
-    len(suite_commands) == len(set(suite_commands)) == 19
+    len(suite_commands) == len(set(suite_commands)) == 22
     and "/usr/bin/python3 -I -S -B scripts/ci_stages.py --list" in contributing
-    and {command for command in suite_commands if command in contributing}
-    == {"/usr/bin/python3 -I -S -B tests/test-agy-worker-remediation.py"}
+    and not any(command in contributing for command in suite_commands)
+    and all(
+        f"/usr/bin/python3 -I -S -B tests/test-agy-worker-remediation.py --group {group}"
+        in contributing
+        for group in ("core", "runtime", "recovery")
+    )
     and template.count("./scripts/ci-offline.sh") == 1
     and not any(command in template for command in suite_commands)
     and "Human diff review completed" in template
