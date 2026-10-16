@@ -6715,6 +6715,7 @@ def spawn(
                 controller_process.wait(timeout=5.0)
             except subprocess.TimeoutExpired:
                 _terminate(controller_process)
+            _recover_reaped_startup_signal(job, state, controller_process, parent_signal)
             return 128 + parent_signal
         if not foreground:
             print_control_status(current, sha, output_format, job=job)
@@ -6947,6 +6948,42 @@ def _terminalize_start_failure(job: Path) -> None:
                 state, status="failed", reason="status_unavailable",
                 exit_code=EXIT_BY_REASON["status_unavailable"],
             ))
+
+
+def _recover_reaped_startup_signal(
+    job: Path, state: Mapping[str, Any], process: subprocess.Popen[bytes], number: int,
+) -> None:
+    """Finish only the reaped child's still-owned, unpublished provider attempt."""
+    if process.returncode is None:
+        raise DispatchError("controller has not been reaped")
+    with lifecycle_lock(job, blocking=False):
+        with state_lock(job):
+            current, _raw, _sha = load_state(job)
+            if current["attempt"] != state["attempt"]:
+                raise DispatchError("dispatch changed before startup signal recovery")
+            if current["status"] in TERMINAL:
+                return
+            current_fields: Mapping[str, object] = current
+            if (
+                current["controller_pid"] != process.pid
+                or not (
+                    current["status"] == "queued"
+                    or (current["status"] == "cancel-requested" and current["cancel_requested"])
+                )
+                or any(current_fields[key] is not None for key in (
+                    "started_epoch", "stream_path", "stderr_path", "provider_stage_path",
+                    "provider_stage_identity", "provider_stage_manifest_sha256",
+                ))
+                or current["elapsed_seconds"] != current["attempt_base_elapsed"]
+            ):
+                raise DispatchError("dispatch has no owned prelaunch signal recovery")
+        # Running/stream publication precedes provider Popen under the state
+        # lock. The child is reaped and lifecycle ownership excludes a relaunch;
+        # reconcile outside the state lock, retaining the terminalizer's CAS/veto.
+        _terminalize_owned(
+            job, current, status="cancelled", reason="interrupted", exit_code=128 + number,
+            expected_controller_pid=process.pid,
+        )
 
 
 def _terminalize_queued_signal(job: Path, number: int) -> None:

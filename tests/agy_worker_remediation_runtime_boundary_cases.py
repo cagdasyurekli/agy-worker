@@ -519,17 +519,30 @@ def run(context: dict[str, object]) -> None:
         startup_wrapper = root / "startup-signal-controller.py"
         startup_wrapper.write_text(
             "import os, signal, sys\n"
-            "ready, release, source, job, ownership = sys.argv[1:]\n"
+            "ready, release, source, job, ownership, mode, phase_path = sys.argv[1:]\n"
             "os.write(int(ready), b'1')\n"
             "os.close(int(ready))\n"
             "assert os.read(int(release), 1) == b'1'\n"
-            "os.close(int(release))\n"
             "import importlib.util\n"
             "from pathlib import Path\n"
             "spec = importlib.util.spec_from_file_location('startup_signal_dispatch', source)\n"
             "module = importlib.util.module_from_spec(spec)\n"
             "sys.modules[spec.name] = module\n"
             "spec.loader.exec_module(module)\n"
+            "if mode != 'normal':\n"
+            "    def stopped_binding(job, binding):\n"
+            "        Path(phase_path).write_text(mode)\n"
+            "        import selectors\n"
+            "        with selectors.DefaultSelector() as selector:\n"
+            "            selector.register(int(release), selectors.EVENT_READ)\n"
+            "            assert selector.select(9), 'startup phase fatal guard'\n"
+            "        assert os.read(int(release), 1) == b'1'\n"
+            "        if mode == 'exception':\n"
+            "            raise RuntimeError('controlled pre-runtime failure')\n"
+            "        raise AssertionError('held startup phase unexpectedly released')\n"
+            "    module._bind_controller_inputs = stopped_binding\n"
+            "else:\n"
+            "    os.close(int(release))\n"
             "raise SystemExit(module.controller(Path(job), int(ownership)))\n",
             encoding="utf-8",
         )
@@ -539,8 +552,11 @@ def run(context: dict[str, object]) -> None:
         original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGUSR1,))
         expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
         try:
-            def exercise_startup_signal(startup_signal, continuation):
+            def exercise_startup_signal(startup_signal, continuation, mode="normal"):
                 startup_label = f"startup-signal-{startup_signal}-{continuation}"
+                if mode != "normal":
+                    startup_label += f"-{mode}"
+                startup_phase = root / f"{startup_label}-phase"
                 startup_job, startup_bin, startup_calls, _, _ = fixture(
                     startup_label, workflow="project", max_cycles=3, max_seconds=20,
                 )
@@ -570,6 +586,9 @@ def run(context: dict[str, object]) -> None:
                 release_read, release_write = os.pipe()
                 startup_children = []
                 startup_delivered = []
+                startup_group_signals = []
+                startup_waits = []
+                startup_wait_entries = []
 
                 def start_at_import(arguments, *args, **kwargs):
                     if not isinstance(arguments, list) or "--ownership-fd" not in arguments:
@@ -579,9 +598,26 @@ def run(context: dict[str, object]) -> None:
                     child = real_startup_popen([
                         sys.executable, "-I", "-S", "-B", str(startup_wrapper),
                         str(ready_write), str(release_read), str(SOURCE),
-                        str(startup_job), ownership,
+                        str(startup_job), ownership, mode, str(startup_phase),
                     ], *args, **kwargs)
                     startup_children.append(child)
+                    actual_wait = child.wait
+                    def observed_wait(timeout=None):
+                        if timeout == 5.0:
+                            if mode != "normal":
+                                waiting, _, _ = MODULE.read_state_snapshot(startup_job)
+                                startup_wait_entries.append((waiting["status"], waiting["controller_pid"], waiting["started_epoch"]))
+                                assert startup_wait_entries[-1] == ("queued", child.pid, None)
+                            if mode == "exception":
+                                os.write(release_write, b"1")
+                        try:
+                            result = actual_wait(timeout=timeout)
+                        except subprocess.TimeoutExpired:
+                            startup_waits.append(("timeout", timeout, None))
+                            raise
+                        startup_waits.append(("return", timeout, result))
+                        return result
+                    child.wait = observed_wait
                     with MODULE.selectors.DefaultSelector() as ready_selector:
                         ready_selector.register(ready_read, MODULE.selectors.EVENT_READ)
                         assert ready_selector.select(3), "controller wrapper was not ready"
@@ -590,11 +626,14 @@ def run(context: dict[str, object]) -> None:
                     return child
 
                 def forward_before_import(pid, number):
+                    if startup_children and pid == startup_children[0].pid and number != 0:
+                        startup_group_signals.append(number)
                     result = real_startup_killpg(pid, number)
-                    if startup_children and pid == startup_children[0].pid and number == startup_signal:
-                        startup_delivered.append(number)
-                        with contextlib.suppress(BrokenPipeError):
-                            os.write(release_write, b"1")
+                    if startup_children and pid == startup_children[0].pid:
+                        if number == startup_signal and not startup_delivered:
+                            startup_delivered.append(number)
+                            with contextlib.suppress(BrokenPipeError):
+                                os.write(release_write, b"1")
                     return result
 
                 previous_path = os.environ.get("PATH", "")
@@ -613,6 +652,28 @@ def run(context: dict[str, object]) -> None:
                     assert terminal["exit_code"] == 128 + startup_signal
                     assert terminal["controller_pid"] is None
                     assert startup_delivered == [startup_signal]
+                    if mode == "timeout":
+                        assert startup_phase.read_text() == mode
+                        assert startup_wait_entries == [("queued", startup_children[0].pid, None)]
+                        assert startup_waits == [("timeout", 5.0, None), ("return", 1.0, -signal.SIGKILL)]
+                        assert startup_group_signals == [startup_signal, signal.SIGTERM, signal.SIGKILL]
+                    elif mode == "exception":
+                        assert startup_phase.read_text() == mode
+                        assert startup_wait_entries == [("queued", startup_children[0].pid, None)]
+                        assert startup_waits == [("return", 5.0, 1)]
+                        assert startup_group_signals == [startup_signal]
+                    else:
+                        child_code = startup_children[0].returncode
+                        assert child_code is not None
+                        if startup_waits[0][0] == "timeout":
+                            assert startup_waits in (
+                                [("timeout", 5.0, None), ("return", 1.0, child_code)],
+                                [("timeout", 5.0, None), ("timeout", 1.0, None), ("return", None, child_code)],
+                            )
+                            assert startup_group_signals == [startup_signal, signal.SIGTERM, signal.SIGKILL]
+                        else:
+                            assert startup_waits == [("return", 5.0, child_code)]
+                            assert startup_group_signals == [startup_signal]
                     assert all(terminal[key] == value for key, value in preserved_startup.items())
                     assert terminal["candidate_recognized"] == continuation
                     assert not startup_calls.exists() or "provider" not in startup_calls.read_text().splitlines()
@@ -634,6 +695,83 @@ def run(context: dict[str, object]) -> None:
             for startup_signal in watched_startup:
                 for continuation in (False, True):
                     exercise_startup_signal(startup_signal, continuation)
+            exercise_startup_signal(signal.SIGTERM, True, "timeout")
+            exercise_startup_signal(signal.SIGTERM, True, "exception")
+
+            recovery_job, _, recovery_calls, _, _ = fixture("startup-recovery-guards")
+            recovery_state, _, _ = MODULE.load_state(recovery_job)
+            with real_startup_popen([sys.executable, "-B", "-c", "pass"]) as reaped:
+                assert reaped.wait(timeout=5) == 0
+            owned = {**recovery_state, "controller_pid": reaped.pid}
+
+            def publish_recovery_state(updates):
+                value = MODULE.validate_state({**owned, **updates})
+                MODULE.write_atomic(recovery_job, MODULE.STATE_NAME, value)
+                return value
+
+            def reject_recovery(expected, process=reaped):
+                before = (recovery_job / MODULE.STATE_NAME).read_bytes()
+                try:
+                    MODULE._recover_reaped_startup_signal(recovery_job, expected, process, signal.SIGTERM)
+                except MODULE.DispatchError:
+                    pass
+                else:
+                    raise AssertionError("startup recovery accepted ambiguous ownership/publication")
+                assert (recovery_job / MODULE.STATE_NAME).read_bytes() == before
+
+            publish_recovery_state({})
+            reject_recovery({**owned, "attempt": owned["attempt"] + 1})
+            for updates in (
+                {"controller_pid": None}, {"controller_pid": reaped.pid + 1},
+                {"status": "running"},
+                {"status": "cancel-requested", "cancel_requested": True,
+                 "stream_path": str(recovery_job / "stream"), "stderr_path": str(recovery_job / "stderr")},
+                {"elapsed_seconds": 0.1},
+            ):
+                publish_recovery_state(updates)
+                reject_recovery(owned)
+            publish_recovery_state({})
+            with mock.patch.object(reaped, "returncode", None):
+                reject_recovery(owned)
+            with MODULE.lifecycle_lock(recovery_job, blocking=False):
+                reject_recovery(owned)
+
+            # A completed same-attempt result wins over a late parent signal.
+            MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGTERM)
+            terminal_bytes = (recovery_job / MODULE.STATE_NAME).read_bytes()
+            MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGHUP)
+            assert (recovery_job / MODULE.STATE_NAME).read_bytes() == terminal_bytes
+            reject_recovery({**owned, "attempt": owned["attempt"] + 1})
+
+            # An approved concurrent cancel retains the existing terminalizer's
+            # cancellation precedence rather than being relabelled interrupted.
+            publish_recovery_state({})
+            terminalize = MODULE._terminalize_owned
+            def cancel_before_projection(job, current, **kwargs):
+                with MODULE.state_lock(job):
+                    latest, raw, _sha = MODULE.load_state(job)
+                    MODULE._transition_locked(job, latest, raw, {"status": "cancel-requested", "cancel_requested": True})
+                return terminalize(job, current, **kwargs)
+            with mock.patch.object(MODULE, "_terminalize_owned", side_effect=cancel_before_projection):
+                MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGTERM)
+            cancelled, _, _ = MODULE.load_state(recovery_job)
+            assert (cancelled["status"], cancelled["reason"], cancelled["exit_code"]) == ("cancelled", "cancelled", MODULE.EXIT_BY_REASON["cancelled"])
+
+            observed = MODULE._observe_source_checkout(owned["workdir"])
+            guard = {**owned["source_checkout_guard"],
+                     **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS},
+                     "before_sha256": observed["sha256"], "after_sha256": None}
+            for proof in ("armed", "changed", "unavailable"):
+                publish_recovery_state({"source_checkout_guard": {**guard, "status": proof}})
+                MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGTERM)
+                vetoed, _, _ = MODULE.load_state(recovery_job)
+                expected = "source_checkout_changed" if proof == "changed" else "source_checkout_guard_unavailable"
+                assert (vetoed["status"], vetoed["reason"], vetoed["exit_code"]) == ("failed", expected, MODULE.EXIT_BY_REASON[expected])
+                assert vetoed["controller_pid"] is None and not vetoed["candidate_recognized"]
+                assert not vetoed["result_available"]
+                if proof == "armed":
+                    assert vetoed["source_checkout_guard"]["status"] == "unavailable"
+            assert not recovery_calls.exists() or "provider" not in recovery_calls.read_text().splitlines()
 
             # The controller itself owns unblocking before its proof/provider
             # Popen calls. Observe the actual inherited mask at that boundary.
@@ -2675,6 +2813,11 @@ def run(context: dict[str, object]) -> None:
             assert state["source_checkout_guard"]["status"] == "deferred"
             assert state["source_checkout_guard"]["after_sha256"] is None
             assert calls.read_text() == "call\ncall\n"
+            before_recovery = (job / MODULE.STATE_NAME).read_bytes()
+            MODULE._recover_reaped_startup_signal(
+                job, state, mock.Mock(returncode=0, pid=1), signal.SIGTERM,
+            )
+            assert (job / MODULE.STATE_NAME).read_bytes() == before_recovery
             return job, calls, state, sha
 
         def cli(job: Path, *arguments: str, payload: bytes = b"") -> subprocess.CompletedProcess:
