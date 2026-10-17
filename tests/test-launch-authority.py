@@ -448,15 +448,68 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         extra = self.select_config(".agents", "tree")
         self.assert_config_rejected(self.config_preview(extra), ".agents")
 
+    def test_workspace_markdown_agents_preview_rejects_documented_forms(self) -> None:
+        for relative in (".agents/agents/example.md", ".agents/agents/example/agent.md",
+                         "src/.agents/agents/example.md", "src/.agents/agents/example/agent.md"):
+            target = self.config_path(relative)
+            try:
+                for isolation in ("session", "native"):
+                    for selection in (None, (relative, "file"), (relative.split("/")[0], "tree")):
+                        if isolation == "native" and selection is None:
+                            continue  # Native isolation requires scoped staging.
+                        with self.subTest(path=relative, isolation=isolation, selection=selection):
+                            extra = ["--provider-isolation", isolation]
+                            if selection is not None:
+                                extra += self.select_config(*selection)
+                            self.assert_config_rejected(self.config_preview(extra), relative)
+            finally:
+                target.unlink()
+
+    def test_workspace_markdown_agents_normalization_is_type_independent(self) -> None:
+        module = dispatch_module().WORKTREE
+        for relative in (".AGENTS/AGENTS/EXAMPLE.MD", ".AGENTS/AGENTS/Example/AGENT.MD",
+                         "src/.agents/agents/cafe\u0301.md", ".agents/agents/cafe\u0301/agent.md"):
+            for symlink in (False, True):
+                with self.subTest(path=relative, symlink=symlink):
+                    with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                        module._check_provider_config_node(relative, symlink=symlink)
+
+    def test_workspace_markdown_agents_preview_rejects_loader_aliases_and_reserved_types(self) -> None:
+        (self.worktree / "safe").mkdir()
+        for relative in (".agents/agents", ".agents/agents/example",
+                         ".agents/agents/example.md", ".agents/agents/example/agent.md"):
+            with self.subTest(alias=relative):
+                target = self.worktree / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(self.worktree / "safe")
+                try:
+                    self.assert_config_rejected(self.config_preview(), relative)
+                    extra = self.select_config(".agents", "tree")
+                    self.assert_config_rejected(self.config_preview(extra), relative)
+                finally:
+                    target.unlink()
+        for relative in (".agents/agents/example.md", ".agents/agents/example/agent.md"):
+            with self.subTest(reserved_type=relative):
+                target = self.config_path(relative, directory=True)
+                self.assert_config_rejected(self.config_preview(), relative)
+                target.rmdir()
+                os.mkfifo(target)
+                self.assert_config_rejected(self.config_preview(), relative)
+                target.unlink()
+
     def test_workspace_config_plain_content_and_unselected_config_remain_allowed(self) -> None:
         for path in (".agents/skills/example/SKILL.md", ".agents/rules/example.md",
-                     ".agents/plugins/marketplace.json", "config/mcp_config.json", "GEMINI.md"):
+                     ".agents/plugins/marketplace.json", "config/mcp_config.json", "GEMINI.md",
+                     ".agents/agents/README.txt", ".agents/agents/example/notes.md",
+                     ".agents/agents/example/deep/agent.md", "notes/.agents/ordinary.md"):
             self.config_path(path)
         internal_link = self.worktree / ".agents/rules/internal-link.md"
         internal_link.symlink_to("../../README.md")
         self.preview()
         internal_link.unlink()
         self.config_path(".agents/mcp_config.json")
+        self.config_path(".agents/agents/unselected.md")
+        self.config_path(".agents/agents/unselected/agent.md")
         for isolation in ("session", "native"):
             with self.subTest(isolation=isolation):
                 _raw, preview = self.preview(extra=["--provider-scope", str(self.scope),
@@ -469,14 +522,14 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         self.assertFalse((self.logs / "fixture-1/stage-001/.agents").exists())
 
     def test_workspace_config_ordinary_regular_loader_containers_remain_allowed(self) -> None:
-        for relative in (".agents", ".agents/plugins"):
+        for relative in (".agents", ".agents/plugins", ".agents/agents"):
             with self.subTest(path=relative):
                 target = self.config_path(relative)
                 raw, preview = self.preview()
                 launched = self.launch(raw, preview["launch_approval_sha256"])
                 self.assertEqual(launched.returncode, 0, launched.stderr)
                 target.unlink()
-        self.assertEqual(self.called.read_text().splitlines(), ["provider-started"] * 2)
+        self.assertEqual(self.called.read_text().splitlines(), ["provider-started"] * 3)
 
     def test_workspace_config_whole_disposable_git_file_stops_ancestor_probe(self) -> None:
         self.assertTrue((self.worktree / ".git").is_file())
@@ -620,6 +673,86 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
                         safe_launch,
                         module._ControllerOutcome())
                 popen.assert_called_once()
+
+    def test_workspace_markdown_agents_final_spawn_rejects_cwd_ancestors_and_late_additions(self) -> None:
+        module = dispatch_module()
+        stage = self.logs / "agent-stage"
+        stage.mkdir()
+        (self.root / ".git").write_text("stop without reading marker contents")
+        for relative in (".agents/agents/example.md", ".agents/agents/example/agent.md"):
+            for location in ("cwd", "ancestor", "known", "late"):
+                with self.subTest(path=relative, location=location), contextlib.ExitStack() as stack:
+                    base = self.logs if location == "ancestor" else stage
+                    if location == "known":
+                        base = stage / "nested"
+                    target = base / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if location not in ("known", "late"):
+                        target.write_text("must-not-be-diagnosed")
+                    state = {"attempt": 1, "controller_pid": os.getpid(), "status": "queued",
+                             "source_checkout_guard": {}, "cancel_requested": False,
+                             "hard_seconds": 30, "max_seconds": 30, "provider_elapsed_seconds": 0}
+                    def prepare(*_args, location=location, target=target):
+                        if location in ("known", "late"):
+                            target.write_text("must-not-be-diagnosed")
+                        return {"status": "unchanged"}
+                    stack.enter_context(mock.patch.object(module, "_prepare_controller_source", side_effect=prepare))
+                    stack.enter_context(mock.patch.object(module, "state_lock", return_value=contextlib.nullcontext()))
+                    stack.enter_context(mock.patch.object(module, "load_state", return_value=(state, b"", "sha")))
+                    stack.enter_context(mock.patch.object(module, "_transition_locked", side_effect=lambda _job, current, raw, _updates: (current, raw, "sha")))
+                    stack.enter_context(mock.patch.object(module, "_provider_environment", return_value={}))
+                    popen = stack.enter_context(mock.patch.object(module.subprocess, "Popen",
+                        side_effect=AssertionError("provider Popen reached before Markdown agent rejection")))
+                    launch = module._ScopedLaunch(argv=["agy", "--print", "task"],
+                        expected_print="task", launch_cwd=str(stage))
+                    if location == "known":
+                        launch.provider_config_paths = {"nested/.agents": "directory"}
+                    try:
+                        with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                            module._spawn_controller_provider(self.logs, module._ControllerBinding(state=state,
+                                command={"provider_env": [], "max_seconds": 30, "child_umask": "022",
+                                         "workdir": str(self.worktree)}),
+                                module._ProviderExecution(source_guard_expected={}),
+                                module._ControllerStreams(self.root / "stream", self.root / "stderr", self.root / "envelope"),
+                                launch, module._ControllerOutcome())
+                        popen.assert_not_called()
+                    finally:
+                        target.unlink()
+
+    def test_workspace_markdown_agents_final_scan_is_shallow_bounded_and_no_follow(self) -> None:
+        module = dispatch_module().WORKTREE
+        stage = self.logs / "agent-scan-stage"
+        loader = stage / ".agents/agents"
+        package = loader / "example"
+        package.mkdir(parents=True)
+        (stage / ".git").write_text("stop")
+        (package / "notes.md").write_text("ordinary content")
+        deep = package / "deep"
+        deep.mkdir()
+        (deep / "agent.md").write_text("outside documented shallow loader")
+        real_scandir = module.os.scandir
+        with mock.patch.object(module.os, "scandir", wraps=real_scandir) as scanned:
+            module._recheck_provider_configuration(str(stage), {}, ambient_home=None)
+            self.assertEqual([Path(call.args[0]) for call in scanned.call_args_list], [loader, package])
+        with mock.patch.object(module, "MAX_BOUNDARY_ENTRIES", 1):
+            with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                module._recheck_provider_configuration(str(stage), {}, ambient_home=None)
+        elapsed = [0.0]
+        @contextlib.contextmanager
+        def expired_scan(path):
+            with real_scandir(path) as scanned:
+                elapsed[0] = module.READABLE_MANIFEST_SCAN_SECONDS + 1
+                yield scanned
+        with mock.patch.object(module.os, "scandir", side_effect=expired_scan), mock.patch.object(
+                module.time, "monotonic", side_effect=lambda: elapsed[0]):
+            with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                module._recheck_provider_configuration(str(stage), {}, ambient_home=None)
+        alias = loader / "alias"
+        alias.symlink_to(deep)
+        with mock.patch.object(module.os, "scandir", wraps=real_scandir) as scanned:
+            with self.assertRaisesRegex(module.DispatchError, "executable provider configuration.*alias"):
+                module._recheck_provider_configuration(str(stage), {}, ambient_home=None)
+            self.assertNotIn(alias, [Path(call.args[0]) for call in scanned.call_args_list])
 
     def test_workspace_config_ancestor_plugin_regular_entries_obey_deadline(self) -> None:
         module = dispatch_module()
