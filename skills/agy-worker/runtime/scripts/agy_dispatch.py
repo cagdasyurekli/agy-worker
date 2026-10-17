@@ -5709,6 +5709,8 @@ def _observe_controller_terminal(
     launch: _ScopedLaunch,
     outcome: _ControllerOutcome,
 ) -> None:
+    # A flush failure must not reopen parsing for an already-observed cancel.
+    cancelled_before_terminal = outcome.reason == "cancelled"
     try:
         os.fsync(streams.stdout_fd)
         os.fsync(streams.stderr_fd)
@@ -5717,7 +5719,7 @@ def _observe_controller_terminal(
         outcome.failure_stage = "binding_failure"
     outcome.result_binding = None
     outcome.outer_status = None
-    if outcome.provisional_orphan_result and outcome.reason in {
+    if not cancelled_before_terminal and outcome.provisional_orphan_result and outcome.reason in {
         None, "idle_timeout", "hard_deadline_exceeded",
     }:
         # These limits still stopped and reaped the child. Deferral alone
@@ -5733,7 +5735,7 @@ def _observe_controller_terminal(
         else:
             outcome.reason = "invalid_envelope"
             outcome.failure_stage = "framing"
-    if outcome.reason is None and streams.sizes["stdout"] == 0 and _model_selection_rejected(
+    if not cancelled_before_terminal and outcome.reason is None and streams.sizes["stdout"] == 0 and _model_selection_rejected(
         streams.stream_path, streams.stderr_path, execution.returncode,
         binding.command["agy_version"] if binding.command["agy_version_observed"] else "",
         binding.command["max_seconds"],
@@ -5741,7 +5743,8 @@ def _observe_controller_terminal(
     ):
         outcome.reason = "model_selection_rejected"
     reviewed_idle_partial = bool(
-        not outcome.provisional_orphan_result
+        not cancelled_before_terminal
+        and not outcome.provisional_orphan_result
         and execution.idle_timeout_with_exited_provider
         and _has_reviewed_provider_timeout(
             streams.stderr_path,
@@ -5755,7 +5758,7 @@ def _observe_controller_terminal(
     # outer SUCCESS/ERROR/CANCELLED disposition publish past the
     # frozen deadline.  Cancellation and binding failures retain their
     # existing fail-closed precedence and do not enter this path.
-    if outcome.reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial:
+    if not cancelled_before_terminal and (outcome.reason in {None, "hard_deadline_exceeded"} or reviewed_idle_partial):
         if outcome.reason in {None, "hard_deadline_exceeded"} and streams.sizes["stdout"] == 0:
             if outcome.reason is None:
                 outcome.reason = (
@@ -6456,6 +6459,7 @@ def controller(job: Path, ownership_fd: int) -> int:
                 _launch_controller_provider(job, binding, execution, streams, launch, outcome)
                 _monitor_controller_provider(job, binding, execution, streams, launch, outcome)
                 _reap_controller_provider(job, binding, execution, streams, launch, outcome)
+                _observe_controller_cancel(job, binding, outcome)
                 _observe_controller_terminal(binding, execution, streams, launch, outcome)
                 _begin_controller_completion(execution, streams, outcome, candidate_data, prior_handlers)
                 _observe_controller_cancel(job, binding, outcome)
