@@ -101,9 +101,14 @@ launch, including repairs, additionally checks the actual cwd and bounded ancest
 The same policy applies in session and native modes. Reserved
 leaves anywhere below `.agents/` are `mcp_config.json`, `hooks.json`, `skills.json`,
 `rules.json`, `agents.json` and `plugins.json`; `plugin.json` below `.agents/plugins/`
-is also rejected, including nested plugin manifest directories. The policy rejects
-these nodes regardless of contents/type, symlinked `.agents`, and symlinks at/below
-`.agents/plugins/`, using NFC/casefold path classification. Workspace MCP startup and
+is also rejected, including nested plugin manifest directories. Immediate
+`.agents/agents/*.md` and `.agents/agents/*/agent.md` nodes are also reserved:
+[AGY documents](https://www.antigravity.google/docs/subagents/) their discovery as
+custom-agent configuration. The policy rejects these nodes regardless of
+contents/type, symlinked `.agents`, symlinks at/below `.agents/plugins/`, and
+symlinked `.agents/agents` or its immediate children, using NFC/casefold path
+classification. Offline tests exercise Markdown-agent rejection; live discovery
+or invocation was not tested. Workspace MCP startup and
 `.agents/hooks.json` execution were confirmed live; preview rejects the latter.
 The other reserved paths are conservative execution candidates.
 Plain instructions, skills/rules Markdown and `marketplace.json` remain content.

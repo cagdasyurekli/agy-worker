@@ -74,7 +74,12 @@ def _check_provider_config_node(path: str, *, symlink: bool = False) -> None:
         tail = parts[index + 1:]
         if ((symlink and not tail)
                 or (tail and tail[-1] in _PROVIDER_CONFIG_LEAVES)
-                or (tail and tail[0] == "plugins" and (symlink or tail[-1] == "plugin.json"))):
+                or (tail and tail[0] == "plugins" and (symlink or tail[-1] == "plugin.json"))
+                or (tail and tail[0] == "agents" and (
+                    (symlink and len(tail) <= 2)
+                    or (len(tail) == 2 and tail[1].endswith(".md"))
+                    or (len(tail) == 3 and tail[2] == "agent.md")
+                ))):
             raise ExecutableProviderConfigurationError(path)
 
 
@@ -108,13 +113,14 @@ def _recheck_provider_configuration(
     cwd: str, known_paths: dict[str, str], *, ambient_home: str | None,
     controlled_roots: tuple[str, ...] = (),
 ) -> None:
-    """Recheck fixed startup names, known directories and bounded cwd ancestry.
+    """Recheck startup names, shallow agent loaders and bounded cwd ancestry.
 
     Gitless ancestry conservatively extends to the filesystem root; no provider
     project-root discovery algorithm is assumed. No worktree is walked again.
     """
     deadline = time.monotonic() + READABLE_MANIFEST_SCAN_SECONDS
-    package_count = 0
+    scanned_count = 0
+    scanned_agent_loaders: set[Path] = set()
     if len(known_paths) > MAX_BOUNDARY_ENTRIES:
         raise ExecutableProviderConfigurationError(cwd)
     root = Path(os.path.realpath(cwd))
@@ -133,6 +139,25 @@ def _recheck_provider_configuration(
             return None
         except OSError as exc:
             raise ExecutableProviderConfigurationError(str(node)) from exc
+
+    def scan_agents(directory: Path, *, nested: bool = False) -> None:
+        nonlocal scanned_count
+        if directory in scanned_agent_loaders:
+            return
+        scanned_agent_loaders.add(directory)
+        try:
+            with os.scandir(directory) as scanned:
+                for entry in scanned:
+                    if time.monotonic() > deadline:
+                        raise ExecutableProviderConfigurationError(str(directory))
+                    scanned_count += 1
+                    if scanned_count > MAX_BOUNDARY_ENTRIES:
+                        raise ExecutableProviderConfigurationError(str(directory))
+                    _check_provider_config_node(entry.path, symlink=entry.is_symlink())
+                    if not nested and entry.is_dir(follow_symlinks=False):
+                        scan_agents(Path(entry.path), nested=True)
+        except OSError as exc:
+            raise ExecutableProviderConfigurationError(str(directory)) from exc
 
     def probe(directory: Path, *, expected_kind: str | None = None) -> bool:
         observed = info(directory)
@@ -155,6 +180,10 @@ def _recheck_provider_configuration(
             target = directory / leaf
             if info(target) is not None:
                 raise ExecutableProviderConfigurationError(str(target))
+        if parts[-2:] == [".agents", "agents"]:
+            scan_agents(directory)
+        elif parts[-1:] == [".agents"]:
+            probe(directory / "agents")
         return True
 
     for relative in sorted(known_paths, key=lambda path: (path.count("/"), path)):
@@ -177,8 +206,8 @@ def _recheck_provider_configuration(
                             for entry in scanned:
                                 if time.monotonic() > deadline:
                                     raise ExecutableProviderConfigurationError(str(plugins))
-                                package_count += 1
-                                if package_count > MAX_BOUNDARY_ENTRIES:
+                                scanned_count += 1
+                                if scanned_count > MAX_BOUNDARY_ENTRIES:
                                     raise ExecutableProviderConfigurationError(str(plugins))
                                 _check_provider_config_node(entry.path, symlink=entry.is_symlink())
                                 if entry.is_dir(follow_symlinks=False):
