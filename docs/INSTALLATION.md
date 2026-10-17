@@ -176,6 +176,10 @@ session from working. Run with the host permissions already approved for the tas
 Native containment also needs a host that permits nested Seatbelt. A Codex
 `workspace-write` host denied `sandbox_apply` in a live attempt; keep the requested
 native mode and resolve the host prerequisite instead of falling back to session.
+Observation (Codex desktop, 2026-10-14–16): refusals for agy's `~/.gemini` writes,
+language-server socket and nested `sandbox-exec` were resolved by approving the
+exact refused command; this recorded host behavior is not a guarantee for another
+host or policy, and does not authorize disabling the sandbox.
 For CLI sessions that intentionally use `workspace-write`, the following settings
 allow the language-server socket and writes under `~/.gemini`.
 

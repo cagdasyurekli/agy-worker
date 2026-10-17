@@ -96,6 +96,29 @@ def authority_module():
 
 
 class LaunchAuthorityTests(unittest.TestCase):
+    def test_timeout_units_are_actionable_without_changing_grammar(self) -> None:
+        module = authority_module()
+        message = "timeout must be a positive integer with s, m or h (for example 30m)"
+        for value, expected in (("1s", 1), ("30m", 1800), ("168h", 604800)):
+            self.assertEqual(module.duration(value), expected)
+        for value in ("300", "0s", "01m", "-1s", "1.5h", "1S", " 1s", "1s "):
+            with self.subTest(value=value), self.assertRaises(module.LaunchAuthorityError) as caught:
+                module.duration(value)
+            self.assertEqual(str(caught.exception), message)
+        with self.assertRaisesRegex(module.LaunchAuthorityError, "timeout exceeds limit"):
+            module.duration("169h")
+        for flag in ("--idle-timeout", "--hard-timeout", "--max-runtime"):
+            with self.subTest(flag=flag):
+                arguments = list(self.common)
+                arguments[arguments.index(flag) + 1] = "300"
+                result = subprocess.run(
+                    [str(WORKER), "transmission-preview", *arguments],
+                    input=b"bounded task", env=self.environment, capture_output=True, timeout=15,
+                )
+                self.assertEqual(result.returncode, 20, result.stderr)
+                self.assertIn(message.encode(), result.stderr)
+                self.assertFalse(self.called.exists())
+
     def test_selection_entrypoints_reject_auto_mode_before_effects(self) -> None:
         # Selection has no mode input; ambiguous model prefixes fail before probing AGY.
         for selector in (ROOT / "model-selection.sh", WORKER.with_name("model-selection.sh")):

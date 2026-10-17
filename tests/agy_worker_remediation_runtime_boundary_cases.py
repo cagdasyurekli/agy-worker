@@ -2,6 +2,9 @@
 """Runtime-boundary cases loaded by the canonical remediation suite."""
 from __future__ import annotations
 
+import contextlib
+from unittest import mock
+
 from typing import TYPE_CHECKING
 
 # run() receives these names from test-agy-worker-remediation.py globals.
@@ -509,6 +512,348 @@ def run(context: dict[str, object]) -> None:
         assert (claimed["status"], claimed["reason"]) == ("cancelled", "cancelled")
         assert claimed["controller_pid"] is None and claimed["status"] != "orphaned"
         assert not claim_calls.exists(), "cancel-at-claim reached a provider"
+
+        # A real child waits before dispatcher import. The parent forwards its
+        # signal at that exact boundary, while the wrapper leaves inherited
+        # masks/handlers untouched. No provider may start through this window.
+        startup_wrapper = root / "startup-signal-controller.py"
+        startup_wrapper.write_text(
+            "import os, signal, sys\n"
+            "ready, release, source, job, ownership, mode, phase_path = sys.argv[1:]\n"
+            "os.write(int(ready), b'1')\n"
+            "os.close(int(ready))\n"
+            "assert os.read(int(release), 1) == b'1'\n"
+            "import importlib.util\n"
+            "from pathlib import Path\n"
+            "spec = importlib.util.spec_from_file_location('startup_signal_dispatch', source)\n"
+            "module = importlib.util.module_from_spec(spec)\n"
+            "sys.modules[spec.name] = module\n"
+            "spec.loader.exec_module(module)\n"
+            "if mode != 'normal':\n"
+            "    def stopped_binding(job, binding):\n"
+            "        Path(phase_path).write_text(mode)\n"
+            "        import selectors\n"
+            "        with selectors.DefaultSelector() as selector:\n"
+            "            selector.register(int(release), selectors.EVENT_READ)\n"
+            "            assert selector.select(9), 'startup phase fatal guard'\n"
+            "        assert os.read(int(release), 1) == b'1'\n"
+            "        if mode == 'exception':\n"
+            "            raise RuntimeError('controlled pre-runtime failure')\n"
+            "        raise AssertionError('held startup phase unexpectedly released')\n"
+            "    module._bind_controller_inputs = stopped_binding\n"
+            "else:\n"
+            "    os.close(int(release))\n"
+            "raise SystemExit(module.controller(Path(job), int(ownership)))\n",
+            encoding="utf-8",
+        )
+        real_startup_popen = MODULE.subprocess.Popen
+        real_startup_killpg = MODULE.os.killpg
+        watched_startup = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+        original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGUSR1,))
+        expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+        try:
+            def exercise_startup_signal(startup_signal, continuation, mode="normal"):
+                startup_label = f"startup-signal-{startup_signal}-{continuation}"
+                if mode != "normal":
+                    startup_label += f"-{mode}"
+                startup_phase = root / f"{startup_label}-phase"
+                startup_job, startup_bin, startup_calls, _, _ = fixture(
+                    startup_label, workflow="project", max_cycles=3, max_seconds=20,
+                )
+                startup_approval = None
+                startup_verification = None
+                preserved_startup = {}
+                if continuation:
+                    assert run_controller(startup_job, startup_bin) == 0
+                    previous, _, startup_approval = MODULE.load_state(startup_job)
+                    preserved_startup = {key: previous[key] for key in (
+                        "result_path", "result_sha256", "result_identity", "candidate_source",
+                        "candidate_worktree_sha256", "candidate_worktree_entries",
+                        "candidate_worktree_path_facts", "result_available", "driver_disposition",
+                    )}
+                    startup_verification = {
+                        "schema_version": 2, "summary": "driver requests repair",
+                        "passed_checks": [], "failed_checks": ["fixture"],
+                        "advisory_checks": 0, "missing_checks": 0,
+                        "candidate_sha256": previous["result_sha256"], "coverage": "partial",
+                        "verified_findings": 1, "unresolved_gaps": 1,
+                        "diff_review_complete": True,
+                    }
+                else:
+                    (startup_job / MODULE.STATE_NAME).unlink()
+                startup_calls.unlink(missing_ok=True)
+                ready_read, ready_write = os.pipe()
+                release_read, release_write = os.pipe()
+                startup_children = []
+                startup_delivered = []
+                startup_group_signals = []
+                startup_waits = []
+                startup_wait_entries = []
+
+                def start_at_import(arguments, *args, **kwargs):
+                    if not isinstance(arguments, list) or "--ownership-fd" not in arguments:
+                        return real_startup_popen(arguments, *args, **kwargs)
+                    ownership = arguments[arguments.index("--ownership-fd") + 1]
+                    kwargs["pass_fds"] = (*kwargs["pass_fds"], ready_write, release_read)
+                    child = real_startup_popen([
+                        sys.executable, "-I", "-S", "-B", str(startup_wrapper),
+                        str(ready_write), str(release_read), str(SOURCE),
+                        str(startup_job), ownership, mode, str(startup_phase),
+                    ], *args, **kwargs)
+                    startup_children.append(child)
+                    actual_wait = child.wait
+                    def observed_wait(timeout=None):
+                        if timeout == 5.0:
+                            if mode != "normal":
+                                waiting, _, _ = MODULE.read_state_snapshot(startup_job)
+                                startup_wait_entries.append((waiting["status"], waiting["controller_pid"], waiting["started_epoch"]))
+                                assert startup_wait_entries[-1] == ("queued", child.pid, None)
+                            if mode == "exception":
+                                os.write(release_write, b"1")
+                        try:
+                            result = actual_wait(timeout=timeout)
+                        except subprocess.TimeoutExpired:
+                            startup_waits.append(("timeout", timeout, None))
+                            raise
+                        startup_waits.append(("return", timeout, result))
+                        return result
+                    child.wait = observed_wait
+                    with MODULE.selectors.DefaultSelector() as ready_selector:
+                        ready_selector.register(ready_read, MODULE.selectors.EVENT_READ)
+                        assert ready_selector.select(3), "controller wrapper was not ready"
+                    assert os.read(ready_read, 1) == b"1"
+                    os.kill(os.getpid(), startup_signal)
+                    return child
+
+                def forward_before_import(pid, number):
+                    if startup_children and pid == startup_children[0].pid and number != 0:
+                        startup_group_signals.append(number)
+                    result = real_startup_killpg(pid, number)
+                    if startup_children and pid == startup_children[0].pid:
+                        if number == startup_signal and not startup_delivered:
+                            startup_delivered.append(number)
+                            with contextlib.suppress(BrokenPipeError):
+                                os.write(release_write, b"1")
+                    return result
+
+                previous_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = f"{startup_bin}{os.pathsep}{previous_path}"
+                try:
+                    with mock.patch.object(MODULE.subprocess, "Popen", side_effect=start_at_import), \
+                            mock.patch.object(MODULE.os, "killpg", side_effect=forward_before_import):
+                        assert MODULE.spawn(
+                            startup_job, "conversation-continue" if continuation else "initial",
+                            resume=continuation, foreground=False,
+                            approve_sha=startup_approval, verification=startup_verification,
+                        ) == 128 + startup_signal
+                    assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == expected_mask
+                    terminal, _, _ = MODULE.load_state(startup_job)
+                    assert (terminal["status"], terminal["reason"]) == ("cancelled", "interrupted"), terminal
+                    assert terminal["exit_code"] == 128 + startup_signal
+                    assert terminal["controller_pid"] is None
+                    assert startup_delivered == [startup_signal]
+                    if mode == "timeout":
+                        assert startup_phase.read_text() == mode
+                        assert startup_wait_entries == [("queued", startup_children[0].pid, None)]
+                        assert startup_waits == [("timeout", 5.0, None), ("return", 1.0, -signal.SIGKILL)]
+                        assert startup_group_signals == [startup_signal, signal.SIGTERM, signal.SIGKILL]
+                    elif mode == "exception":
+                        assert startup_phase.read_text() == mode
+                        assert startup_wait_entries == [("queued", startup_children[0].pid, None)]
+                        assert startup_waits == [("return", 5.0, 1)]
+                        assert startup_group_signals == [startup_signal]
+                    else:
+                        child_code = startup_children[0].returncode
+                        assert child_code is not None
+                        if startup_waits[0][0] == "timeout":
+                            assert startup_waits in (
+                                [("timeout", 5.0, None), ("return", 1.0, child_code)],
+                                [("timeout", 5.0, None), ("timeout", 1.0, None), ("return", None, child_code)],
+                            )
+                            assert startup_group_signals == [startup_signal, signal.SIGTERM, signal.SIGKILL]
+                        else:
+                            assert startup_waits == [("return", 5.0, child_code)]
+                            assert startup_group_signals == [startup_signal]
+                    assert all(terminal[key] == value for key, value in preserved_startup.items())
+                    assert terminal["candidate_recognized"] == continuation
+                    assert not startup_calls.exists() or "provider" not in startup_calls.read_text().splitlines()
+                    assert len(startup_children) == 1 and startup_children[0].poll() is not None
+                    try:
+                        real_startup_killpg(startup_children[0].pid, 0)
+                    except ProcessLookupError:
+                        pass
+                    else:
+                        raise AssertionError("startup cancellation left an owned group")
+                finally:
+                    os.environ["PATH"] = previous_path
+                    for descriptor in (ready_read, ready_write, release_read, release_write):
+                        os.close(descriptor)
+                    for child in startup_children:
+                        if child.poll() is None:
+                            MODULE._terminate(child)
+
+            for startup_signal in watched_startup:
+                for continuation in (False, True):
+                    exercise_startup_signal(startup_signal, continuation)
+            exercise_startup_signal(signal.SIGTERM, True, "timeout")
+            exercise_startup_signal(signal.SIGTERM, True, "exception")
+
+            recovery_job, _, recovery_calls, _, _ = fixture("startup-recovery-guards")
+            recovery_state, _, _ = MODULE.load_state(recovery_job)
+            with real_startup_popen([sys.executable, "-B", "-c", "pass"]) as reaped:
+                assert reaped.wait(timeout=5) == 0
+            owned = {**recovery_state, "controller_pid": reaped.pid}
+
+            def publish_recovery_state(updates):
+                value = MODULE.validate_state({**owned, **updates})
+                MODULE.write_atomic(recovery_job, MODULE.STATE_NAME, value)
+                return value
+
+            def reject_recovery(expected, process=reaped):
+                before = (recovery_job / MODULE.STATE_NAME).read_bytes()
+                try:
+                    MODULE._recover_reaped_startup_signal(recovery_job, expected, process, signal.SIGTERM)
+                except MODULE.DispatchError:
+                    pass
+                else:
+                    raise AssertionError("startup recovery accepted ambiguous ownership/publication")
+                assert (recovery_job / MODULE.STATE_NAME).read_bytes() == before
+
+            publish_recovery_state({})
+            reject_recovery({**owned, "attempt": owned["attempt"] + 1})
+            for updates in (
+                {"controller_pid": None}, {"controller_pid": reaped.pid + 1},
+                {"status": "running"},
+                {"status": "cancel-requested", "cancel_requested": True,
+                 "stream_path": str(recovery_job / "stream"), "stderr_path": str(recovery_job / "stderr")},
+                {"elapsed_seconds": 0.1},
+            ):
+                publish_recovery_state(updates)
+                reject_recovery(owned)
+            publish_recovery_state({})
+            with mock.patch.object(reaped, "returncode", None):
+                reject_recovery(owned)
+            with MODULE.lifecycle_lock(recovery_job, blocking=False):
+                reject_recovery(owned)
+
+            # A completed same-attempt result wins over a late parent signal.
+            MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGTERM)
+            terminal_bytes = (recovery_job / MODULE.STATE_NAME).read_bytes()
+            MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGHUP)
+            assert (recovery_job / MODULE.STATE_NAME).read_bytes() == terminal_bytes
+            reject_recovery({**owned, "attempt": owned["attempt"] + 1})
+
+            # An approved concurrent cancel retains the existing terminalizer's
+            # cancellation precedence rather than being relabelled interrupted.
+            publish_recovery_state({})
+            terminalize = MODULE._terminalize_owned
+            def cancel_before_projection(job, current, **kwargs):
+                with MODULE.state_lock(job):
+                    latest, raw, _sha = MODULE.load_state(job)
+                    MODULE._transition_locked(job, latest, raw, {"status": "cancel-requested", "cancel_requested": True})
+                return terminalize(job, current, **kwargs)
+            with mock.patch.object(MODULE, "_terminalize_owned", side_effect=cancel_before_projection):
+                MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGTERM)
+            cancelled, _, _ = MODULE.load_state(recovery_job)
+            assert (cancelled["status"], cancelled["reason"], cancelled["exit_code"]) == ("cancelled", "cancelled", MODULE.EXIT_BY_REASON["cancelled"])
+
+            observed = MODULE._observe_source_checkout(owned["workdir"])
+            guard = {**owned["source_checkout_guard"],
+                     **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS},
+                     "before_sha256": observed["sha256"], "after_sha256": None}
+            for proof in ("armed", "changed", "unavailable"):
+                publish_recovery_state({"source_checkout_guard": {**guard, "status": proof}})
+                MODULE._recover_reaped_startup_signal(recovery_job, owned, reaped, signal.SIGTERM)
+                vetoed, _, _ = MODULE.load_state(recovery_job)
+                expected = "source_checkout_changed" if proof == "changed" else "source_checkout_guard_unavailable"
+                assert (vetoed["status"], vetoed["reason"], vetoed["exit_code"]) == ("failed", expected, MODULE.EXIT_BY_REASON[expected])
+                assert vetoed["controller_pid"] is None and not vetoed["candidate_recognized"]
+                assert not vetoed["result_available"]
+                if proof == "armed":
+                    assert vetoed["source_checkout_guard"]["status"] == "unavailable"
+            assert not recovery_calls.exists() or "provider" not in recovery_calls.read_text().splitlines()
+
+            # The controller itself owns unblocking before its proof/provider
+            # Popen calls. Observe the actual inherited mask at that boundary.
+            mask_job, mask_bin, _, _, _ = fixture("startup-provider-mask")
+            mask_observed = []
+            def observe_provider_mask(arguments, *args, **kwargs):
+                if isinstance(arguments, list) and arguments and arguments[0] == "agy":
+                    inherited = signal.pthread_sigmask(signal.SIG_BLOCK, ())
+                    mask_observed.append(inherited)
+                    assert not set(watched_startup) & inherited
+                    assert signal.SIGUSR1 in inherited
+                return real_startup_popen(arguments, *args, **kwargs)
+
+            prior_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = f"{mask_bin}{os.pathsep}{prior_path}"
+            descriptor = os.open(mask_job / MODULE.LOCK_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            signal.pthread_sigmask(signal.SIG_BLOCK, watched_startup)
+            try:
+                with mock.patch.object(MODULE.subprocess, "Popen", side_effect=observe_provider_mask):
+                    assert MODULE.controller(mask_job, descriptor) == 0
+                descriptor = -1
+                assert len(mask_observed) == 1
+            finally:
+                os.environ["PATH"] = prior_path
+                signal.pthread_sigmask(signal.SIG_SETMASK, expected_mask)
+                if descriptor >= 0:
+                    os.close(descriptor)
+
+            # Pre-spawn signals never create a controller; the no-signal
+            # startup crash remains status_unavailable instead of interrupted.
+            real_create_state = MODULE.create_state
+            for early_signal in watched_startup:
+                early_job, _, _, _, _ = fixture(f"startup-early-{early_signal}")
+                (early_job / MODULE.STATE_NAME).unlink()
+                def signal_after_create(*args, early_signal=early_signal, **kwargs):
+                    result = real_create_state(*args, **kwargs)
+                    os.kill(os.getpid(), early_signal)
+                    return result
+                with mock.patch.object(MODULE, "create_state", side_effect=signal_after_create), \
+                        mock.patch.object(MODULE.subprocess, "Popen", wraps=real_startup_popen) as spy:
+                    assert MODULE.spawn(early_job, "initial", resume=False, foreground=False) == 128 + early_signal
+                assert not any("--ownership-fd" in call.args[0] for call in spy.call_args_list)
+                early_state, _, _ = MODULE.load_state(early_job)
+                assert (early_state["reason"], early_state["exit_code"]) == ("interrupted", 128 + early_signal)
+
+            crash_job, _, _, _, _ = fixture("startup-unrelated-crash")
+            (crash_job / MODULE.STATE_NAME).unlink()
+            def crash_controller(arguments, *args, **kwargs):
+                if isinstance(arguments, list) and "--ownership-fd" in arguments:
+                    arguments = [sys.executable, "-I", "-S", "-B", "-c", "raise SystemExit(47)"]
+                return real_startup_popen(arguments, *args, **kwargs)
+            with mock.patch.object(MODULE.subprocess, "Popen", side_effect=crash_controller):
+                try:
+                    MODULE.spawn(crash_job, "initial", resume=False, foreground=False)
+                except MODULE.DispatchError as exc:
+                    assert str(exc) == "controller exited before startup handshake"
+                else:
+                    raise AssertionError("unrelated controller crash accepted")
+            crashed, _, _ = MODULE.load_state(crash_job)
+            assert (crashed["reason"], crashed["exit_code"]) == ("status_unavailable", 20)
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == expected_mask
+
+            # A Popen error restores the exact caller mask too; it is not a
+            # signal result and cannot be presented as successful cancellation.
+            failed_spawn_job, _, _, _, _ = fixture("startup-popen-failure")
+            (failed_spawn_job / MODULE.STATE_NAME).unlink()
+            def fail_controller_popen(arguments, *args, **kwargs):
+                if isinstance(arguments, list) and "--ownership-fd" in arguments:
+                    raise OSError("fixture Popen failure")
+                return real_startup_popen(arguments, *args, **kwargs)
+
+            with mock.patch.object(MODULE.subprocess, "Popen", side_effect=fail_controller_popen):
+                try:
+                    MODULE.spawn(failed_spawn_job, "initial", resume=False, foreground=False)
+                except OSError as exc:
+                    assert str(exc) == "fixture Popen failure"
+                else:
+                    raise AssertionError("Popen failure accepted")
+            assert signal.pthread_sigmask(signal.SIG_BLOCK, ()) == expected_mask
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
 
         # The intentionally slow help probe remains outside the provider
         # lease.  Keep the lease well above host scheduling jitter while making
@@ -1878,25 +2223,28 @@ def run(context: dict[str, object]) -> None:
             "post-reap-cancel-skips-reconciliation", idle_seconds=0.50,
             hard_seconds=3, max_seconds=5,
         )
-        original_prompt_selector = MODULE.selectors.DefaultSelector
+        original_prompt_reap = MODULE._reap_controller_provider
         original_prompt_reconcile = MODULE._reconcile_worktree
+        original_prompt_observe = MODULE._observe_source_checkout
         original_prompt_print_json = MODULE.print_json
+        original_prompt_validate = MODULE._validate_terminal_envelope
         prompt_cancelled = threading.Event()
         prompt_cancel_output: list[dict] = []
+        prompt_source_observations: list[bool] = []
+        prompt_validation_observations: list[bool] = []
         prompt_scan_calls = 0
+        prompt_reap_calls = 0
 
-        class CancelBeforeTerminalReconciliation(original_prompt_selector):
-            def select(self, timeout=None):
-                if (
-                    not prompt_cancelled.is_set()
-                    and {key.data for key in self.get_map().values()} == {"stdout", "stderr"}
-                ):
-                    _current, _raw, approval = MODULE.load_state(prompt_cancel_job)
-                    assert MODULE.command_control(
-                        prompt_cancel_job, "cancel", approval, None,
-                    ) == 0
-                    prompt_cancelled.set()
-                return super().select(timeout)
+        def cancel_after_actual_reap(*args, **kwargs):
+            nonlocal prompt_reap_calls
+            result = original_prompt_reap(*args, **kwargs)
+            prompt_reap_calls += 1
+            execution = args[2]
+            assert execution.process is None and execution.runtime_frozen
+            _current, _raw, approval = MODULE.load_state(prompt_cancel_job)
+            assert MODULE.command_control(prompt_cancel_job, "cancel", approval, None) == 0
+            prompt_cancelled.set()
+            return result
 
         def prohibited_slow_reconciliation(*args, **kwargs):
             nonlocal prompt_scan_calls
@@ -1904,8 +2252,18 @@ def run(context: dict[str, object]) -> None:
             time.sleep(2.5)
             raise AssertionError("no-candidate cancellation entered reconciliation")
 
-        MODULE.selectors.DefaultSelector = CancelBeforeTerminalReconciliation
+        def observe_prompt_source(workdir):
+            prompt_source_observations.append(prompt_cancelled.is_set())
+            return original_prompt_observe(workdir)
+
+        def observe_prompt_validation(*args, **kwargs):
+            prompt_validation_observations.append(prompt_cancelled.is_set())
+            return original_prompt_validate(*args, **kwargs)
+
+        MODULE._validate_terminal_envelope = observe_prompt_validation
+        MODULE._reap_controller_provider = cancel_after_actual_reap
         MODULE._reconcile_worktree = prohibited_slow_reconciliation
+        MODULE._observe_source_checkout = observe_prompt_source
         MODULE.print_json = lambda value: prompt_cancel_output.append(value)
         prompt_cancel_started = time.monotonic()
         try:
@@ -1914,13 +2272,24 @@ def run(context: dict[str, object]) -> None:
             ]
         finally:
             prompt_cancel_elapsed = time.monotonic() - prompt_cancel_started
-            MODULE.selectors.DefaultSelector = original_prompt_selector
+            MODULE._reap_controller_provider = original_prompt_reap
             MODULE._reconcile_worktree = original_prompt_reconcile
+            MODULE._observe_source_checkout = original_prompt_observe
             MODULE.print_json = original_prompt_print_json
+            MODULE._validate_terminal_envelope = original_prompt_validate
         prompt_terminal, _raw, _sha = MODULE.load_state(prompt_cancel_job)
         MODULE.validate_state(prompt_terminal)
-        assert prompt_cancelled.is_set() and prompt_scan_calls == 0
-        assert prompt_cancel_elapsed < 2.0
+        assert prompt_reap_calls == 1 and prompt_cancelled.is_set() and prompt_scan_calls == 0
+        assert prompt_source_observations == [False], {
+            "source_observations_after_approved_cancel": prompt_source_observations,
+        }
+        assert prompt_validation_observations == [], {
+            "terminal_validation_after_approved_cancel": prompt_validation_observations,
+        }
+        assert prompt_cancel_elapsed < 2.0, {
+            "elapsed_seconds": prompt_cancel_elapsed, "cancelled": prompt_cancelled.is_set(),
+            "reconciliation_calls": prompt_scan_calls, "reason": prompt_terminal["reason"],
+        }
         assert len(prompt_cancel_output) == 1
         assert (prompt_terminal["status"], prompt_terminal["reason"], prompt_terminal["exit_code"]) == (
             "cancelled", "cancelled", MODULE.EXIT_BY_REASON["cancelled"],
@@ -1932,6 +2301,241 @@ def run(context: dict[str, object]) -> None:
         assert prompt_terminal["worktree_changes_present"] is None
         assert prompt_terminal["worktree_changed_since_dispatch"] is None
         assert prompt_cancel_calls.read_text(encoding="utf-8").splitlines() == [
+            "version", "help", "provider",
+        ]
+
+        assert prompt_terminal["provider_terminal_status"] == "unknown"
+        assert not MODULE._attempt_paths(prompt_cancel_job, prompt_terminal["attempt"])[2].exists()
+        assert Path(prompt_terminal["stream_path"]).read_bytes()
+
+        # Keep the real flush/project checks for an already-cancelled report.
+        project_job, project_bin, project_calls, _fake, project_command = fixture(
+            "post-reap-project-cancel", workflow="project", idle_seconds=0.50,
+            hard_seconds=3, max_seconds=5,
+        )
+        project_reap = MODULE._reap_controller_provider
+        project_terminal = MODULE._observe_controller_terminal
+        project_cancelled = threading.Event()
+        project_flushes: list[int] = []
+        project_boundaries: list[int] = []
+
+        def cancel_project_after_reap(*args, **kwargs):
+            result = project_reap(*args, **kwargs)
+            assert args[2].process is None and args[2].runtime_frozen
+            _current, _raw, approval = MODULE.load_state(project_job)
+            assert MODULE.command_control(project_job, "cancel", approval, None) == 0
+            project_cancelled.set()
+            return result
+
+        def check_cancelled_project_terminal(*args, **kwargs):
+            assert project_cancelled.is_set() and args[4].reason == "cancelled"
+            with mock.patch.object(MODULE.os, "fsync", wraps=MODULE.os.fsync) as flushes, \
+                    mock.patch.object(MODULE.WORKTREE, "_project_boundary", wraps=MODULE.WORKTREE._project_boundary) as boundaries:
+                result = project_terminal(*args, **kwargs)
+            project_flushes.append(flushes.call_count)
+            project_boundaries.append(boundaries.call_count)
+            return result
+
+        with mock.patch.object(MODULE, "_reap_controller_provider", side_effect=cancel_project_after_reap), \
+                mock.patch.object(MODULE, "_observe_controller_terminal", side_effect=check_cancelled_project_terminal), \
+                mock.patch.object(MODULE, "_validate_terminal_envelope", side_effect=AssertionError("cancelled project parsed")) as validation, \
+                mock.patch.object(MODULE, "print_json"):
+            assert run_controller(project_job, project_bin) == 22
+        assert project_flushes == [2] and project_boundaries == [1]
+        validation.assert_not_called()
+        project_state, _raw, _sha = MODULE.load_state(project_job)
+        assert project_state["provider_terminal_status"] == "unknown"
+        assert not project_state["candidate_recognized"] and not project_state["result_available"]
+        assert project_calls.read_text().splitlines() == ["version", "help", "provider"]
+
+        # Unit controls seed the reviewed-idle branch explicitly. A flush error
+        # may replace reason, but cannot reopen any parser after entry cancel.
+        partial_binding = MODULE._ControllerBinding(state=project_state, command=project_command)
+        partial_paths = MODULE._attempt_paths(project_job, project_state["attempt"])
+        for flush_failure in (False, True):
+            partial_outcome = MODULE._ControllerOutcome(reason="cancelled", limit_kind="idle")
+            with mock.patch.object(MODULE.os, "fsync", side_effect=OSError("fixture flush failure") if flush_failure else None) as flushes, \
+                    mock.patch.object(MODULE, "_has_reviewed_provider_timeout", return_value=True) as reviewed, \
+                    mock.patch.object(MODULE, "_model_selection_rejected", side_effect=AssertionError("cancelled classifier entered")) as classified, \
+                    mock.patch.object(MODULE, "_validate_terminal_envelope", side_effect=AssertionError("cancelled partial parsed")) as validation, \
+                    mock.patch.object(MODULE.WORKTREE, "_project_boundary", wraps=MODULE.WORKTREE._project_boundary) as boundaries:
+                MODULE._observe_controller_terminal(
+                    partial_binding, MODULE._ProviderExecution(idle_timeout_with_exited_provider=True),
+                    MODULE._ControllerStreams(*partial_paths), MODULE._ScopedLaunch(), partial_outcome,
+                )
+            assert flushes.call_count == (1 if flush_failure else 2)
+            assert boundaries.call_count == 1 and not partial_outcome.boundary_failed
+            reviewed.assert_not_called(); classified.assert_not_called(); validation.assert_not_called()
+            assert partial_outcome.reason == ("status_unavailable" if flush_failure else "cancelled")
+            assert partial_outcome.limit_kind == "idle"
+            assert partial_outcome.outer_status is None and partial_outcome.result_binding is None
+
+        # A cancel arriving during real validation still needs the middle read.
+        middle_job, middle_bin, middle_calls, _fake, _command = fixture(
+            "during-terminal-validation-cancel", idle_seconds=0.50,
+            hard_seconds=3, max_seconds=5,
+        )
+        middle_cancelled = threading.Event()
+        middle_terminal_done = threading.Event()
+        middle_cleanup_done = threading.Event()
+        middle_reads: list[tuple[str, bool]] = []
+        middle_observations: list[bool] = []
+        middle_validation = MODULE._validate_terminal_envelope
+        middle_terminal = MODULE._observe_controller_terminal
+        middle_cleanup = MODULE._cleanup_controller_stage
+        middle_observer = MODULE._observe_controller_cancel
+
+        def cancel_during_validation(*args, **kwargs):
+            result = middle_validation(*args, **kwargs)
+            assert result[0] is not None
+            _current, _raw, approval = MODULE.load_state(middle_job)
+            assert MODULE.command_control(middle_job, "cancel", approval, None) == 0
+            middle_cancelled.set()
+            return result
+
+        def record_middle_terminal(*args, **kwargs):
+            try:
+                return middle_terminal(*args, **kwargs)
+            finally:
+                middle_terminal_done.set()
+
+        def record_middle_cleanup(*args, **kwargs):
+            result = middle_cleanup(*args, **kwargs)
+            middle_cleanup_done.set()
+            return result
+
+        def record_middle_cancel(*args, **kwargs):
+            cutoff = "late" if middle_cleanup_done.is_set() else "middle" if middle_terminal_done.is_set() else "early"
+            middle_reads.append((cutoff, middle_cancelled.is_set()))
+            return middle_observer(*args, **kwargs)
+
+        def observe_middle_source(workdir):
+            middle_observations.append(middle_cancelled.is_set())
+            return original_prompt_observe(workdir)
+
+        with mock.patch.object(MODULE, "_validate_terminal_envelope", side_effect=cancel_during_validation) as validation, \
+                mock.patch.object(MODULE, "_observe_controller_terminal", side_effect=record_middle_terminal), \
+                mock.patch.object(MODULE, "_cleanup_controller_stage", side_effect=record_middle_cleanup), \
+                mock.patch.object(MODULE, "_observe_controller_cancel", side_effect=record_middle_cancel), \
+                mock.patch.object(MODULE, "_observe_source_checkout", side_effect=observe_middle_source), \
+                mock.patch.object(MODULE, "_reconcile_worktree", side_effect=AssertionError("middle cancellation reconciled")), \
+                mock.patch.object(MODULE, "print_json"):
+            assert run_controller(middle_job, middle_bin) == 22
+        assert validation.call_count == 1
+        assert middle_reads == [("early", False), ("middle", True), ("late", True)]
+        assert middle_observations == [False]
+        middle_state, _raw, _sha = MODULE.load_state(middle_job)
+        assert middle_state["provider_terminal_status"] == "success"
+        assert not middle_state["candidate_recognized"] and not middle_state["result_available"]
+        assert middle_state["source_checkout_guard"]["status"] == "deferred"
+        assert middle_calls.read_text().splitlines() == ["version", "help", "provider"]
+
+        # New-read failures use recovery, with completed source vetoes last.
+        def failed_preterminal_cancel_read(proof):
+            job, bin_dir, calls, _fake, _command = fixture(
+                f"preterminal-read-failure-{proof}", idle_seconds=0.50,
+                hard_seconds=3, max_seconds=5,
+            )
+            reap = MODULE._reap_controller_provider
+            cancelled = threading.Event()
+
+            def cancel_after_failure_reap(*args, **kwargs):
+                result = reap(*args, **kwargs)
+                binding, execution = args[1], args[2]
+                assert execution.process is None and execution.runtime_frozen
+                if proof == "changed":
+                    (Path(execution.source_guard_baseline["source_path"]) / "owner-edit.txt").write_text("changed\n")
+                    MODULE._check_controller_source(binding, execution)
+                elif proof == "unavailable":
+                    with mock.patch.object(MODULE, "_observe_source_checkout", side_effect=ValueError("fixture proof unavailable")):
+                        MODULE._check_controller_source(binding, execution)
+                if proof is not None:
+                    assert execution.source_guard_result["status"] == proof
+                _current, _raw, approval = MODULE.load_state(job)
+                assert MODULE.command_control(job, "cancel", approval, None) == 0
+                cancelled.set()
+                return result
+
+            with mock.patch.object(MODULE, "_reap_controller_provider", side_effect=cancel_after_failure_reap) as reaped, \
+                    mock.patch.object(MODULE, "_observe_controller_cancel", side_effect=MODULE.DispatchError("fixture early ownership read failure")) as reads, \
+                    mock.patch.object(MODULE, "_observe_controller_terminal", wraps=MODULE._observe_controller_terminal) as terminal, \
+                    mock.patch.object(MODULE, "_validate_terminal_envelope", wraps=MODULE._validate_terminal_envelope) as validation, \
+                    mock.patch.object(MODULE, "print_json"):
+                assert run_controller(job, bin_dir) == {None: 22, "changed": 28, "unavailable": 29}[proof]
+            assert reaped.call_count == reads.call_count == 1 and cancelled.is_set()
+            terminal.assert_not_called(); validation.assert_not_called()
+            state, _raw, _sha = MODULE.load_state(job)
+            MODULE.validate_state(state)
+            assert not state["candidate_recognized"] and not state["result_available"]
+            assert state["provider_terminal_status"] == "unknown"
+            assert state["source_checkout_guard"]["status"] == (proof or "deferred")
+            assert state["reason"] == {None: "cancelled", "changed": "source_checkout_changed", "unavailable": "source_checkout_guard_unavailable"}[proof]
+            assert calls.read_text().splitlines() == ["version", "help", "provider"]
+
+        for failed_proof in (None, "changed", "unavailable"):
+            failed_preterminal_cancel_read(failed_proof)
+
+        # A cancellation arriving after source completion and stage cleanup
+        # still needs the later read; the earlier snapshot cannot cover it.
+        late_cancel_job, late_cancel_bin, late_cancel_calls, _fake, _command = fixture(
+            "after-stage-cleanup-cancel", idle_seconds=0.50,
+            hard_seconds=3, max_seconds=5,
+        )
+        original_late_cleanup = MODULE._cleanup_controller_stage
+        original_late_observe_cancel = MODULE._observe_controller_cancel
+        original_late_snapshot = MODULE._state_worktree_snapshot
+        late_cancelled = threading.Event()
+        late_cancel_reads: list[bool] = []
+        late_early_reads: list[bool] = []
+        late_all_reads: list[bool] = []
+        late_terminal_done = threading.Event()
+        original_late_terminal = MODULE._observe_controller_terminal
+        late_source_observations: list[bool] = []
+
+        def observe_late_source(workdir):
+            late_source_observations.append(late_cancelled.is_set())
+            return original_prompt_observe(workdir)
+
+        def cancel_after_stage_cleanup(*args, **kwargs):
+            assert args[4].result_binding is not None
+            assert late_source_observations == [False, False]
+            result = original_late_cleanup(*args, **kwargs)
+            _current, _raw, approval = MODULE.load_state(late_cancel_job)
+            assert MODULE.command_control(late_cancel_job, "cancel", approval, None) == 0
+            late_cancelled.set()
+            return result
+
+        def record_late_terminal(*args, **kwargs):
+            try:
+                return original_late_terminal(*args, **kwargs)
+            finally:
+                late_terminal_done.set()
+
+        def observe_late_cancel(*args, **kwargs):
+            observed = late_cancelled.is_set()
+            late_all_reads.append(observed)
+            (late_cancel_reads if late_terminal_done.is_set() else late_early_reads).append(observed)
+            return original_late_observe_cancel(*args, **kwargs)
+
+        def prohibit_cancelled_snapshot(*args, **kwargs):
+            assert not late_cancelled.is_set(), "late cancellation entered candidate snapshot"
+            return original_late_snapshot(*args, **kwargs)
+
+        with mock.patch.object(MODULE, "_observe_controller_terminal", side_effect=record_late_terminal), \
+                mock.patch.object(MODULE, "_cleanup_controller_stage", side_effect=cancel_after_stage_cleanup), \
+                mock.patch.object(MODULE, "_observe_controller_cancel", side_effect=observe_late_cancel), \
+                mock.patch.object(MODULE, "_observe_source_checkout", side_effect=observe_late_source), \
+                mock.patch.object(MODULE, "_state_worktree_snapshot", side_effect=prohibit_cancelled_snapshot), \
+                mock.patch.object(MODULE, "_reconcile_worktree", side_effect=AssertionError("late cancellation reconciled")), \
+                mock.patch.object(MODULE, "print_json"):
+            assert run_controller(late_cancel_job, late_cancel_bin) == MODULE.EXIT_BY_REASON["cancelled"]
+        late_terminal, _raw, _sha = MODULE.load_state(late_cancel_job)
+        assert late_cancelled.is_set() and late_cancel_reads == [False, True]
+        assert late_early_reads == [False] and late_all_reads == [False, False, True]
+        assert late_terminal["source_checkout_guard"]["status"] == "unchanged"
+        assert (late_terminal["status"], late_terminal["reason"]) == ("cancelled", "cancelled")
+        assert not late_terminal["candidate_recognized"] and not late_terminal["result_available"]
+        assert late_cancel_calls.read_text(encoding="utf-8").splitlines() == [
             "version", "help", "provider",
         ]
 
@@ -2076,7 +2680,7 @@ def run(context: dict[str, object]) -> None:
 
     check("direct selections bind public startup, launch replacement windows, and provider runtime boundaries", direct_selection_reprobes_every_controller_attempt)
 
-    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False, max_cycles: int = 2, workflow: str = "task"):
+    def source_fixture(label: str, mutation: str = "", *, scoped: bool = False, terminal: str = "success", native: bool = False, separate_git: bool = False, max_cycles: int = 2, workflow: str = "task", max_seconds: float = 30):
         origin = (root / f"source-guard-{label}-origin").resolve()
         candidate = (root / f"source-guard-{label}-candidate").resolve()
         origin.mkdir()
@@ -2117,7 +2721,7 @@ def run(context: dict[str, object]) -> None:
         fake.chmod(0o755)
         values = {"job_id": label, "workdir": str(candidate),
                   "argv": ["agy", "--json-schema", str(schema), "--print", "task"],
-                  "idle_seconds": 2, "hard_seconds": 8, "max_seconds": 30, "max_cycles": max_cycles,
+                  "idle_seconds": min(2, max_seconds), "hard_seconds": min(8, max_seconds), "max_seconds": max_seconds, "max_cycles": max_cycles,
                   "workflow": workflow}
         if native:
             values["provider_isolation"] = "native"
@@ -2198,6 +2802,26 @@ def run(context: dict[str, object]) -> None:
     check("source guard budget exhaustion blocks provider spawn with actionable status", source_budget_closed_before_spawn)
 
     def unchanged_source_controls() -> None:
+        # A report-free maximum-runtime stop discards partial scoped writes.
+        _origin, candidate, job, bin_dir, calls = source_fixture(
+            "partial-max-runtime", scoped=True, terminal="wait", max_seconds=2,
+        )
+        marker = job / "partial-write-observed"
+        fake = bin_dir / "agy"
+        fake.write_text(fake.read_text().replace(
+            "time.sleep(20)",
+            "(pathlib.Path.cwd() / 'candidate.txt').write_text('partial\\n')\n"
+            + f"pathlib.Path({str(marker)!r}).write_text((pathlib.Path.cwd() / 'candidate.txt').read_text())\n"
+            + "time.sleep(20)",
+        ))
+        assert run_controller(job, bin_dir) == 16
+        state, _raw, _sha = MODULE.load_state(job)
+        assert marker.read_text() == "partial\n" and calls.read_text() == "call\n"
+        assert (state["reason"], state["limit_kind"]) == ("hard_deadline_exceeded", "max-runtime")
+        assert not state["candidate_recognized"] and not state["result_available"]
+        assert not (job / "stage-001").exists()
+        assert (candidate / "candidate.txt").read_text() == "base\n"
+
         # Every bound terminal report requires proof regardless of its outer
         # disposition. These are admissible controls and mutation vetoes.
         for terminal in ("SUCCESS", "ERROR", "CANCELLED", "timeout"):
@@ -2212,7 +2836,11 @@ def run(context: dict[str, object]) -> None:
                 else:
                     text = text.replace("'status':'SUCCESS'", f"'status':{terminal!r}")
                 fake.write_text(text)
-                code = run_controller(job, bin_dir)
+                with mock.patch.object(MODULE, "_observe_source_checkout", wraps=MODULE._observe_source_checkout) as observations, \
+                        mock.patch.object(MODULE, "_validate_terminal_envelope", wraps=MODULE._validate_terminal_envelope) as validation:
+                    code = run_controller(job, bin_dir)
+                assert validation.call_count == 1
+                assert observations.call_count == 2, (terminal, mutated, observations.call_count)
                 if mutated:
                     assert code == 28
                     assert_source_veto(job)
@@ -2228,7 +2856,12 @@ def run(context: dict[str, object]) -> None:
             ignored = origin / "ignored"; ignored.mkdir(); (ignored / "data").write_text("old")
             fake = bin_dir / "agy"
             fake.write_text(fake.read_text().replace("print(json.dumps({'event':'init'", "(origin / 'ignored' / 'data').write_text('new')\nprint(json.dumps({'event':'init'"))
-            assert run_controller(job, bin_dir) == 0
+            with mock.patch.object(MODULE, "_observe_source_checkout", wraps=MODULE._observe_source_checkout) as observations, \
+                    mock.patch.object(MODULE, "_validate_terminal_envelope", wraps=MODULE._validate_terminal_envelope) as validation, \
+                    mock.patch.object(MODULE.WORKTREE, "_reconcile_stage_to_source", wraps=MODULE.WORKTREE._reconcile_stage_to_source) as reconciled:
+                assert run_controller(job, bin_dir) == 0
+            assert validation.call_count == 1 and reconciled.call_count == int(scoped)
+            assert observations.call_count == 2
             state, _raw, _sha = MODULE.load_state(job)
             assert state["candidate_recognized"] and state["result_available"]
             assert (candidate / "candidate.txt").read_text() == "candidate\n"
@@ -2408,6 +3041,112 @@ def run(context: dict[str, object]) -> None:
                 assert_source_veto(job, expected)
                 assert calls.read_text() == "call\n", "prelaunch stop/veto race started a provider"
 
+        # A report cancelled at actual reap must discard its scoped writes.
+        # A repair keeps the exact inherited candidate and defers its proof.
+        for continuation in (False, True):
+            _origin, candidate, job, bin_dir, calls = source_fixture(
+                f"post-reap-scoped-cancel-{continuation}", scoped=True,
+            )
+            if continuation:
+                assert run_controller(job, bin_dir) == 0
+                state, _raw, sha = MODULE.load_state(job)
+                fake = bin_dir / "agy"
+                fake.write_text(fake.read_text().replace("write_text('candidate\\n')", "write_text('repair\\n')"))
+                MODULE.create_state(job, "conversation-continue", resume=True,
+                                    approve_sha=sha, verification=feedback(state))
+            before, _raw, _sha = MODULE.load_state(job)
+            inherited_keys = (
+                "result_path", "result_sha256", "result_identity", "candidate_source",
+                "candidate_worktree_sha256", "candidate_worktree_entries",
+                "candidate_worktree_path_facts", "last_success_path", "last_success_sha256",
+                "last_success_identity", "repair_lineage_sha256", "repair_parent_result_sha256",
+                "repair_parent_worktree_sha256", "repair_lineage_attempt",
+                "reconciliation_manifest_sha256",
+            )
+            inherited = {key: copy.deepcopy(before[key]) for key in inherited_keys}
+            target_before = (candidate / "candidate.txt").read_bytes()
+            cancelled = threading.Event()
+            observations = []
+            reap = MODULE._reap_controller_provider
+            cleanup = MODULE._cleanup_controller_stage
+            observe = MODULE._observe_source_checkout
+
+            def cancel_scoped_report(*args, reap=reap, job=job, cancelled=cancelled, **kwargs):
+                result = reap(*args, **kwargs)
+                execution = args[2]
+                assert execution.process is None and execution.runtime_frozen
+                _current, _raw, approval = MODULE.load_state(job)
+                assert MODULE.command_control(job, "cancel", approval, None) == 0
+                cancelled.set()
+                return result
+
+            def observe_scoped_source(workdir, observations=observations, cancelled=cancelled, observe=observe):
+                observations.append(cancelled.is_set())
+                return observe(workdir)
+
+            def discard_cancelled_stage(*args, cancelled=cancelled, continuation=continuation, cleanup=cleanup, **kwargs):
+                binding, launch, outcome = args[1], args[3], args[4]
+                assert cancelled.is_set() and binding.state["cancel_requested"]
+                assert outcome.saw_terminal and outcome.result_binding is None
+                assert launch.stage_identity == MODULE._identity(launch.stage_dir.stat())
+                assert (launch.stage_dir / "candidate.txt").read_text() == (
+                    "repair\n" if continuation else "candidate\n"
+                )
+                checks = [
+                    (MODULE.WORKTREE, "_worktree_snapshot"),
+                    (MODULE.WORKTREE, "_scan_stage_mutations"),
+                    (MODULE.WORKTREE, "_cleanup_stage"),
+                    (MODULE, "_load_bound_command"), (MODULE, "_bound_schemas"),
+                ]
+                if continuation:
+                    checks.append((MODULE, "_bound_verification"))
+                with contextlib.ExitStack() as stack:
+                    proofs = [stack.enter_context(mock.patch.object(owner, name, wraps=getattr(owner, name)))
+                              for owner, name in checks]
+                    reconciled = stack.enter_context(mock.patch.object(
+                        MODULE.WORKTREE, "_reconcile_stage_to_source",
+                        wraps=MODULE.WORKTREE._reconcile_stage_to_source,
+                    ))
+                    result = cleanup(*args, **kwargs)
+                assert all(proof.call_count for proof in proofs)
+                reconciled.assert_not_called()
+                assert not outcome.cleanup_failed and not launch.stage_dir.exists()
+                return result
+
+            def prohibit_cancelled_validation(*args, **kwargs):
+                time.sleep(2.5)
+                raise AssertionError("cancelled scoped report entered validation")
+
+            with mock.patch.object(MODULE, "_validate_terminal_envelope", side_effect=prohibit_cancelled_validation) as validation, \
+                    mock.patch.object(MODULE, "_reap_controller_provider", side_effect=cancel_scoped_report), \
+                    mock.patch.object(MODULE, "_observe_source_checkout", side_effect=observe_scoped_source), \
+                    mock.patch.object(MODULE, "_cleanup_controller_stage", side_effect=discard_cancelled_stage), \
+                    mock.patch.object(MODULE, "print_json"):
+                assert run_controller(job, bin_dir) == 22, MODULE.load_state(job)[0]
+            validation.assert_not_called()
+            state, _raw, sha = MODULE.load_state(job)
+            assert state["provider_terminal_status"] == "unknown"
+            assert not MODULE._attempt_paths(job, state["attempt"])[2].exists()
+            assert observations == [False] and cancelled.is_set()
+            assert (state["status"], state["reason"]) == ("cancelled", "cancelled")
+            assert state["source_checkout_guard"]["status"] == "deferred"
+            assert state["source_checkout_guard"]["after_sha256"] is None
+            assert state["candidate_recognized"] == state["result_available"] == continuation
+            assert (candidate / "candidate.txt").read_bytes() == target_before
+            assert not (job / f"stage-{state['attempt']:03d}").exists()
+            assert calls.read_text() == "call\n" * (2 if continuation else 1)
+            if continuation:
+                assert {key: state[key] for key in inherited_keys} == inherited
+                candidate_binding = MODULE._bound_candidate_worktree
+                with mock.patch.object(MODULE, "_deferred_candidate_proof", wraps=MODULE._deferred_candidate_proof) as proof:
+                    def bind_after_proof(*args, proof=proof, candidate_binding=candidate_binding, **kwargs):
+                        assert proof.call_count, "inherited candidate used before deferred proof"
+                        return candidate_binding(*args, **kwargs)
+                    with mock.patch.object(MODULE, "_bound_candidate_worktree", side_effect=bind_after_proof):
+                        _command, result = MODULE._bound_current_candidate(job, state)
+                assert MODULE.digest(result) == inherited["result_sha256"]
+                assert MODULE.load_state(job)[2] == sha
+
         # A no-report repair cancellation retains only its inherited candidate.
         # The cancel path defers that source proof; every later use settles it
         # against the same immutable baseline before exposing or reusing it.
@@ -2446,6 +3185,11 @@ def run(context: dict[str, object]) -> None:
             assert state["source_checkout_guard"]["status"] == "deferred"
             assert state["source_checkout_guard"]["after_sha256"] is None
             assert calls.read_text() == "call\ncall\n"
+            before_recovery = (job / MODULE.STATE_NAME).read_bytes()
+            MODULE._recover_reaped_startup_signal(
+                job, state, mock.Mock(returncode=0, pid=1), signal.SIGTERM,
+            )
+            assert (job / MODULE.STATE_NAME).read_bytes() == before_recovery
             return job, calls, state, sha
 
         def cli(job: Path, *arguments: str, payload: bytes = b"") -> subprocess.CompletedProcess:
