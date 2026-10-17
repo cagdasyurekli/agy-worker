@@ -2232,10 +2232,150 @@ def run(context: dict[str, object]) -> None:
         prompt_source_observations: list[bool] = []
         prompt_scan_calls = 0
         prompt_reap_calls = 0
+        prompt_phase_records: list[dict] = []
+
+        # Temporary diagnosis: independent intervals also cover concurrent Git
+        # reads. Parent phases and gaps are derived only after the whole timer.
+        def prompt_git_label(arguments):
+            if not isinstance(arguments, (list, tuple)) or not arguments:
+                return "unknown"
+            if isinstance(arguments[0], str) and arguments[0] in {
+                "rev-parse", "config", "ls-files", "cat-file", "worktree", "ls-tree",
+            }:
+                return arguments[0]
+            if tuple(arguments[-6:]) == (
+                "diff-files", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "--",
+            ):
+                return "diff-files"
+            return "unknown"
+
+        def observe_prompt_call(original, kind, name):
+            def observed(*args, **kwargs):
+                record = {
+                    "kind": kind, "name": name, "thread": threading.get_ident(),
+                    "start": time.monotonic(), "outcome": "returned",
+                }
+                try:
+                    if kind == "bounded_git":
+                        arguments = args[3] if len(args) > 3 else kwargs.get("arguments")
+                        record["command"] = prompt_git_label(arguments)
+                        record["fixed_executable"] = kwargs.get("fixed_executable", False)
+                    elif kind == "standalone_git":
+                        record["command"] = prompt_git_label(args[1:])
+                    elif name == "probe":
+                        argument = args[1] if len(args) > 1 else kwargs.get("argument")
+                        record["command"] = argument if isinstance(argument, str) and argument in {"--help", "--version"} else "unknown"
+                    elif kind == "subprocess":
+                        arguments = args[0] if args else kwargs.get("args")
+                        record["command"] = "unknown"
+                        if isinstance(arguments, (list, tuple)):
+                            if len(arguments) == 7 and arguments[0] == sys.executable and list(arguments[1:4]) == ["-I", "-S", "-B"] and isinstance(arguments[4], str) and arguments[4].endswith("/validate-envelope.py"):
+                                record["command"] = "envelope_validator"
+                            elif arguments and arguments[0] == MODULE.CANDIDATE_STATE.GIT_EXECUTABLE:
+                                record["command"] = (
+                                    "git_filter_config" if tuple(arguments[-5:]) == (
+                                        "config", "--includes", "--name-only", "--get-regexp",
+                                        r"^filter\..*\.(clean|process|required)$",
+                                    ) else "git"
+                                )
+                    elif kind == "signal":
+                        number = args[1] if len(args) > 1 else kwargs.get("signal")
+                        record["signal"] = {0: "membership", signal.SIGTERM: "term", signal.SIGKILL: "kill"}.get(number, "unknown") if isinstance(number, int) else "unknown"
+                    result = original(*args, **kwargs)
+                    if kind == "subprocess":
+                        record["returncode"] = result.returncode
+                    return result
+                except BaseException as exc:
+                    record["outcome"] = (
+                        "process_lookup" if isinstance(exc, ProcessLookupError) else
+                        "permission" if isinstance(exc, PermissionError) else
+                        "os_error" if isinstance(exc, OSError) else "exception"
+                    )
+                    raise
+                finally:
+                    record["end"] = time.monotonic()
+                    prompt_phase_records.append(record)
+            return observed
+
+        def prompt_phase_report(records, started, elapsed):
+            stopped = started + elapsed
+            phases = sorted(
+                (row for row in records if row["kind"] == "phase"),
+                key=lambda row: row["start"],
+            )
+            partition = []
+            overlaps = []
+            cursor = started
+            for row in phases:
+                left = max(started, row["start"])
+                right = min(stopped, row["end"])
+                if left < cursor:
+                    overlaps.append({"name": row["name"], "seconds": cursor - left})
+                if left > cursor:
+                    partition.append({"name": "gap", "start": cursor - started, "end": left - started})
+                if right > max(cursor, left):
+                    partition.append({"name": row["name"], "start": max(cursor, left) - started, "end": right - started})
+                cursor = max(cursor, right)
+            if cursor < stopped:
+                partition.append({"name": "gap", "start": cursor - started, "end": elapsed})
+            raw = []
+            for row in sorted(records, key=lambda item: item["start"]):
+                enclosing = [parent for parent in phases if parent is not row and parent["start"] <= row["start"] and row["end"] <= parent["end"]]
+                nested = [parent for parent in records if parent is not row and parent["kind"] == "nested" and parent["start"] <= row["start"] and row["end"] <= parent["end"]]
+                raw.append({
+                    **row, "start": row["start"] - started, "end": row["end"] - started,
+                    "enclosing_phase": min(enclosing, key=lambda item: item["end"] - item["start"])["name"] if enclosing else None,
+                    "enclosing_nested": min(nested, key=lambda item: item["end"] - item["start"])["name"] if nested else None,
+                })
+            return {
+                "whole_seconds": elapsed, "partition": partition, "overlaps": overlaps,
+                "raw": raw, "missing_phases": sorted({
+                    "claim", "bind", "open", "argv", "launch", "monitor", "reap", "approved_cancel",
+                    "terminal", "completion", "cancel_read", "source_finish", "stage_cleanup",
+                    "candidate", "publish", "resources",
+                } - {row["name"] for row in phases}),
+            }
+
+        prompt_phase_targets = [
+            (MODULE, "_claim_controller_attempt", "phase", "claim"),
+            (MODULE, "_bind_controller_inputs", "phase", "bind"),
+            (MODULE, "_open_controller_artifacts", "phase", "open"),
+            (MODULE, "_build_controller_argv", "phase", "argv"),
+            (MODULE, "_launch_controller_provider", "phase", "launch"),
+            (MODULE, "_monitor_controller_provider", "phase", "monitor"),
+            (MODULE, "_observe_controller_terminal", "phase", "terminal"),
+            (MODULE, "_begin_controller_completion", "phase", "completion"),
+            (MODULE, "_observe_controller_cancel", "phase", "cancel_read"),
+            (MODULE, "_finish_controller_source", "phase", "source_finish"),
+            (MODULE, "_cleanup_controller_stage", "phase", "stage_cleanup"),
+            (MODULE, "_reconcile_controller_candidate", "phase", "candidate"),
+            (MODULE, "_publish_controller_terminal", "phase", "publish"),
+            (MODULE, "_cleanup_controller_resources", "phase", "resources"),
+            (MODULE, "command_control", "phase", "approved_cancel"),
+            (MODULE, "_bound_worktree_baseline", "nested", "queued_worktree"),
+            (MODULE, "_reprobe_direct_selection", "nested", "reprobe"),
+            (MODULE, "_terminate_provider_process", "nested", "terminate_provider"),
+            (MODULE, "_terminate", "nested", "terminate_session"),
+            (MODULE, "_validate_terminal_envelope", "nested", "validate_terminal"),
+            (MODULE.MODEL_SELECTION, "probe_command", "nested", "probe"),
+            (MODULE, "_bounded_git_read", "bounded_git", "bounded_git_read"),
+            (MODULE.WORKTREE, "_bounded_git_read", "bounded_git", "bounded_git_read"),
+            (MODULE.CANDIDATE_STATE, "_git", "standalone_git", "standalone_git"),
+            (MODULE.subprocess, "run", "subprocess", "subprocess_run"),
+            (MODULE.os, "fsync", "fsync", "fsync"),
+            (MODULE.os, "killpg", "signal", "killpg"),
+        ]
+        # Save every callable before installing anything, including shared aliases.
+        prompt_phase_originals = [
+            (owner, attribute, getattr(owner, attribute), kind, name)
+            for owner, attribute, kind, name in prompt_phase_targets
+        ]
+        observed_prompt_reap = observe_prompt_call(original_prompt_reap, "phase", "reap")
+        observed_prompt_source = observe_prompt_call(original_prompt_observe, "nested", "first_source")
 
         def cancel_after_actual_reap(*args, **kwargs):
             nonlocal prompt_reap_calls
-            result = original_prompt_reap(*args, **kwargs)
+            result = observed_prompt_reap(*args, **kwargs)
             prompt_reap_calls += 1
             execution = args[2]
             assert execution.process is None and execution.runtime_frozen
@@ -2252,23 +2392,50 @@ def run(context: dict[str, object]) -> None:
 
         def observe_prompt_source(workdir):
             prompt_source_observations.append(prompt_cancelled.is_set())
-            return original_prompt_observe(workdir)
+            return observed_prompt_source(workdir)
 
-        MODULE._reap_controller_provider = cancel_after_actual_reap
-        MODULE._reconcile_worktree = prohibited_slow_reconciliation
-        MODULE._observe_source_checkout = observe_prompt_source
-        MODULE.print_json = lambda value: prompt_cancel_output.append(value)
-        prompt_cancel_started = time.monotonic()
-        try:
-            assert run_controller(prompt_cancel_job, prompt_cancel_bin) == MODULE.EXIT_BY_REASON[
-                "cancelled"
-            ]
-        finally:
-            prompt_cancel_elapsed = time.monotonic() - prompt_cancel_started
-            MODULE._reap_controller_provider = original_prompt_reap
-            MODULE._reconcile_worktree = original_prompt_reconcile
-            MODULE._observe_source_checkout = original_prompt_observe
-            MODULE.print_json = original_prompt_print_json
+        with contextlib.ExitStack() as prompt_restoration:
+            for owner, attribute, original, kind, name in prompt_phase_originals:
+                prompt_restoration.callback(setattr, owner, attribute, original)
+                setattr(owner, attribute, observe_prompt_call(original, kind, name))
+            for attribute, original, replacement in (
+                ("_reap_controller_provider", original_prompt_reap, cancel_after_actual_reap),
+                ("_reconcile_worktree", original_prompt_reconcile, prohibited_slow_reconciliation),
+                ("_observe_source_checkout", original_prompt_observe, observe_prompt_source),
+                ("print_json", original_prompt_print_json, lambda value: prompt_cancel_output.append(value)),
+            ):
+                prompt_restoration.callback(setattr, MODULE, attribute, original)
+                setattr(MODULE, attribute, replacement)
+            prompt_cancel_started = time.monotonic()
+            try:
+                assert run_controller(prompt_cancel_job, prompt_cancel_bin) == MODULE.EXIT_BY_REASON[
+                    "cancelled"
+                ]
+            finally:
+                prompt_cancel_elapsed = time.monotonic() - prompt_cancel_started
+        prompt_diagnostic = prompt_phase_report(
+            prompt_phase_records, prompt_cancel_started, prompt_cancel_elapsed,
+        )
+        prompt_diagnostic["context"] = {
+            "python": list(sys.version_info[:3]), "cpu_count": os.cpu_count(),
+            "synthetic_knobs": {},
+            "original_callables": [
+                getattr(original, "__name__", "unknown")
+                for _owner, _attribute, original, _kind, _name in prompt_phase_originals
+            ] + [original_prompt_reap.__name__, original_prompt_observe.__name__],
+        }
+        for knob in (
+            "FAKE_DIRECT_HELP_DELAY", "FAKE_DIRECT_HEARTBEAT_COUNT", "FAKE_DIRECT_HEARTBEAT_DELAY",
+        ):
+            value = os.environ.get(knob)
+            if value is not None:
+                try:
+                    numeric = float(value) if len(value) <= 32 and value and all(character in "0123456789.+-eE" for character in value) else float("nan")
+                except ValueError:
+                    numeric = float("nan")
+                if not -float("inf") < numeric < float("inf"):
+                    value = "non_numeric"
+            prompt_diagnostic["context"]["synthetic_knobs"][knob] = value
         prompt_terminal, _raw, _sha = MODULE.load_state(prompt_cancel_job)
         MODULE.validate_state(prompt_terminal)
         assert prompt_reap_calls == 1 and prompt_cancelled.is_set() and prompt_scan_calls == 0
@@ -2278,6 +2445,7 @@ def run(context: dict[str, object]) -> None:
         assert prompt_cancel_elapsed < 2.0, {
             "elapsed_seconds": prompt_cancel_elapsed, "cancelled": prompt_cancelled.is_set(),
             "reconciliation_calls": prompt_scan_calls, "reason": prompt_terminal["reason"],
+            "phase_diagnostic": prompt_diagnostic,
         }
         assert len(prompt_cancel_output) == 1
         assert (prompt_terminal["status"], prompt_terminal["reason"], prompt_terminal["exit_code"]) == (
@@ -2292,6 +2460,7 @@ def run(context: dict[str, object]) -> None:
         assert prompt_cancel_calls.read_text(encoding="utf-8").splitlines() == [
             "version", "help", "provider",
         ]
+        print("prompt-cancel-phase-diagnostic " + json.dumps(prompt_diagnostic, separators=(",", ":")))
 
         # A cancellation arriving after source completion and stage cleanup
         # still needs the later read; the earlier snapshot cannot cover it.
