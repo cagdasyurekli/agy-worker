@@ -28,6 +28,38 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
 
+class CollectionFixture:
+    """Collection-only children do not fork; native containment is tested separately."""
+
+    ROLE_SELF_VERIFY = "self-verify"
+    NETWORK_DENY_ALL = "deny-all"
+
+    def __init__(self):
+        self.processes = {}
+        self.real_popen = subprocess.Popen
+
+    def popen(self, *args, **kwargs):
+        process = self.real_popen(*args, **kwargs)
+        self.processes[process.pid] = process
+        return process
+
+    @staticmethod
+    def confirm_contained_launch(prepared):
+        return SimpleNamespace(argv=prepared.target_argv, executable=sys.executable,
+                               cwd=prepared.cwd, environment={"PATH": "/usr/bin:/bin"})
+
+    def bind_new_process_group(self, pid):
+        return self.processes[pid]
+
+    @staticmethod
+    def terminate_bound_process_group(process, number):
+        # Popen reaps an exited child before signalling. Raw killpg can return
+        # EPERM for an unreaped zombie on macOS; permission errors on live
+        # children must still propagate through Popen.send_signal.
+        process.send_signal(number)
+        return ()
+
+
 class VerificationContracts(unittest.TestCase):
     def manifest(self):
         return {"schema_version": 1, "kind": "agy-worker-self-verification", "max_seconds": 60,
@@ -261,29 +293,7 @@ class VerificationContracts(unittest.TestCase):
                 module.advisory_feedback("a" * 64, [("required_b", outcome)])
 
     def test_process_collection_bounds_output_and_time(self):
-        # This trusted fixture exercises collection only; it deliberately does
-        # not stand in for the separate native filesystem/network canaries.
-        class CollectionFixture:
-            ROLE_SELF_VERIFY = "self-verify"
-            NETWORK_DENY_ALL = "deny-all"
-
-            @staticmethod
-            def confirm_contained_launch(prepared):
-                return SimpleNamespace(argv=prepared.target_argv, executable=sys.executable,
-                                       cwd=prepared.cwd, environment={"PATH": "/usr/bin:/bin"})
-
-            @staticmethod
-            def bind_new_process_group(pid):
-                return pid
-
-            @staticmethod
-            def terminate_bound_process_group(pid, number):
-                try:
-                    os.killpg(pid, number)
-                except ProcessLookupError:
-                    pass
-                return ()
-
+        fixture = CollectionFixture()
         for program, expected in (("print('ok')", "passed"),
                                   ("raise SystemExit(7)", "failed"),
                                   ("raise SystemExit(71)", "blocked"),
@@ -296,14 +306,56 @@ class VerificationContracts(unittest.TestCase):
                 check = module.Check("check", argv, True, 0.2, 128)
                 prepared = SimpleNamespace(role="self-verify", network_policy="deny-all",
                                            allow_keychain=False, target_argv=argv, cwd=str(logs))
-                result = module.run_check(check, prepared, containment=CollectionFixture,
-                                          log_directory=logs, remaining=1)
+                with mock.patch.object(module.subprocess, "Popen", side_effect=fixture.popen):
+                    result = module.run_check(check, prepared, containment=fixture,
+                                              log_directory=logs, remaining=1)
                 self.assertEqual(result.outcome, expected)
                 self.assertLess(result.elapsed_seconds, 3)
                 for stream in ("stdout", "stderr"):
                     path = logs / ("check." + stream)
                     self.assertLessEqual(path.stat().st_size, 128)
                     self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_collection_cleanup_reaps_exited_child_and_preserves_live_errors(self):
+        fixture = CollectionFixture()
+        # Observe exit without reaping, reproducing the macOS zombie-only
+        # group that makes raw killpg fail with EPERM.
+        process = fixture.popen([sys.executable, "-I", "-S", "-c", "pass"],
+                                stdout=subprocess.PIPE, start_new_session=True)
+        try:
+            self.assertEqual(process.stdout.read(), b"")
+            deadline = time.monotonic() + 2
+            while True:
+                status = subprocess.check_output(
+                    ["/bin/ps", "-o", "stat=", "-p", str(process.pid)],
+                    text=True, timeout=1).strip()
+                if status.startswith("Z"):
+                    break
+                self.assertLess(time.monotonic(), deadline, "child did not reach zombie state")
+                time.sleep(0.005)
+            self.assertIsNone(process.returncode)
+            with mock.patch.object(os, "killpg", side_effect=PermissionError("zombie group")), \
+                    mock.patch.object(os, "kill", side_effect=PermissionError("unexpected signal")):
+                fixture.terminate_bound_process_group(
+                    fixture.bind_new_process_group(process.pid), signal.SIGKILL)
+            self.assertEqual(process.returncode, 0)
+        finally:
+            process.stdout.close()
+            process.wait(timeout=2)
+        live = fixture.popen(
+            [sys.executable, "-I", "-S", "-u", "-c",
+             "import time; print('ready'); time.sleep(30)"],
+            stdout=subprocess.PIPE, start_new_session=True)
+        try:
+            self.assertEqual(live.stdout.readline(), b"ready\n")
+            with mock.patch.object(os, "kill", side_effect=PermissionError("live child denied")):
+                with self.assertRaisesRegex(PermissionError, "live child denied"):
+                    fixture.terminate_bound_process_group(live, signal.SIGKILL)
+            self.assertIsNone(live.poll())
+        finally:
+            live.kill()
+            live.wait(timeout=2)
+            live.stdout.close()
 
     def test_cleanup_defers_signals_and_closes_every_owned_handle(self):
         for checkpoint in ("terminate", "wait", "fsync"):
