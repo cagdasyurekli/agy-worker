@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -367,7 +368,7 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"executable provider configuration", result.stderr)
         self.assertIn(path.encode("unicode_escape").lower(), result.stderr.lower())
-        self.assertIn(b"use scoped mode excluding .agents/ configuration", result.stderr)
+        self.assertIn(b"use scoped mode excluding .agents/", result.stderr)
         self.assertNotIn(b"must-not-be-diagnosed", result.stderr)
         self.assertFalse(self.called.exists())
 
@@ -375,6 +376,143 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         self.scope.write_text(json.dumps({"schema_version": 1, "kind": "agy-worker-provider-scope",
             "read": [{"path": path, "kind": kind}], "write": []}))
         return ["--provider-scope", str(self.scope)]
+
+    def assert_final_config_boundary(self, cwd: Path, known_paths: dict[str, str], *,
+                                     allowed: bool = False, prepare=None) -> None:
+        module = dispatch_module()
+        state = {"attempt": 1, "controller_pid": os.getpid(), "status": "queued",
+                 "source_checkout_guard": {}, "cancel_requested": False,
+                 "hard_seconds": 30, "max_seconds": 30, "provider_elapsed_seconds": 0}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(module, "_prepare_controller_source",
+                side_effect=prepare, return_value={"status": "unchanged"}))
+            stack.enter_context(mock.patch.object(module, "state_lock", return_value=contextlib.nullcontext()))
+            stack.enter_context(mock.patch.object(module, "load_state", return_value=(state, b"", "sha")))
+            stack.enter_context(mock.patch.object(module, "_transition_locked",
+                side_effect=lambda _job, current, raw, _updates: (current, raw, "sha")))
+            stack.enter_context(mock.patch.object(module, "_provider_environment", return_value={}))
+            popen = stack.enter_context(mock.patch.object(module.subprocess, "Popen",
+                side_effect=RuntimeError("provider spawn sentinel")))
+            launch = module._ScopedLaunch(argv=["agy", "--print", "task"], expected_print="task",
+                                          launch_cwd=str(cwd), provider_config_paths=known_paths)
+            error = RuntimeError if allowed else module.DispatchError
+            message = "provider spawn sentinel" if allowed else "executable provider configuration"
+            with self.assertRaisesRegex(error, message):
+                module._spawn_controller_provider(self.logs, module._ControllerBinding(state=state,
+                    command={"provider_env": [], "max_seconds": 30, "child_umask": "022",
+                             "workdir": str(self.worktree)}), module._ProviderExecution(source_guard_expected={}),
+                    module._ControllerStreams(self.root / "stream", self.root / "stderr", self.root / "envelope"),
+                    launch, module._ControllerOutcome())
+            if allowed:
+                popen.assert_called_once()
+            else:
+                popen.assert_not_called()
+
+    def test_provider_configuration_roots_preview_matrix(self) -> None:
+        for root in (".agents", "_agents", ".agent", "_agent"):
+            for leaf in ("mcp_config.json", "hooks.json", "agents/x.md", "agents/d/agent.md",
+                         "plugins/p/plugin.json", "symlink"):
+                relative = root if leaf == "symlink" else f"{root}/{leaf}"
+                target = self.worktree / relative
+                if leaf == "symlink":
+                    target.symlink_to(self.worktree / "README.md")
+                else:
+                    self.config_path(relative)
+                try:
+                    selections = [None, (root, "tree")]
+                    if leaf != "symlink":
+                        selections.append((relative, "file"))
+                    for selection in selections:
+                        for isolation in ("session", "native"):
+                            if isolation == "native" and selection is None:
+                                continue
+                            with self.subTest(root=root, leaf=leaf, selection=selection, isolation=isolation):
+                                extra = ["--provider-isolation", isolation]
+                                if selection is not None:
+                                    extra += self.select_config(*selection)
+                                self.assert_config_rejected(self.config_preview(extra), relative)
+                finally:
+                    if target.is_symlink():
+                        target.unlink()
+                    else:
+                        shutil.rmtree(self.worktree / root)
+
+    def test_provider_configuration_roots_final_spawn_matrix(self) -> None:
+        module = dispatch_module().WORKTREE
+        for root in (".agents", "_agents", ".agent", "_agent"):
+            for leaf in ("mcp_config.json", "hooks.json", "agents/x.md", "agents/d/agent.md",
+                         "plugins/p/plugin.json", "plugins/p/.antigravity-plugin/plugin.json",
+                         "plugins/p/.gemini-plugin/plugin.json", "symlink"):
+                for location in ("cwd", "ancestor", "known", "late"):
+                    with self.subTest(root=root, leaf=leaf, location=location), tempfile.TemporaryDirectory(
+                            prefix="config-boundary-", dir=self.root) as temporary:
+                        top = Path(temporary)
+                        (top / ".git").write_text("bounded ancestor marker")
+                        stage = top / "stage"
+                        stage.mkdir()
+                        base = top if location == "ancestor" else stage
+                        if location == "known":
+                            base = stage / "nested"
+                        target = base / root if leaf == "symlink" else base / root / leaf
+                        if location != "late" or leaf.startswith("plugins/"):
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                        known: dict[str, str] = {}
+                        if location != "ancestor":
+                            if leaf == "symlink" and location != "late":
+                                target.mkdir()
+                            self.assertTrue(module._worktree_symlink_boundary(str(stage), provider_config_paths=known))
+                        def introduce(*_args, target=target, leaf=leaf, stage=stage):
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            if leaf == "symlink":
+                                if target.is_dir():
+                                    target.rmdir()
+                                target.symlink_to(stage / "ordinary")
+                            else:
+                                target.write_text("private payload")
+                            return {"status": "unchanged"}
+                        if location in ("cwd", "ancestor"):
+                            introduce()
+                        self.assert_final_config_boundary(stage, known,
+                            prepare=introduce if location in ("known", "late") else None)
+
+    def test_provider_configuration_roots_retention_and_normalization(self) -> None:
+        module = dispatch_module().WORKTREE
+        for root in (".agents", "_agents", ".agent", "_agent"):
+            for spelling in (root, root.upper()):
+                with self.subTest(root=spelling):
+                    entries = [{"path": f"nested/{spelling}/{suffix}", "kind": kind} for suffix, kind in
+                               (("skills", "directory"), ("plugins", "directory"),
+                                ("plugins/marketplace.json", "file"), ("plugins/p", "directory"))]
+                    expected = {entry["path"]: entry["kind"] for entry in entries}
+                    self.assertEqual(module._check_provider_config_entries(entries), expected)
+                    for leaf in ("MCP_CONFIG.JSON", "HOOKS.JSON", "AGENTS/X.MD", "AGENTS/D/AGENT.MD",
+                                 "PLUGINS/P/PLUGIN.JSON"):
+                        with self.assertRaisesRegex(module.DispatchError, "executable provider configuration"):
+                            module._check_provider_config_node(f"nested/{spelling}/{leaf}")
+                    (self.worktree / f"nested/{spelling}/plugins").mkdir(parents=True)
+                    (self.worktree / f"nested/{spelling}/plugins/marketplace.json").write_text("{}")
+                    known: dict[str, str] = {}
+                    self.assertTrue(module._worktree_symlink_boundary(str(self.worktree), provider_config_paths=known))
+                    self.assertEqual(known[f"nested/{spelling}/plugins/marketplace.json"], "file")
+                    shutil.rmtree(self.worktree / "nested")
+
+    def test_provider_configuration_roots_safe_markdown_remains_allowed(self) -> None:
+        for root in (".agents", "_agents", ".agent", "_agent"):
+            self.config_path(f"{root}/skills/example/SKILL.md")
+            self.config_path(f"{root}/rules/example.md")
+        self.preview()
+        for isolation in ("session", "native"):
+            with self.subTest(isolation=isolation):
+                extra = ["--provider-scope", str(self.scope)]
+                # Keep all safe Markdown in the staged selection.
+                self.scope.write_text(json.dumps({"schema_version": 1, "kind": "agy-worker-provider-scope",
+                    "read": [{"path": root, "kind": "tree"} for root in
+                             sorted((".agents", "_agents", ".agent", "_agent"))], "write": []}))
+                self.preview(extra=extra + ["--provider-isolation", isolation])
+        module = dispatch_module().WORKTREE
+        known: dict[str, str] = {}
+        self.assertTrue(module._worktree_symlink_boundary(str(self.worktree), provider_config_paths=known))
+        self.assert_final_config_boundary(self.worktree, known, allowed=True)
 
     def test_workspace_config_preview_rejects_reserved_nodes_and_aliases(self) -> None:
         paths = [f".agents/{leaf}.json" for leaf in

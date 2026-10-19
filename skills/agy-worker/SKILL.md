@@ -75,10 +75,11 @@ name. Installation grants no provider or Git authority.
 
 Read [Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md) before a
 first live dispatch or changing execution exposure. It owns native network/Keychain
-limits, verifier environments and no-follow boundaries. Workspace MCP startup was
-observed on AGY 1.3.5: preview rejects known executable configuration; each launch
-also checks actual cwd ancestry, in both modes. Prefer scoped mode excluding
-`.agents/` configuration, then a disposable worktree without it; ancestors must
+limits, verifier environments and no-follow boundaries. A direct synthetic headless
+AGY 1.4.2 run started workspace MCP commands from `.agents/`, `_agents/`, `.agent/`
+and `_agent/`. Preview rejects known executable configuration under all four roots;
+each launch also checks actual cwd ancestry, in both modes. Prefer scoped mode
+excluding this configuration, then a disposable worktree without it; ancestors must
 also be clear. Session mode can start enabled user-plugin MCP servers and run global
 and enabled-plugin hooks in headless mode with slash commands disabled; hooks can
 observe or rewrite tool calls, including shell commands. The guide owns the reserved

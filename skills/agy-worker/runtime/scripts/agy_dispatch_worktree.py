@@ -52,11 +52,13 @@ class ExecutableProviderConfigurationError(DispatchError):
             escaped = escaped[:120] + "..." + escaped[-197:]
         super().__init__(
             f"executable provider configuration rejected: {escaped}; "
-            "use scoped mode excluding .agents/ configuration; otherwise use a "
+            "use scoped mode excluding .agents/, _agents/, .agent/, and _agent/ configuration; "
+            "otherwise use a "
             "disposable worktree without it (actual cwd ancestors must also be clear)"
         )
 
 
+_PROVIDER_CONFIG_ROOTS = frozenset({".agents", "_agents", ".agent", "_agent"})
 _PROVIDER_CONFIG_LEAVES = frozenset({
     "mcp_config.json", "hooks.json", "skills.json", "rules.json", "agents.json", "plugins.json",
 })
@@ -69,7 +71,7 @@ def _provider_config_parts(path: str) -> list[str]:
 def _check_provider_config_node(path: str, *, symlink: bool = False) -> None:
     parts = _provider_config_parts(path)
     for index, part in enumerate(parts):
-        if part != ".agents":
+        if part not in _PROVIDER_CONFIG_ROOTS:
             continue
         tail = parts[index + 1:]
         if ((symlink and not tail)
@@ -86,7 +88,7 @@ def _check_provider_config_node(path: str, *, symlink: bool = False) -> None:
 def _check_provider_config_entries(
     entries: list[dict[str, Any]], *, scope: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Retain known .agents directories and plugin loader nodes for the final probe."""
+    """Retain known provider configuration directories and plugin loader nodes for the final probe."""
     paths: dict[str, str] = {}
     deadline = time.monotonic() + READABLE_MANIFEST_SCAN_SECONDS
     for entry in entries:
@@ -102,8 +104,8 @@ def _check_provider_config_entries(
             continue
         _check_provider_config_node(path, symlink=entry["kind"] == "symlink")
         parts = _provider_config_parts(path)
-        if ((entry["kind"] == "directory" and ".agents" in parts) or any(
-            parts[index:index + 2] == [".agents", "plugins"] for index in range(len(parts) - 1)
+        if ((entry["kind"] == "directory" and _PROVIDER_CONFIG_ROOTS.intersection(parts)) or any(
+            parts[index] in _PROVIDER_CONFIG_ROOTS and parts[index + 1] == "plugins" for index in range(len(parts) - 1)
         )):
             paths[path] = entry["kind"]
     return paths
@@ -174,15 +176,15 @@ def _recheck_provider_configuration(
             return False
         leaves = _PROVIDER_CONFIG_LEAVES
         parts = _provider_config_parts(str(directory))
-        if any(parts[index:index + 2] == [".agents", "plugins"] for index in range(len(parts) - 1)):
+        if any(parts[index] in _PROVIDER_CONFIG_ROOTS and parts[index + 1] == "plugins" for index in range(len(parts) - 1)):
             leaves = leaves | {"plugin.json"}
         for leaf in leaves:
             target = directory / leaf
             if info(target) is not None:
                 raise ExecutableProviderConfigurationError(str(target))
-        if parts[-2:] == [".agents", "agents"]:
+        if len(parts) >= 2 and parts[-2] in _PROVIDER_CONFIG_ROOTS and parts[-1] == "agents":
             scan_agents(directory)
-        elif parts[-1:] == [".agents"]:
+        elif parts[-1] in _PROVIDER_CONFIG_ROOTS:
             probe(directory / "agents")
         return True
 
@@ -195,28 +197,29 @@ def _recheck_provider_configuration(
             raise DispatchError("provider cwd ancestor Git marker is invalid")
         # Read neither .git file contents nor directory control data.
         if ancestor != home or ancestor == root or home_is_controlled or marker is not None:
-            agents = ancestor / ".agents"
-            if probe(agents):
-                plugins = agents / "plugins"
-                if probe(plugins) and ancestor != root:
-                    # Only unknown ancestor plugin package names need enumeration.
-                    # Fixed loader names are probed; contents are never read.
-                    try:
-                        with os.scandir(plugins) as scanned:
-                            for entry in scanned:
-                                if time.monotonic() > deadline:
-                                    raise ExecutableProviderConfigurationError(str(plugins))
-                                scanned_count += 1
-                                if scanned_count > MAX_BOUNDARY_ENTRIES:
-                                    raise ExecutableProviderConfigurationError(str(plugins))
-                                _check_provider_config_node(entry.path, symlink=entry.is_symlink())
-                                if entry.is_dir(follow_symlinks=False):
-                                    package = Path(entry.path)
-                                    probe(package, expected_kind="directory")
-                                    probe(package / ".antigravity-plugin")
-                                    probe(package / ".gemini-plugin")
-                    except OSError as exc:
-                        raise ExecutableProviderConfigurationError(str(plugins)) from exc
+            for name in sorted(_PROVIDER_CONFIG_ROOTS):
+                agents = ancestor / name
+                if probe(agents):
+                    plugins = agents / "plugins"
+                    if probe(plugins) and ancestor != root:
+                        # Only unknown ancestor plugin package names need enumeration.
+                        # Fixed loader names are probed; contents are never read.
+                        try:
+                            with os.scandir(plugins) as scanned:
+                                for entry in scanned:
+                                    if time.monotonic() > deadline:
+                                        raise ExecutableProviderConfigurationError(str(plugins))
+                                    scanned_count += 1
+                                    if scanned_count > MAX_BOUNDARY_ENTRIES:
+                                        raise ExecutableProviderConfigurationError(str(plugins))
+                                    _check_provider_config_node(entry.path, symlink=entry.is_symlink())
+                                    if entry.is_dir(follow_symlinks=False):
+                                        package = Path(entry.path)
+                                        probe(package, expected_kind="directory")
+                                        probe(package / ".antigravity-plugin")
+                                        probe(package / ".gemini-plugin")
+                        except OSError as exc:
+                            raise ExecutableProviderConfigurationError(str(plugins)) from exc
         if marker is not None or ancestor.parent == ancestor:
             return
         ancestor = ancestor.parent
@@ -1326,8 +1329,8 @@ def _worktree_symlink_boundary(
                         _check_provider_config_node(relative, symlink=entry.is_symlink())
                         parts = _provider_config_parts(relative)
                         kind = "directory" if entry.is_dir(follow_symlinks=False) else "file"
-                        if ((kind == "directory" and ".agents" in parts) or any(
-                            parts[index:index + 2] == [".agents", "plugins"]
+                        if ((kind == "directory" and _PROVIDER_CONFIG_ROOTS.intersection(parts)) or any(
+                            parts[index] in _PROVIDER_CONFIG_ROOTS and parts[index + 1] == "plugins"
                             for index in range(len(parts) - 1)
                         )):
                             provider_config_paths[relative] = kind

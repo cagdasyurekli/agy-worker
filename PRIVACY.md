@@ -38,10 +38,11 @@ reconciliation do not enforce a host read/write boundary. Disclose this mode in 
 initial approval alongside the task and selected content; the job cannot silently
 switch modes later.
 
-AGY 1.3.5 was observed starting workspace `.agents/mcp_config.json` commands
-before worker activity. Preview rejects known provider executable configuration;
+AGY 1.4.2 was observed starting workspace MCP commands from all four roots:
+`.agents/`, `_agents/`, `.agent/` and `_agent/`, in a direct synthetic headless run.
+Preview rejects known provider executable configuration under these roots;
 every launch additionally checks the actual cwd and bounded ancestors, in both
-isolation modes. Prefer scoped mode excluding `.agents/` configuration, then a
+isolation modes. Prefer scoped mode excluding this configuration, then a
 disposable worktree without it; actual provider ancestors must also be clear.
 Session mode can start MCP servers from enabled user-installed agy plugins and run
 global and enabled-plugin hooks in headless mode with slash commands disabled.
