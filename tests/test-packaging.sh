@@ -2893,14 +2893,14 @@ fi
 provider_read_scope_clauses=(
     'Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds reviewed read entries, their content digest, and a write subset in a fresh owner-private mode-`0700` Gitless stage.'
     'Whole-worktree dispatch requires `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`. Every disposable-worktree entry is provider-readable and may reach Google/Gemini; `--add-dir`, prompt denylists and gate path policies do not narrow that read boundary.'
-    'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode.'
+    'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch has an implicit transmission mode or an implicit `--provider-isolation`.'
     'The whole-worktree digest binds content, kinds, full file mode bits, symlink target hashes, the'
     'readable manifest, provider isolation and native grant profile. The scoped digest'
     'binds canonical read/write policy, readable path/kind manifest, selected bytes and'
     'executable bits, isolation and grant profile; scoped mode rejects symlinks and does'
     'not bind full POSIX permissions. The controller rechecks the approved boundary'
     'Retired dispatch and workflow job formats are rejected; finish or discard them with their creating release, without migration.'
-    'Default `--provider-isolation session` uses the existing AGY session. AGY has normal user filesystem/network authority; staging and reconciliation are not host isolation.'
+    '`--provider-isolation session|native` is caller-owned with no implicit value: the driver names the mode and its consequence in the approval request and never selects `session` on its own. `session` uses the existing AGY session with normal user filesystem/network authority plus ambient HOME, enabled user plugins, hooks and MCP servers; staging and reconciliation are not host isolation.'
     'Explicit `--provider-isolation native` requires supported macOS scoped containment; it never falls back to session mode. Preserve the recorded isolation mode and grant profile across repairs.'
     'Provider-scope approval grants neither provider execution, Git action, driver acceptance, nor publication.'
     'Exclude secrets, denied paths and unrelated private content from every approved entry; telling the worker not to read an approved entry is not a control.'
@@ -2960,7 +2960,8 @@ provider_read_scope_weakening_replacements=(
     'do not narrow that read boundary::narrow that read boundary'
     'Neither `workflow.sh run` nor the advanced `agy-worker.sh` initial dispatch::Both `workflow.sh run` and the advanced `agy-worker.sh` initial dispatch'
     'a write subset::an unrelated write set'
-    'AGY has normal user filesystem/network authority::AGY has restricted host authority'
+    'with normal user filesystem/network authority plus ambient HOME::with restricted host authority plus ambient HOME'
+    'never selects `session` on its own::may select `session` on its own'
     'it never falls back to session mode::it may fall back to session mode'
     'grants neither provider execution, Git action, driver acceptance, nor publication::grants provider execution and Git authority'
     'telling the worker not to read an approved entry is not a control::telling the worker not to read an approved entry is sufficient'
@@ -3038,8 +3039,8 @@ required = {
         "Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception",
         "requires an explicit transmission choice",
         "it binds reviewed read entries, their content digest, and a write subset",
-        "New jobs use the existing AGY session by default",
-        "--provider-isolation native` optionally adds macOS containment",
+        "Every new job must pass `--provider-isolation session|native`; there is no default.",
+        "`native` adds macOS containment",
     ),
     "PRIVACY.md": (
         "Prefer `--provider-scope` for bounded jobs",
@@ -3060,7 +3061,7 @@ required = {
         "Prefer scoped dispatch for bounded jobs",
         "[worker instruction precedence](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#worker-instruction-precedence)",
         "Whole-worktree dispatch remains an explicit manifest-bound exception",
-        "New jobs default to `--provider-isolation session`",
+        "Every new job must pass `--provider-isolation session|native`; there is no implicit value.",
         "--approve-whole-worktree LAUNCH_APPROVAL_SHA256",
     ),
     "docs/VERIFYING_AGENT_OUTPUT.md": (
@@ -3071,7 +3072,7 @@ required = {
     "docs/MARKETPLACE.md": (
         "Prefer `--provider-scope` for bounded jobs",
         "Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception",
-        "new jobs default to `--provider-isolation session`",
+        "every new job must pass `--provider-isolation session|native` (no default)",
     ),
     "docs/REPO_MAP.md": (
         "agy_dispatch.py", "agy_dispatch_worktree.py", "tests/test-agy-worker-remediation.py",
@@ -3099,7 +3100,7 @@ required = {
         "These are prompt instructions; provider compliance still needs independent review and verification.",
         "Prefer scoped dispatch for bounded jobs",
         "Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception",
-        "Default `--provider-isolation session` retains the caller's existing HOME/session",
+        "`--provider-isolation` has no implicit value: the driver names the mode and its consequence in the approval request and never selects `session` on its own.",
         "Provider-scope approval binds reviewed content and policy; it grants neither provider execution, Git action, driver acceptance, nor publication.",
     ),
 }

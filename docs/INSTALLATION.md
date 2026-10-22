@@ -170,8 +170,8 @@ review a new checkout and explicitly reinstall with `--host claude` for that hos
 
 ## Codex host permissions
 
-agy starts a local language server and writes account state. New worker jobs use
-the existing AGY session by default; an outer Codex sandbox can still prevent that
+agy starts a local language server and writes account state. A worker job started with
+`--provider-isolation session` uses the existing AGY session; an outer Codex sandbox can still prevent that
 session from working. Run with the host permissions already approved for the task.
 Native containment also needs a host that permits nested Seatbelt. A Codex
 `workspace-write` host denied `sandbox_apply` in a live attempt; keep the requested

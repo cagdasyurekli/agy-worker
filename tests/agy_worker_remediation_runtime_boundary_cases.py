@@ -2286,7 +2286,9 @@ def run(context: dict[str, object]) -> None:
         assert prompt_validation_observations == [], {
             "terminal_validation_after_approved_cancel": prompt_validation_observations,
         }
-        assert prompt_cancel_elapsed < 2.0, {
+        # prompt_scan_calls == 0 proves reconciliation was skipped; this bound only
+        # catches a hang. Hosted macOS runners took 2.1-4.3s without reconciliation.
+        assert prompt_cancel_elapsed < 10.0, {
             "elapsed_seconds": prompt_cancel_elapsed, "cancelled": prompt_cancelled.is_set(),
             "reconciliation_calls": prompt_scan_calls, "reason": prompt_terminal["reason"],
         }

@@ -36,8 +36,8 @@ mode-`0700` Gitless provider cwd. Whole-worktree dispatch remains an explicit
 `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception, binding the manifest and
 execution mode, and may send the entire disposable
 worktree through `agy` to Google/Gemini. The controller still validates local worktree paths,
-and new jobs default to `--provider-isolation session`, with normal user filesystem
-and network access. Explicit native mode adds scoped macOS containment with the
+and every new job must pass `--provider-isolation session|native` (no default); session keeps normal user filesystem
+and network access plus ambient plugins, hooks and MCP servers. Native mode adds scoped macOS containment with the
 documented network and process-group limits. Scope selection alone grants no Git
 action, acceptance, or publication. Secrets, denied paths, and unrelated private files
 must be absent from all content approved for either mode.

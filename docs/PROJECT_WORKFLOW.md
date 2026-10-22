@@ -87,9 +87,9 @@ equal HEAD. The later gate must use that same SHA. Prefer selected-content provi
 scope; use whole-worktree approval only as a manifest-bound exception.
 
 ```bash
-./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID" --task "$TASK"
+./workflow.sh run --preview --repo "$TARGET" --job-id "$JOB_ID" --provider-isolation session --task "$TASK"
 ./workflow.sh run --repo "$TARGET" --job-id "$JOB_ID" \
-  --approve-whole-worktree "$PREVIEW_SHA" --workflow task --task "$TASK"
+  --provider-isolation session --approve-whole-worktree "$PREVIEW_SHA" --workflow task --task "$TASK"
 ```
 
 For selected-content mode, include `--provider-scope "$SCOPE"` on both calls and

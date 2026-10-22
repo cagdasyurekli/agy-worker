@@ -343,6 +343,10 @@ def foreground_signal_fixture(root: Path, temporary: Path) -> None:
 def main() -> int:
     worker, *arguments = sys.argv[1:]
     task = sys.stdin.buffer.read(8 * 1024 * 1024 + 1)
+    # Isolation is a required caller choice; tests that do not vary it use session.
+    # AGY_TEST_OMIT_ISOLATION=1 forwards the arguments untouched for negative tests.
+    if os.environ.get("AGY_TEST_OMIT_ISOLATION") != "1" and "--provider-isolation" not in arguments:
+        arguments = [*arguments, "--provider-isolation", "session"]
     values = {"--workdir", "--worktree", "--provider-scope", "--provider-isolation",
               "--workflow", "--mode", "--max-cycles", "--model", "--effort",
               "--idle-timeout", "--hard-timeout", "--max-runtime", "--notice-interval",

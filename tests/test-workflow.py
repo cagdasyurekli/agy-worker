@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import copy
 import importlib.util
@@ -111,9 +112,13 @@ def run_workflow(
     cwd: Path | None = None,
     input_bytes: bytes | None = None,
     env: dict[str, str | None] | None = None,
+    isolation: str | None = "session",
 ) -> subprocess.CompletedProcess[bytes]:
+    """Run the facade; isolation=None omits the flag so negative tests can exercise the requirement."""
     if argv and argv[0] == "run" and "--task" not in argv and input_bytes is None:
         input_bytes = b"bounded task"
+    if argv and argv[0] == "run" and isolation is not None and "--provider-isolation" not in argv:
+        argv = (*argv, "--provider-isolation", isolation)
     return run_cmd(
         sys.executable, "-I", "-S", "-B", str(SCRIPT), *argv,
         cwd=cwd, input_bytes=input_bytes, env=env
@@ -417,6 +422,55 @@ def test_run_missing_args() -> bool:
 check("run rejects missing required arguments", test_run_missing_args)
 
 
+def test_run_requires_explicit_provider_isolation() -> bool:
+    f = RepoFixture("isolation-required")
+    try:
+        state_home = f.tmp / "state-home-isolation"
+        state_home.mkdir(mode=0o700)
+        env = {"XDG_STATE_HOME": str(state_home)}
+        registered = f.repo / ".git" / "worktrees"
+        before = sorted(path.name for path in registered.iterdir()) if registered.exists() else []
+        res = run_workflow("run", "--repo", str(f.repo), "--job-id", f.job_id,
+                           "--workflow", "explore", "--preview", env=env, isolation=None)
+        assert res.returncode == 20, res.stderr
+        assert b"--provider-isolation session|native is required for a new workflow" in res.stderr, res.stderr
+        leftovers = [path for path in state_home.rglob("*") if not path.is_dir()]
+        assert not leftovers, leftovers
+        after = sorted(path.name for path in registered.iterdir()) if registered.exists() else []
+        assert after == before, "facade worktree must be rolled back"
+        return True
+    finally:
+        f.clean()
+
+check("run without --provider-isolation fails for a new workflow before any effect", test_run_requires_explicit_provider_isolation)
+
+
+def test_bind_provider_isolation_uses_stored_mode() -> bool:
+    bind = WORKFLOW_MODULE.bind_provider_isolation
+    args = argparse.Namespace(provider_isolation=None)
+    bind(args, {"provider_isolation": "native"})
+    assert args.provider_isolation == "native"
+    args = argparse.Namespace(provider_isolation="session")
+    bind(args, {"provider_isolation": "session"})
+    assert args.provider_isolation == "session"
+    for stored, given in ((None, None), ({}, None)):
+        try:
+            bind(argparse.Namespace(provider_isolation=given), stored)
+        except WORKFLOW_MODULE.WorkflowError as exc:
+            assert "--provider-isolation session|native is required" in str(exc)
+        else:
+            raise AssertionError("missing isolation without stored state must fail")
+    try:
+        bind(argparse.Namespace(provider_isolation="session"), {"provider_isolation": "native"})
+    except WORKFLOW_MODULE.WorkflowError as exc:
+        assert "workflow provider isolation changed" in str(exc)
+    else:
+        raise AssertionError("mismatched isolation must fail")
+    return True
+
+check("existing workflow state supplies the isolation; a mismatch is rejected", test_bind_provider_isolation_uses_stored_mode)
+
+
 def test_public_explore_mode_preview_and_conflict() -> bool:
     f = RepoFixture("explore-mode")
     try:
@@ -549,7 +603,7 @@ def test_run_preview_and_approval_enforcement() -> bool:
         assert res.returncode == 0
         direct = run_cmd(
             str(RUNTIME / "agy-worker.sh"),
-            "transmission-preview", "--workdir", str(f.worktree),
+            "transmission-preview", "--workdir", str(f.worktree), "--provider-isolation", "session",
             "--workflow", "task", "--add-dir", str(f.worktree), "--task", "bounded task",
         )
         assert direct.returncode == 0
@@ -572,7 +626,7 @@ def test_run_preview_and_approval_enforcement() -> bool:
         assert summary["content_manifest_sha256"] == content_sha
         assert summary["native_grant_profile"] == "baseline"
         assert summary["launch_approval_sha256"] == launch_approval_sha
-        assert summary["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement"
+        assert summary["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement; ambient HOME, enabled user plugins, global and plugin hooks, and MCP servers stay active and can observe or rewrite tool calls"
 
         # 2. Invoking run without an explicit transmission mode exits 20 with preview info
         res = run_workflow(
@@ -675,7 +729,7 @@ def test_preview_timeout_covers_bounded_path_and_content_scans() -> bool:
             return subprocess.CompletedProcess(command, 0, direct.stdout, b"")
 
         with mock.patch.object(WORKFLOW_MODULE.subprocess, "run", side_effect=completed):
-            raw, preview = WORKFLOW_MODULE.canonical_transmission_preview(f.worktree, launch_args=preview_args(), task=b"bounded task")
+            raw, preview = WORKFLOW_MODULE.canonical_transmission_preview(f.worktree, launch_args=preview_args(), task=b"bounded task", provider_isolation="session")
         assert raw == direct.stdout
         assert preview["content_manifest_sha256"]
         assert observed == [60.0]
@@ -744,7 +798,7 @@ def test_whole_preview_binds_bytes_mode_and_link_target() -> bool:
                 alias.unlink()
                 alias.symlink_to("NOTICE.md")
             current = run_cmd(str(RUNTIME / "agy-worker.sh"), "transmission-preview", "--workdir", str(f.worktree),
-                              "--workflow", "task", "--add-dir", str(f.worktree), "--task", "bounded task")
+                              "--provider-isolation", "session", "--workflow", "task", "--add-dir", str(f.worktree), "--task", "bounded task")
             assert current.returncode == 0, current.stderr
             latest = json.loads(current.stdout)
             assert latest["manifest_sha256"] == prior["manifest_sha256"]
@@ -1023,7 +1077,7 @@ def test_ordinary_run_requires_one_explicit_transmission_mode() -> bool:
         assert summary["selected_content_sha256"] == preview_value["selected_content_sha256"]
         assert summary["transmission_sha256"] == transmission_sha
         assert summary["launch_approval_sha256"] == preview_value["launch_approval_sha256"]
-        assert summary["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement"
+        assert summary["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement; ambient HOME, enabled user plugins, global and plugin hooks, and MCP servers stay active and can observe or rewrite tool calls"
 
         missing = run_workflow(
             "run", "--repo", str(f.repo), "--job-id", job_id,
@@ -1099,7 +1153,7 @@ def test_preview_reports_scope_validation_errors() -> bool:
             scope_path.chmod(0o600)
             try:
                 WORKFLOW_MODULE.canonical_transmission_preview(
-                    f.worktree, provider_scope=str(scope_path), launch_args=preview_args(), task=b"bounded task",
+                    f.worktree, provider_scope=str(scope_path), launch_args=preview_args(), task=b"bounded task", provider_isolation="session",
                 )
             except WORKFLOW_MODULE.WorkflowError as exc:
                 assert expected in str(exc), str(exc)
@@ -1118,7 +1172,7 @@ def test_preview_identifies_main_checkout_marker() -> bool:
     f = RepoFixture("main-checkout-preview")
     try:
         try:
-            WORKFLOW_MODULE.canonical_transmission_preview(f.repo, launch_args=preview_args(), task=b"bounded task")
+            WORKFLOW_MODULE.canonical_transmission_preview(f.repo, launch_args=preview_args(), task=b"bounded task", provider_isolation="session")
         except WORKFLOW_MODULE.WorkflowError as exc:
             assert "control marker is not regular" in str(exc), str(exc)
             assert "linked worktree" in str(exc), str(exc)

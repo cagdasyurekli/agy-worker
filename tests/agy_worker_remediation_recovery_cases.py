@@ -1687,7 +1687,8 @@ print(phase, "FIFO rejected and preserved")
                 assert MODULE._dispatch_root_identity(str(worktree)) is not None, label
                 if label == "standard":
                     preview = subprocess.run(
-                        [str(ROOT / "agy-worker.sh"), "transmission-preview", "--workdir", str(worktree)],
+                        [str(ROOT / "agy-worker.sh"), "transmission-preview", "--workdir", str(worktree),
+                         "--provider-isolation", "session"],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     )
                     assert preview.returncode == 20 and not preview.stdout
@@ -2997,7 +2998,8 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
         log_dir = root / "fifo-race-logs"; log_dir.mkdir(mode=0o700)
         worker = ROOT / "skills/agy-worker/runtime/agy-worker.sh"
         preview = subprocess.run(
-            [str(worker), "transmission-preview", "--workdir", str(repo), "--task", "this task must not be consumed"],
+            [str(worker), "transmission-preview", "--workdir", str(repo), "--provider-isolation", "session",
+             "--task", "this task must not be consumed"],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -3018,7 +3020,7 @@ print(json.dumps([str(pathlib.Path(module.__file__).resolve()) for module in
         started = time.monotonic()
         process = subprocess.Popen(
             [
-                str(worker), "--workdir", str(repo),
+                str(worker), "--workdir", str(repo), "--provider-isolation", "session",
                 "--approve-whole-worktree", launch_approval_sha,
                 "--approval-record", str(approval_record),
                 "--model", "gemini-3.6-flash", "--effort", "high",

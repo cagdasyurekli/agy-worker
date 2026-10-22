@@ -222,6 +222,8 @@ print(json.dumps({{
         return result.stdout.decode("utf-8", "strict").strip()
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[bytes]:
+        if args[:1] == ("run",) and "--provider-isolation" not in args:
+            args = (*args, "--provider-isolation", "session")  # isolation is a required caller choice
         return subprocess.run(
             [str(self.workflow), *args],
             env=self.env,

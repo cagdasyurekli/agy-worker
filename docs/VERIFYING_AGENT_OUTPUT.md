@@ -41,7 +41,7 @@ secrets, denied paths, and unrelated private content from every approved entry.
 
 ```bash
 echo "$TASK" | AGY_WORKER_MODE=accept-edits ./agy-worker.sh \
-  --workdir "$WT" --add-dir "$WT" > envelope.json
+  --workdir "$WT" --add-dir "$WT" --provider-isolation session > envelope.json
 ```
 
 The envelope may contain `files_changed`, `commands_run`, and `tests_run`. The gate
@@ -76,8 +76,8 @@ This is a write-acceptance boundary applied after dispatch. In whole-worktree mo
 `--only`, `--allow`, prompt denylists, and `--add-dir` do not prevent reads elsewhere
 in `--workdir`. Recommended provider-scope staging is a distinct pre-dispatch content
 boundary: it copies only selected entries, but the controller still locally enumerates
-and validates worktree/scope paths. Default session mode retains normal user access
-to the host. Explicit native mode adds macOS containment for scoped dispatch;
+and validates worktree/scope paths. Session mode (no implicit default; the caller names it) retains normal user access
+to the host plus ambient plugins, hooks and MCP servers. Explicit native mode adds macOS containment for scoped dispatch;
 ordinary verification copies do not gain that boundary automatically. Scope approval
 alone grants no execution, Git, acceptance, or
 publication authority. See [selected-content dispatch](https://github.com/cagdasyurekli/agy-worker/blob/main/docs/USAGE.md#optional-selected-content-dispatch).

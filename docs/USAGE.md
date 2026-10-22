@@ -34,7 +34,7 @@ credentials, secrets, private keys, unrelated private files, raw worker logs,
 controller state, and denied paths from the entire default transmission or all scoped
 entries. Read [PRIVACY.md](../PRIVACY.md) before use.
 
-New jobs default to `--provider-isolation session` and use the existing AGY session.
+Every new job must pass `--provider-isolation session|native`; there is no implicit value. The driver names the mode and its consequence in the approval request and never selects `session` on its own. `session` uses the existing AGY session.
 The controller validates local worktree paths and reconciles only approved writes,
 but AGY retains normal user filesystem/network authority. The controller compares a
 bounded observation of the verified main source checkout against one immutable job baseline.
@@ -64,7 +64,7 @@ See [Retired job formats and flags](PROJECT_WORKFLOW.md#retired-job-formats-and-
 for the current format policy and authoritative runtime constants. Older jobs are
 rejected; finish or discard them with the release that created them, without migration.
 
-Use `--provider-isolation native` explicitly for scoped macOS containment with
+Use `--provider-isolation native` for scoped macOS containment with
 private HOME/TMP. Native mode never falls back to session mode. Include its bound agy
 image's TCP 443, local resolver, TCP listener, and Keychain exposure in the initial
 approval package. See [Security and compatibility](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md)
@@ -232,19 +232,19 @@ after approval; do not use the content-only `transmission_sha256` subdigest.
 
 ```bash
 "$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" \
-  --provider-scope "$SCOPE" --workflow task --task "$TASK"
+  --provider-scope "$SCOPE" --provider-isolation session --workflow task --task "$TASK"
 "$PIPELINE/workflow.sh" run --repo "$TARGET" --job-id "$JOB_ID" \
-  --provider-scope "$SCOPE" --approve-transmission-sha "$LAUNCH_APPROVAL_SHA256" \
+  --provider-scope "$SCOPE" --provider-isolation session --approve-transmission-sha "$LAUNCH_APPROVAL_SHA256" \
   --workflow task --task "$TASK"
 
 # Advanced direct-dispatch compatibility surface:
 "$PIPELINE/agy-worker.sh" transmission-preview --workdir "$WT" \
-  --provider-scope "$SCOPE" --workflow task --mode accept-edits --task "$TASK" \
+  --provider-scope "$SCOPE" --provider-isolation session --workflow task --mode accept-edits --task "$TASK" \
   --format json > "$STATE_DIR/scoped-preview.json"
 
 # After reviewing and obtaining approval for the exact launch_approval_sha256:
 printf '%s\n' "$TASK" | "$PIPELINE/agy-worker.sh" \
-  --workflow task --mode accept-edits --workdir "$WT" \
+  --workflow task --mode accept-edits --workdir "$WT" --provider-isolation session \
   --provider-scope "$SCOPE" --approve-transmission-sha "$LAUNCH_APPROVAL_SHA256" \
   --approval-record "$STATE_DIR/scoped-preview.json" \
   > "$ENVELOPE"
@@ -283,14 +283,14 @@ The driver runs every command. Return commands_run and tests_run as empty arrays
 APPROVAL_RECORD=/absolute/private/parser-launch-preview.json
 ( umask 077
   "$PIPELINE/agy-worker.sh" transmission-preview --workdir "$WT" \
-    --workflow task --mode accept-edits --model "$MODEL" --add-dir "$WT" --task "$TASK" \
+    --workflow task --mode accept-edits --model "$MODEL" --provider-isolation session --add-dir "$WT" --task "$TASK" \
     > "$APPROVAL_RECORD"
 )
 WHOLE_WORKTREE_SHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["launch_approval_sha256"])' "$APPROVAL_RECORD")"
 
 if ! printf '%s\n' "$TASK" | AGY_WORKER_JOB_ID="$JOB_ID" "$PIPELINE/agy-worker.sh" \
     --workflow task --mode accept-edits --model "$MODEL" \
-    --workdir "$WT" --add-dir "$WT" \
+    --workdir "$WT" --add-dir "$WT" --provider-isolation session \
     --approve-whole-worktree "$WHOLE_WORKTREE_SHA" --approval-record "$APPROVAL_RECORD" > "$ENVELOPE"; then
   echo "Dispatch failed; inspect the sanitized terminal state/result. Resume only a candidate-free failure; handle an ERROR candidate with Verification v2, and preserve/finalize or freshly restart a CANCELED candidate." >&2
   exit 1
@@ -358,7 +358,7 @@ if ! echo "Read repository-owned files under $WT using absolute paths. Report en
 test commands, and risky areas. Do not run commands. Return files_changed,
 commands_run, and tests_run as empty arrays." |
   "$PIPELINE/agy-worker.sh" --workflow explore \
-    --workdir "$WT" --add-dir "$WT" > /tmp/inventory-envelope.json; then
+    --workdir "$WT" --add-dir "$WT" --provider-isolation session > /tmp/inventory-envelope.json; then
   echo "Inventory dispatch failed; do not pass its stdout to the gate." >&2
   exit 1
 fi
@@ -387,7 +387,7 @@ prove the worker's architecture prose or completeness.
 | `--workdir DIR` | — | Source worktree. Without `--provider-scope`, treat all content as worker-readable and potentially transmissible. |
 | `--add-dir DIR` | — | Repeatable file-tool root for explicit whole-worktree dispatch; it does not narrow provider reads and conflicts with scoped mode. |
 | `--provider-scope FILE` | — | Recommended closed read/write policy for bounded jobs; stages selected content only and requires `--approve-transmission-sha`. |
-| `--provider-isolation session|native` | — | Default `session` uses existing account/session and normal host access; explicit `native` requires scoped mode on supported macOS. Bound for the job's lifetime. |
+| `--provider-isolation session|native` | — | Required for new jobs, no default. `session` uses existing account/session, normal host access and ambient plugins, hooks and MCP servers; `native` requires scoped mode on supported macOS. Bound for the job's lifetime. |
 | `--approve-transmission-sha SHA256` | — | Full scoped launch authority; use `launch_approval_sha256`, not the content subdigest. Grants no downstream authority. |
 | `--approve-whole-worktree SHA256` | — | Full whole-worktree launch authority; use the preview's `launch_approval_sha256`. |
 | `--approval-record FILE` | — | Raw initial launches require the reviewed preview JSON, canonical absolute path and private mode `0600`; the facade retains its own record. |
