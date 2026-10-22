@@ -254,6 +254,7 @@ CASE_LABELS: dict[str, tuple[str, ...]] = {
         'top-level help distinguishes worker and lifecycle stdout; invalid usage is sanitized',
         'help states workflow-specific cycle limits',
         'raw dispatch requires an explicit transmission mode before provider or job artifacts',
+        'initial dispatch requires an explicit provider isolation before provider, job and lock mutation',
         'raw whole-worktree approval is exact and stale-safe before provider launch',
         'post-preview whole content binding failure is bounded and publishes no provider command',
         'literal model produces an envelope (exit 0)',
@@ -734,6 +735,9 @@ SHELL_DECLARATIONS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ('dispatcher-a', 'assertion', 'bad "help workflow-specific cycle limits"'),
         ('dispatcher-a', 'assertion', 'ok "raw dispatch requires an explicit transmission mode before provider or job artifacts"'),
         ('dispatcher-a', 'assertion', 'bad "raw dispatch missing transmission mode boundary"'),
+        ('dispatcher-a', 'loop', 'for isolation_route in run start transmission-preview; do'),
+        ('dispatcher-a', 'assertion', 'ok "initial dispatch requires an explicit provider isolation before provider, job and lock mutation"'),
+        ('dispatcher-a', 'assertion', 'bad "initial dispatch provider isolation requirement"'),
         ('dispatcher-a', 'assertion', 'ok "raw whole-worktree approval is exact and stale-safe before provider launch"'),
         ('dispatcher-a', 'assertion', 'bad "raw whole-worktree stale approval boundary"'),
         ('dispatcher-a', 'assertion', 'ok "post-preview whole content binding failure is bounded and publishes no provider command"'),
@@ -1297,8 +1301,8 @@ def all_case_ids() -> tuple[str, ...]:
 
 def validate_case_inventory() -> None:
     identities = all_case_ids()
-    if len(identities) != 409 or len(set(identities)) != len(identities):
-        raise ValueError("case inventory must contain 409 unique assigned identities")
+    if len(identities) != 410 or len(set(identities)) != len(identities):
+        raise ValueError("case inventory must contain 410 unique assigned identities")
     if set(CASE_LABELS) != {stage.id for stage in STAGES if stage.id.startswith("dispatcher-")}:
         raise ValueError("case inventory assignment mismatch")
     for stage_id, labels in CASE_LABELS.items():

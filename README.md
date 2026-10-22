@@ -78,14 +78,14 @@ write subset, then stages those entries in an owner-private Gitless directory.
 Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception
 and may expose every disposable-worktree file through `agy` to Google/Gemini.
 `--add-dir`, prompt restrictions, and `qa-gate --only` do not narrow provider reads.
-New jobs use the existing AGY session by default, with normal user filesystem/network access;
-selected staging is not host isolation. `--provider-isolation native` optionally adds macOS containment. Scope approval
+Every new job must pass `--provider-isolation session|native`; there is no default. `session` uses the existing AGY session
+with normal user filesystem/network access plus ambient plugins, hooks and MCP servers; selected staging is not host isolation. `native` adds macOS containment. Scope approval
 grants no provider execution, Git action, acceptance, or publication. Read [PRIVACY.md](PRIVACY.md).
 
 Inspect a full launch preview before approval; this starts no provider or network:
 
 ```bash
-./agy-worker.sh transmission-preview --workdir "$WT" --provider-scope "$SCOPE" --task "$TASK" --format json
+./agy-worker.sh transmission-preview --workdir "$WT" --provider-scope "$SCOPE" --provider-isolation session --task "$TASK" --format json
 ```
 
 Review its full `launch_approval_sha256` with the task, settings and scope policy. See [usage](docs/USAGE.md)

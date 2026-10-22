@@ -22,6 +22,11 @@ parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent
 options, remaining = parser.parse_known_args()
 ROOT = options.root.resolve()
 WORKER = ROOT / "skills/agy-worker/runtime/agy-worker.sh"
+def isolated(arguments: list[str]) -> list[str]:
+    """Isolation is a required caller choice; tests that do not vary it use session."""
+    return arguments if "--provider-isolation" in arguments else [*arguments, "--provider-isolation", "session"]
+
+
 CURRENT = WORKER.with_name("scripts").joinpath("launch_authority.py").exists()
 
 EXPECTED_POLICY = """NON-INTERACTIVE RUN:
@@ -113,7 +118,7 @@ class LaunchAuthorityTests(unittest.TestCase):
                 arguments = list(self.common)
                 arguments[arguments.index(flag) + 1] = "300"
                 result = subprocess.run(
-                    [str(WORKER), "transmission-preview", *arguments],
+                    [str(WORKER), "transmission-preview", *isolated(arguments)],
                     input=b"bounded task", env=self.environment, capture_output=True, timeout=15,
                 )
                 self.assertEqual(result.returncode, 20, result.stderr)
@@ -145,8 +150,7 @@ class LaunchAuthorityTests(unittest.TestCase):
         for worker in (ROOT / "agy-worker.sh", WORKER):
             for arguments in (["--mode", "auto"], ["--mode=auto"]):
                 with self.subTest(worker=worker, arguments=arguments):
-                    result = subprocess.run([str(worker), "transmission-preview", *self.common,
-                                             *arguments], input=b"bounded task",
+                    result = subprocess.run([str(worker), "transmission-preview", *isolated([*self.common, *arguments])], input=b"bounded task",
                         env=self.environment, capture_output=True, timeout=15)
                     self.assertEqual(result.returncode, 64, result.stderr)
                     self.assertIn(b"invalid choice: 'auto'", result.stderr)
@@ -201,6 +205,27 @@ class LaunchAuthorityTests(unittest.TestCase):
         self.assertEqual(preamble.count(EXPECTED_POLICY), 1)
         self.assertEqual(hashlib.sha256(preamble.encode()).hexdigest(),
                          "0ca4fda6892e644546d4625d3bfea7e4ef1b62d4e5966b595842db028d6da5bc")
+
+    def test_preview_requires_explicit_provider_isolation(self) -> None:
+        # Direct call on purpose: self.preview() injects the flag.
+        for worker in (ROOT / "agy-worker.sh", WORKER):
+            with self.subTest(worker=worker):
+                result = subprocess.run([str(worker), "transmission-preview", *self.common],
+                    input=b"bounded task", env=self.environment, capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 64, result.stderr)
+                self.assertIn(b"the following arguments are required: --provider-isolation", result.stderr)
+                self.assertIn(b"{session,native}", result.stderr)
+                self.assertFalse(self.called.exists())
+                self.assertEqual(list(self.logs.iterdir()), [])
+
+    def test_session_provider_authority_names_ambient_plugins_hooks_and_mcp(self) -> None:
+        _raw, session = self.preview(extra=["--provider-scope", str(self.scope),
+                                           "--provider-isolation", "session"])
+        for text in ("ambient HOME", "enabled user plugins", "hooks", "MCP servers"):
+            self.assertIn(text, session["provider_authority"])
+        _raw, native = self.preview(extra=["--provider-scope", str(self.scope),
+                                          "--provider-isolation", "native"])
+        self.assertNotIn("MCP servers", native["provider_authority"])
 
     def test_prompt_render_preview_parity(self) -> None:
         module = authority_module()
@@ -324,7 +349,7 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
                        stderr=subprocess.PIPE, check=True)
 
     def preview(self, task: bytes = b"initial synthetic task", extra: list[str] | None = None) -> tuple[bytes, dict]:
-        arguments = [*self.common, *(extra or [])] if CURRENT else ["--workdir", str(self.worktree)]
+        arguments = isolated([*self.common, *(extra or [])]) if CURRENT else ["--workdir", str(self.worktree)]
         if not CURRENT and extra and "--provider-scope" in extra:
             arguments += ["--provider-scope", str(self.scope)]
         result = subprocess.run([str(WORKER), "transmission-preview", *arguments], input=task,
@@ -338,7 +363,7 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         path = self.root / f"approval-{self.sequence}.json"
         path.write_bytes(record)
         path.chmod(0o600)
-        arguments = [*self.common, *(extra or [])]
+        arguments = isolated([*self.common, *(extra or [])])
         flag = "--approve-transmission-sha" if "--provider-scope" in arguments else "--approve-whole-worktree"
         arguments += [flag, digest]
         if CURRENT:
@@ -361,7 +386,7 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
         return target
 
     def config_preview(self, extra: list[str] | None = None) -> subprocess.CompletedProcess:
-        return subprocess.run([str(WORKER), "transmission-preview", *self.common, *(extra or [])],
+        return subprocess.run([str(WORKER), "transmission-preview", *isolated([*self.common, *(extra or [])])],
             input=b"initial synthetic task", env=self.environment, capture_output=True, check=False)
 
     def assert_config_rejected(self, result: subprocess.CompletedProcess, path: str) -> None:
@@ -1011,10 +1036,11 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
 
     def test_retired_inputs_reject_all_launch_routes_before_provider(self) -> None:
         routes = [
-            [str(WORKER), *self.common],
-            [str(WORKER), "transmission-preview", *self.common],
+            [str(WORKER), *isolated(self.common)],
+            [str(WORKER), "transmission-preview", *isolated(self.common)],
             [str(ROOT / "workflow.sh"), "run", "--repo", str(self.root / "owner"),
-             "--job-id", "retired", "--preview", "--task", "synthetic"],
+             "--job-id", "retired", "--preview", "--provider-isolation", "session",
+             "--task", "synthetic"],
         ]
         for route in routes:
             with self.subTest(route=route[:2]):
@@ -1132,7 +1158,7 @@ printf '%s\n' '{"event":"result","result":{"status":"SUCCESS","structured_output
     def test_task_option_matches_stdin_and_preserves_spaces_crlf(self) -> None:
         for task in (b"same task\n\n", b"same task  \n", b"same task\r\n"):
             raw, initial = self.preview(task)
-            direct = subprocess.run([str(WORKER), "transmission-preview", *self.common,
+            direct = subprocess.run([str(WORKER), "transmission-preview", *isolated(self.common),
                                     "--task", task.decode()], env=self.environment,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             self.assertEqual(direct.returncode, 0, direct.stderr)

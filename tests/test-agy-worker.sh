@@ -217,7 +217,7 @@ environment["AGY_WORKER_LOG_DIR"] = str(state)
 def preview() -> tuple[subprocess.CompletedProcess[bytes], dict]:
     with prompt.open("rb") as source:
         completed = subprocess.run(
-            [worker, "transmission-preview", "--task", "fixture", "--workdir", str(worktree)],
+            [worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", str(worktree)],
             stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=environment, check=False,
         )
@@ -243,7 +243,7 @@ assert first["authority_summary"]["provider_review_authority"] is False
 assert first["authority_summary"]["manifest_sha256"] == first["manifest_sha256"]
 assert first["authority_summary"]["content_manifest_sha256"] == first["content_manifest_sha256"]
 assert first["authority_summary"]["launch_approval_sha256"] == first["launch_approval_sha256"]
-assert first["authority_summary"]["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement"
+assert first["authority_summary"]["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement; ambient HOME, enabled user plugins, global and plugin hooks, and MCP servers stay active and can observe or rewrite tool calls"
 assert first["resolved_root"] == str(worktree)
 assert first["manifest"]["entry_count"] == len(first["manifest"]["entries"])
 assert first["content_manifest"]["entry_count"] == len(first["content_manifest"]["entries"])
@@ -297,7 +297,7 @@ scope_path.write_text(json.dumps({
 scope_path.chmod(0o600)
 scoped_run = subprocess.run(
     [
-        worker, "transmission-preview", "--task", "fixture", "--workdir", str(worktree),
+        worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", str(worktree),
         "--provider-scope", str(scope_path), "--format", "json",
     ],
     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -320,7 +320,7 @@ assert scoped["authority_summary"]["launch_approval_sha256"] == scoped["launch_a
 assert scoped["authority_summary"]["policy_sha256"] == scoped["policy_sha256"]
 assert scoped["authority_summary"]["selected_content_sha256"] == scoped["selected_content_sha256"]
 assert scoped["authority_summary"]["transmission_sha256"] == scoped["transmission_sha256"]
-assert scoped["authority_summary"]["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement"
+assert scoped["authority_summary"]["provider_authority"] == "normal same-user filesystem and network authority; selected scope is staging and reconciliation, not host confinement; ambient HOME, enabled user plugins, global and plugin hooks, and MCP servers stay active and can observe or rewrite tool calls"
 assert b"CHANGED-SECRET-CONTENT-MUST-NOT-APPEAR" not in scoped_run.stdout
 
 # An unrelated hardlink must fail whole-worktree V11 authority. The existing
@@ -334,7 +334,7 @@ assert whole_hardlink.returncode == 20 and not whole_hardlink.stdout
 scope_path.chmod(0o644)
 invalid_scope_run = subprocess.run(
     [
-        worker, "transmission-preview", "--task", "fixture", "--workdir", str(worktree),
+        worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", str(worktree),
         "--provider-scope", str(scope_path), "--format", "json",
     ],
     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -384,12 +384,12 @@ assert failed.returncode == 20 and not failed.stdout
 shutil.rmtree(nested)
 
 primary_failure = subprocess.run(
-    [worker, "transmission-preview", "--task", "fixture", "--workdir", str(primary)],
+    [worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", str(primary)],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert primary_failure.returncode == 20 and not primary_failure.stdout
 detached_failure = subprocess.run(
-    [worker, "transmission-preview", "--task", "fixture", "--workdir", detached_text],
+    [worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", detached_text],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert detached_failure.returncode == 20 and not detached_failure.stdout
@@ -401,7 +401,7 @@ fake_root.mkdir(); fake_admin.mkdir()
 (fake_admin / "gitdir").write_text(f"{fake_root / '.git'}\n")
 (fake_admin / "HEAD").write_text("ref: refs/heads/fake-preview\n")
 fake_failure = subprocess.run(
-    [worker, "transmission-preview", "--task", "fixture", "--workdir", str(fake_root)],
+    [worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", str(fake_root)],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert fake_failure.returncode == 20 and not fake_failure.stdout
@@ -411,7 +411,7 @@ assert b"Traceback" not in fake_failure.stderr
 alias = temp / "preview-root-alias"
 alias.symlink_to(worktree, target_is_directory=True)
 alias_failure = subprocess.run(
-    [worker, "transmission-preview", "--task", "fixture", "--workdir", str(alias)],
+    [worker, "transmission-preview", "--provider-isolation", "session", "--task", "fixture", "--workdir", str(alias)],
     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
 )
 assert alias_failure.returncode == 20 and not alias_failure.stdout
@@ -1418,6 +1418,34 @@ else
     bad "raw dispatch missing transmission mode boundary"
 fi
 
+# Direct calls on purpose: run_worker and launch_fixture inject --provider-isolation.
+isolation_ok=1
+for isolation_route in run start transmission-preview; do
+    isolation_job="missing-provider-isolation-$isolation_route"
+    isolation_logs_before="$(ls -A "$TMP/logs")"
+    isolation_route_args=("$isolation_route")
+    [[ "$isolation_route" != run ]] || isolation_route_args=()
+    printf 'must not dispatch without a provider isolation\n' | \
+        PATH="$TMP/bin:$PATH" AGY_WORKER_LOG_DIR="$TMP/logs" AGY_WORKER_JOB_ID="$isolation_job" \
+        FAKE_CALLED_FILE="$TMP/$isolation_job.called" \
+        "$WORKER" ${isolation_route_args+"${isolation_route_args[@]}"} --workdir "$TMP/repo" --add-dir "$TMP/repo" \
+        > "$TMP/$isolation_job.out" 2> "$TMP/$isolation_job.err"
+    isolation_rc=$?
+    if [[ "$isolation_rc" != 64 || -s "$TMP/$isolation_job.out" \
+            || -e "$TMP/$isolation_job.called" || -e "$TMP/logs/$isolation_job" \
+            || "$(ls -A "$TMP/logs")" != "$isolation_logs_before" ]] \
+            || ! grep -Fq -- '--provider-isolation' "$TMP/$isolation_job.err" \
+            || ! grep -Eq 'session.*native' "$TMP/$isolation_job.err"; then
+        isolation_ok=0
+        echo "provider isolation boundary failed for $isolation_route (exit $isolation_rc)" >&2
+    fi
+done
+if (( isolation_ok )); then
+    ok "initial dispatch requires an explicit provider isolation before provider, job and lock mutation"
+else
+    bad "initial dispatch provider isolation requirement"
+fi
+
 printf 'must reject stale whole-worktree approval\n' | \
     AGY_TEST_SKIP_WHOLE_APPROVAL=1 run_worker stale-whole-worktree \
     --approve-whole-worktree "$(printf '0%.0s' {1..64})" \
@@ -1539,7 +1567,7 @@ printf '%s\n' \
 chmod 0600 "$CORE_SCOPE"
 CORE_WORKDIR="$(cd "$TMP/repo" && pwd -P)"
 CORE_TRANSMISSION_SHA="$(
-    "$WORKER" transmission-preview --task fixture --workdir "$CORE_WORKDIR" \
+    "$WORKER" transmission-preview --task fixture --workdir "$CORE_WORKDIR" --provider-isolation session \
         --provider-scope "$CORE_SCOPE" --format json \
         | python3 -c 'import json, sys; print(json.load(sys.stdin)["transmission_sha256"])'
 )"
@@ -2069,7 +2097,7 @@ expect_exit "runtime-injection provider environment name is rejected" 64 "$?"
 for unsafe_provider_name in GIT_CONFIG_COUNT GIT_DIR AGY_WORKER_SCHEMA; do
     unsafe_job="unsafe-provider-$unsafe_provider_name"
     printf 'unsafe provider environment\n' | AGY_WORKER_LOG_DIR="$TMP/logs" \
-        "$WORKER" --workdir "$TMP/repo" --job-id "$unsafe_job" \
+        "$WORKER" --workdir "$TMP/repo" --job-id "$unsafe_job" --provider-isolation session \
         --model gemini-3.6-flash-low --provider-env "$unsafe_provider_name" \
         > "$TMP/$unsafe_job.out" 2> "$TMP/$unsafe_job.err"
     unsafe_rc=$?
@@ -3259,7 +3287,7 @@ for test_case in equal child relative missing-child symlink-log symlink-worktree
             FAKE_ARGV_FILE="$TMP/proj-$test_case.argv" \
             FAKE_STAGE_RESULT_FILE="$TMP/proj-$test_case.stage-result" \
             FAKE_CALLED_FILE="$TMP/proj-$test_case.called" \
-            "$WRAPPER_FIXTURE/agy-worker.sh" --workflow project --workdir "$test_work" \
+            "$WRAPPER_FIXTURE/agy-worker.sh" --workflow project --workdir "$test_work" --provider-isolation session \
             > "$TMP/proj-$test_case.out" 2> "$TMP/proj-$test_case.err"
     )
     rc=$?
@@ -4899,7 +4927,7 @@ for capability_case in resume continue scoped-repair effort no-effort restart; d
         scoped-repair)
             scoped_edit=target.txt
             capability_sha="$("$WORKER" transmission-preview --task fixture --workdir "$capability_workdir" \
-                --provider-scope "$capability_scope" --format json \
+                --provider-scope "$capability_scope" --provider-isolation session --format json \
                 | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
             capability_args+=(--provider-scope "$capability_scope" --approve-transmission-sha "$capability_sha" --allow-scoped-repair)
             ;;
@@ -5724,7 +5752,7 @@ Path(env["XDG_STATE_HOME"]).mkdir(mode=0o700)
 fake_outputs = ("FAKE_MODEL_FILE", "FAKE_PROMPT_FILE", "FAKE_DIRS_FILE", "FAKE_ARGV_FILE", "FAKE_STAGE_RESULT_FILE")
 for name in fake_outputs:
     env[name] = str(tmp / name.lower())
-provider_arguments = [argument for name in fake_outputs for argument in ("--provider-env", name)]
+provider_arguments = [argument for name in fake_outputs for argument in ("--provider-env", name)] + ["--provider-isolation", "session"]
 repo = tmp / "repo"
 repo.mkdir(mode=0o700)
 def call(*argv, expected=0):
