@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import dataclasses
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -18,7 +20,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 from typing import Callable
+import plistlib
 
 
 sys.dont_write_bytecode = True
@@ -40,6 +44,18 @@ assert DISPATCH_SPEC is not None and DISPATCH_SPEC.loader is not None
 DISPATCH = importlib.util.module_from_spec(DISPATCH_SPEC)
 sys.modules[DISPATCH_SPEC.name] = DISPATCH
 DISPATCH_SPEC.loader.exec_module(DISPATCH)
+FIXTURE_SPEC = importlib.util.spec_from_file_location(
+    "native_keychain_fixture", ROOT / "tests" / "native_keychain_fixture.py",
+)
+assert FIXTURE_SPEC is not None and FIXTURE_SPEC.loader is not None
+NATIVE_FIXTURE = importlib.util.module_from_spec(FIXTURE_SPEC)
+FIXTURE_SPEC.loader.exec_module(NATIVE_FIXTURE)
+
+# Synthetic Keychain fixtures are plain files, so lock state is injected rather than
+# queried. The real probe is exercised through a stubbed subprocess below.
+REAL_KEYCHAIN_PROBE = MODULE._keychain_is_unlocked
+for _containment in (MODULE, DISPATCH.CONTAINMENT):
+    _containment._keychain_is_unlocked = lambda _path: True
 
 passed = 0
 failed = 0
@@ -103,13 +119,13 @@ def prepare(
     grant_profile: str = MODULE.GRANT_PROFILE_BASELINE,
     read_only_inputs: tuple[Path, ...] = (),
 ) -> object:
-    original_discovery = MODULE._discover_default_keychain
+    original_discovery = MODULE._dedicated_keychain
     if allow_keychain:
         synthetic = job.parent / "synthetic-default.keychain-db"
         synthetic.write_bytes(b"synthetic keychain metadata fixture\n")
         synthetic.chmod(0o600)
         binding = MODULE._bind_keychain(synthetic)
-        MODULE._discover_default_keychain = lambda: binding
+        MODULE._dedicated_keychain = lambda: binding
     try:
         return MODULE.prepare_contained_launch(
             role=role,
@@ -130,7 +146,7 @@ def prepare(
             ),
         )
     finally:
-        MODULE._discover_default_keychain = original_discovery
+        MODULE._dedicated_keychain = original_discovery
 
 
 def shell_probe(stage: Path) -> Path:
@@ -838,7 +854,7 @@ def provider_settings_rule_targets_and_failures_are_exact() -> bool:
     if sys.platform != "darwin":
         return None
     root, job, stage, _checkout, _ambient = fixture("provider-settings-boundary")
-    original_discovery = MODULE._discover_default_keychain
+    original_discovery = MODULE._dedicated_keychain
     original_preferences = MODULE._prepare_keychain_preferences
     original_settings = MODULE._prepare_provider_settings
     try:
@@ -882,7 +898,7 @@ def provider_settings_rule_targets_and_failures_are_exact() -> bool:
             child_environment={}, allow_keychain=True, provider_max_cycles=1,
             provider_write_selectors=({"kind": "file", "path": "bad*selector"},),
         ), "native provider permission settings are unavailable")
-        MODULE._discover_default_keychain = lambda: (_ for _ in ()).throw(
+        MODULE._dedicated_keychain = lambda: (_ for _ in ()).throw(
             MODULE.ContainmentError("synthetic auth failure"),
         )
         authentication = exact_error(lambda: MODULE.prepare_contained_launch(
@@ -895,7 +911,7 @@ def provider_settings_rule_targets_and_failures_are_exact() -> bool:
         keychain_file = root / "synthetic.keychain-db"
         keychain_file.write_bytes(b"metadata only\n")
         keychain_file.chmod(0o600)
-        MODULE._discover_default_keychain = lambda: MODULE._bind_keychain(keychain_file)
+        MODULE._dedicated_keychain = lambda: MODULE._bind_keychain(keychain_file)
         MODULE._prepare_keychain_preferences = lambda *_args: object()
         MODULE._prepare_provider_settings = lambda *_args: (_ for _ in ()).throw(
             MODULE.ContainmentError("synthetic settings failure"),
@@ -916,7 +932,7 @@ def provider_settings_rule_targets_and_failures_are_exact() -> bool:
             and authentication and settings_preparation
         )
     finally:
-        MODULE._discover_default_keychain = original_discovery
+        MODULE._dedicated_keychain = original_discovery
         MODULE._prepare_keychain_preferences = original_preferences
         MODULE._prepare_provider_settings = original_settings
         shutil.rmtree(root)
@@ -1148,7 +1164,7 @@ def keychain_binding_is_metadata_only_and_rebinds_identity() -> bool:
     if sys.platform != "darwin":
         return None
     root, job, stage, _checkout, _ambient = fixture("keychain-binding")
-    original_discovery = MODULE._discover_default_keychain
+    original_discovery = MODULE._dedicated_keychain
     original_payload = MODULE._default_keychain_preferences_payload
     original_read_hash = MODULE._read_hash
     original_lstat = MODULE.os.lstat
@@ -1179,7 +1195,7 @@ def keychain_binding_is_metadata_only_and_rebinds_identity() -> bool:
         keychain = MODULE._bind_keychain(keychain_file)
         MODULE._read_hash = original_read_hash
         MODULE._default_keychain_preferences_payload = lambda _binding: b"synthetic plist\n"
-        MODULE._discover_default_keychain = lambda: keychain
+        MODULE._dedicated_keychain = lambda: keychain
         prepared = MODULE.prepare_contained_launch(
             role=MODULE.ROLE_PROVIDER, network_policy=MODULE.NETWORK_DENY_ALL,
             job_dir=job, attempt=1, stage_dir=stage,
@@ -1201,7 +1217,7 @@ def keychain_binding_is_metadata_only_and_rebinds_identity() -> bool:
             and unchanged_identity_passes and identity_drift_rejected
         )
     finally:
-        MODULE._discover_default_keychain = original_discovery
+        MODULE._dedicated_keychain = original_discovery
         MODULE._default_keychain_preferences_payload = original_payload
         MODULE._read_hash = original_read_hash
         MODULE.os.lstat = original_lstat
@@ -1232,242 +1248,265 @@ def keychain_policy_is_helper_only_and_self_verify_never_discovers() -> bool:
     )
 
 
-def keychain_locator_is_bounded_closed_and_strict() -> bool:
-    """Exercise only synthetic locator scripts; no owner Keychain is queried."""
-    if sys.platform != "darwin":
-        return None
-    root, _job, _stage, _checkout, _ambient = fixture("keychain-locator")
-    original_helper = MODULE.SECURITY_HELPER
-    original_deadline = MODULE.KEYCHAIN_LOCATOR_DEADLINE_SECONDS
-    original_grace = MODULE.KEYCHAIN_LOCATOR_TERM_GRACE_SECONDS
+UNLOCK_COMMAND = "security unlock-keychain ~/Library/Keychains/agy-worker-provider.keychain-db"
+
+
+def dedicated_fixture(name: str, *, create: bool = True) -> tuple[Path, Path, Path, Path]:
+    """Return root, job, stage and a dedicated-keychain path (optionally created)."""
+    root, job, stage, _checkout, _ambient = fixture(name)
+    keychain = root / "Library" / "Keychains" / "agy-worker-provider.keychain-db"
+    if create:
+        keychain.parent.mkdir(parents=True, mode=0o700)
+        keychain.write_bytes(b"synthetic dedicated keychain metadata\n")
+        keychain.chmod(0o600)
+    return root, job, stage, keychain
+
+
+def prepare_native(job: Path, stage: Path) -> object:
+    return MODULE.prepare_contained_launch(
+        role=MODULE.ROLE_PROVIDER, network_policy=MODULE.NETWORK_PROVIDER_TLS,
+        job_dir=job, attempt=1, stage_dir=stage,
+        target_executable="/usr/bin/true", target_argv=["/usr/bin/true"],
+        child_environment={}, allow_keychain=True, provider_max_cycles=1,
+        provider_write_selectors=({"kind": "file", "path": "candidate.py"},),
+    )
+
+
+def unavailable_message(action: Callable[[], object]) -> str | None:
     try:
-        database = root / "default.keychain-db"
-        database.write_bytes(b"metadata only\n")
-        database.chmod(0o644)
+        action()
+    except MODULE.KeychainUnavailableError as exc:
+        return str(exc)
+    return None
 
-        def locator_script(name: str, body: str) -> Path:
-            script = root / name
-            script.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
-            script.chmod(0o755)
-            return script
 
-        def discovered(script: Path) -> object:
-            MODULE.SECURITY_HELPER = script
-            return MODULE._discover_default_keychain()
-
-        quoted = f"printf '\"%s\"\\n' \"{database}\""
-        valid = discovered(locator_script("valid-security", quoted))
-        expected = MODULE._bind_keychain(database)
-        indented = locator_script(
-            "indented-security", f"printf '    \"%s\"\\n' \"{database}\"",
-        )
-        indented_valid = discovered(indented)
-        invalid = locator_script("invalid-security", "printf 'not quoted\\n'")
-        multiple = locator_script("multiple-security", quoted + "; " + quoted)
-        trailing = locator_script(
-            "trailing-security", f"printf '\"%s\" trailing\\n' \"{database}\"",
-        )
-        symlink = root / "linked.keychain-db"
-        symlink.symlink_to(database)
-        linked = locator_script(
-            "linked-security", f"printf '\"%s\"\\n' \"{symlink}\"",
-        )
-        directory = root / "not-a-keychain"
-        directory.mkdir(mode=0o700)
-        nonregular = locator_script(
-            "directory-security", f"printf '\"%s\"\\n' \"{directory}\"",
-        )
-        writable = root / "writable.keychain-db"
-        writable.write_bytes(b"metadata only\n")
-        writable.chmod(0o666)
-        writable_script = locator_script(
-            "writable-security", f"printf '\"%s\"\\n' \"{writable}\"",
-        )
-        oversized = locator_script(
-            "oversized-security", "while :; do printf 0123456789abcdef; done",
-        )
-        timeout = locator_script("timeout-security", "sleep 2")
-        MODULE.KEYCHAIN_LOCATOR_DEADLINE_SECONDS = 0.05
-        MODULE.KEYCHAIN_LOCATOR_TERM_GRACE_SECONDS = 0.05
+def dedicated_keychain_path_comes_from_passwd_home_only() -> bool:
+    root, _job, _stage, _checkout, ambient = fixture("dedicated-path")
+    original_getpwuid = MODULE.pwd.getpwuid
+    original_home = os.environ.get("HOME")
+    try:
+        MODULE.pwd.getpwuid = lambda _uid: types.SimpleNamespace(pw_dir=str(root))
+        os.environ["HOME"] = str(ambient)
+        path = MODULE.dedicated_keychain_path()
         return (
-            valid == expected
-            and indented_valid == expected
-            and rejects(lambda: discovered(invalid))
-            and rejects(lambda: discovered(multiple))
-            and rejects(lambda: discovered(trailing))
-            and rejects(lambda: discovered(linked))
-            and rejects(lambda: discovered(nonregular))
-            and rejects(lambda: discovered(writable_script))
-            and rejects(lambda: discovered(oversized))
-            and rejects(lambda: discovered(timeout))
+            path == root / "Library" / "Keychains" / "agy-worker-provider.keychain-db"
+            and "login.keychain" not in str(path)
         )
     finally:
-        MODULE.SECURITY_HELPER = original_helper
-        MODULE.KEYCHAIN_LOCATOR_DEADLINE_SECONDS = original_deadline
-        MODULE.KEYCHAIN_LOCATOR_TERM_GRACE_SECONDS = original_grace
+        MODULE.pwd.getpwuid = original_getpwuid
+        if original_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = original_home
         shutil.rmtree(root)
 
 
-def _diagnose_locator_reap_conditions(
-    *,
-    holding_rejected: bool,
-    holding_gone: bool,
-    closed_rejected: bool,
-    closed_gone: bool,
-) -> tuple[bool, str]:
-    conditions = {
-        "holding_rejected": bool(holding_rejected),
-        "holding_gone": bool(holding_gone),
-        "closed_rejected": bool(closed_rejected),
-        "closed_gone": bool(closed_gone),
+def missing_dedicated_keychain_fails_closed_before_job_state() -> bool:
+    if sys.platform != "darwin":
+        return None
+    root, job, stage, keychain = dedicated_fixture("dedicated-missing", create=False)
+    original_path = MODULE.dedicated_keychain_path
+    try:
+        MODULE.dedicated_keychain_path = lambda: keychain
+        before = sorted(item.name for item in job.iterdir())
+        message = unavailable_message(lambda: prepare_native(job, stage))
+        return (
+            message is not None and str(keychain) in message
+            and "TROUBLESHOOTING.md" in message
+            and sorted(item.name for item in job.iterdir()) == before
+        )
+    finally:
+        MODULE.dedicated_keychain_path = original_path
+        shutil.rmtree(root)
+
+
+def locked_dedicated_keychain_fails_closed_with_the_unlock_command() -> bool:
+    if sys.platform != "darwin":
+        return None
+    root, job, stage, keychain = dedicated_fixture("dedicated-locked")
+    original_path = MODULE.dedicated_keychain_path
+    original_probe = MODULE._keychain_is_unlocked
+    try:
+        MODULE.dedicated_keychain_path = lambda: keychain
+        MODULE._keychain_is_unlocked = lambda _path: False
+        before = sorted(item.name for item in job.iterdir())
+        message = unavailable_message(lambda: prepare_native(job, stage))
+        return (
+            message is not None and UNLOCK_COMMAND in message
+            and sorted(item.name for item in job.iterdir()) == before
+        )
+    finally:
+        MODULE.dedicated_keychain_path = original_path
+        MODULE._keychain_is_unlocked = original_probe
+        shutil.rmtree(root)
+
+
+def unlocked_dedicated_keychain_is_the_only_bound_keychain() -> bool:
+    if sys.platform != "darwin":
+        return None
+    root, job, stage, keychain = dedicated_fixture("dedicated-unlocked")
+    original_path = MODULE.dedicated_keychain_path
+    original_probe = MODULE._keychain_is_unlocked
+    try:
+        MODULE.dedicated_keychain_path = lambda: keychain
+        prepared = prepare_native(job, stage)
+        profile = Path(prepared.profile.path).read_text(encoding="utf-8")
+        preference = plistlib.loads(Path(prepared.keychain_preferences.path).read_bytes())
+        literal = f'(literal "{keychain}")'
+        confirmed = MODULE.confirm_contained_launch(prepared).argv[0] == "/usr/bin/sandbox-exec"
+        # A keychain locked after preparation is caught at the prelaunch recheck.
+        MODULE._keychain_is_unlocked = lambda _path: False
+        recheck = unavailable_message(lambda: MODULE.confirm_contained_launch(prepared))
+        return (
+            prepared.keychain.path == str(keychain)
+            and profile.count(literal) == 1 and "login.keychain" not in profile
+            and preference["DefaultKeychain"][0]["DbName"] == str(keychain)
+            and confirmed and recheck is not None and UNLOCK_COMMAND in recheck
+        )
+    finally:
+        MODULE.dedicated_keychain_path = original_path
+        MODULE._keychain_is_unlocked = original_probe
+        shutil.rmtree(root)
+
+
+def keychain_lock_probe_reads_status_and_fails_closed() -> bool:
+    original_run = MODULE.subprocess.run
+    seen: list[tuple[list[str], float]] = []
+
+    def answer(stdout: bytes, code: int = 0) -> Callable[..., object]:
+        def run(argv: list[str], **kwargs: object) -> object:
+            seen.append((argv, cast_timeout(kwargs["timeout"])))
+            return subprocess.CompletedProcess(argv, code, stdout, b"")
+        return run
+
+    def cast_timeout(value: object) -> float:
+        assert isinstance(value, (int, float))
+        return float(value)
+
+    def hangs(argv: list[str], **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(argv, 5)
+
+    try:
+        MODULE.subprocess.run = answer(b"unlocked\n")
+        unlocked = REAL_KEYCHAIN_PROBE("/synthetic")
+        MODULE.subprocess.run = answer(b"locked\n")
+        locked = REAL_KEYCHAIN_PROBE("/synthetic")
+        failures = []
+        for run in (answer(b"garbage\n"), answer(b"unlocked\n", 1), hangs):
+            MODULE.subprocess.run = run
+            failures.append(unavailable_message(lambda: REAL_KEYCHAIN_PROBE("/synthetic")) is not None)
+        argv, timeout = seen[0]
+        return (
+            unlocked is True and locked is False and all(failures)
+            and argv[-1] == "/synthetic" and "-I" in argv
+            and timeout == MODULE.KEYCHAIN_STATUS_DEADLINE_SECONDS
+        )
+    finally:
+        MODULE.subprocess.run = original_run
+
+
+def keychain_cli_fails_closed_with_exit_27_and_prepares_the_login_home() -> bool:
+    if sys.platform != "darwin":
+        return None
+    root, _job, _stage, keychain = dedicated_fixture("dedicated-cli", create=False)
+    original_path = MODULE.dedicated_keychain_path
+    original_probe = MODULE._keychain_is_unlocked
+    login_home = root / "login-home"
+    login_home.mkdir(mode=0o700)
+
+    def run(*argv: str) -> tuple[int, str]:
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            return MODULE.main(list(argv)), captured.getvalue()
+
+    try:
+        MODULE.dedicated_keychain_path = lambda: keychain
+        missing_rc, missing_err = run("keychain-preflight")
+        keychain.parent.mkdir(parents=True, mode=0o700)
+        keychain.write_bytes(b"synthetic dedicated keychain metadata\n")
+        keychain.chmod(0o600)
+        MODULE._keychain_is_unlocked = lambda _path: False
+        locked_rc, locked_err = run("keychain-preflight")
+        locked_login_rc, _ = run("keychain-login-home", str(login_home))
+        no_preference = not (login_home / "Library").exists()
+        MODULE._keychain_is_unlocked = lambda _path: True
+        ready_rc, _ = run("keychain-preflight")
+        login_rc, _ = run("keychain-login-home", str(login_home))
+        plist = login_home / "Library" / "Preferences" / "com.apple.security.plist"
+        value = plistlib.loads(plist.read_bytes())
+        usage_rc, _ = run("keychain-preflight", "extra")
+        return (
+            missing_rc == 27 and str(keychain) in missing_err
+            and locked_rc == 27 and UNLOCK_COMMAND in locked_err
+            and locked_login_rc == 27 and no_preference
+            and ready_rc == 0 and login_rc == 0
+            and value["DefaultKeychain"][0]["DbName"] == str(keychain)
+            and stat.S_IMODE(plist.stat().st_mode) == 0o600
+            and usage_rc == 64
+        )
+    finally:
+        MODULE.dedicated_keychain_path = original_path
+        MODULE._keychain_is_unlocked = original_probe
+        shutil.rmtree(root)
+
+
+def native_keychain_login_helper_uses_a_private_throwaway_home() -> bool:
+    if sys.platform != "darwin":
+        return None
+    root, _job, _stage, keychain = dedicated_fixture("login-helper")
+    skill = root / "skill"
+    worker = Path(NATIVE_FIXTURE.build(skill, keychain))
+    bin_dir = root / "bin"
+    bin_dir.mkdir(mode=0o700)
+    record = root / "agy-record"
+    agy = bin_dir / "agy"
+    agy.write_text(
+        "#!/bin/sh\n"
+        "plist=\"$HOME/Library/Preferences/com.apple.security.plist\"\n"
+        "{ printf '%s\\n' \"$HOME\" \"$PWD\" \"$*\"; ls -A \"$HOME\"; test -f \"$plist\" && echo plist; } "
+        f"> '{record}'\n"
+        "exit \"${FAKE_AGY_EXIT:-0}\"\n",
+        encoding="utf-8",
+    )
+    agy.chmod(0o700)
+    environment = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR": str(root),
+        "HOME": str(root / "ambient"), "LANG": "C",
     }
-    if all(conditions.values()):
-        return True, ""
-    failed = [name for name, passed in conditions.items() if not passed]
-    detail = f"locator conditions failed: {failed!r}; all={conditions!r}"
-    return False, detail
 
+    def login(**extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(worker), "native-keychain-login"], env={**environment, **extra},
+            capture_output=True, text=True, check=False, timeout=60,
+        )
 
-def keychain_locator_reaps_leaderless_descendants() -> bool:
-    """An exited locator leader cannot leave its fresh session running."""
-    if sys.platform != "darwin":
-        return None
-    root, _job, _stage, _checkout, _ambient = fixture("keychain-locator-reap")
-    original_helper = MODULE.SECURITY_HELPER
-    original_deadline = MODULE.KEYCHAIN_LOCATOR_DEADLINE_SECONDS
-    original_grace = MODULE.KEYCHAIN_LOCATOR_TERM_GRACE_SECONDS
+    def leftovers() -> list[str]:
+        return sorted(item.name for item in root.iterdir() if item.name.startswith("agy-worker-keychain-login"))
+
     try:
-        database = root / "default.keychain-db"
-        database.write_bytes(b"metadata only\n")
-        database.chmod(0o644)
-
-        def helper(name: str, body: str) -> Path:
-            script = root / name
-            script.write_text("#!/bin/sh\n" + body + "\n", encoding="utf-8")
-            script.chmod(0o755)
-            return script
-
-        def run(script: Path) -> bool:
-            MODULE.SECURITY_HELPER = script
-            return rejects(MODULE._discover_default_keychain)
-
-        def gone(pid_path: Path) -> bool:
-            # Observe both publication and disappearance. Under concurrent load
-            # the shell may publish the PID after the locator leader exits.
-            deadline = time.monotonic() + 10
-            pid = None
-            while time.monotonic() < deadline:
-                if pid is None:
-                    if not pid_path.exists():
-                        time.sleep(0.02)
-                        continue
-                    pid = int(pid_path.read_text(encoding="ascii").strip())
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
-                    return True
-                time.sleep(0.02)
-            return False
-
-        MODULE.KEYCHAIN_LOCATOR_DEADLINE_SECONDS = 0.3
-        MODULE.KEYCHAIN_LOCATOR_TERM_GRACE_SECONDS = 0.3
-        holding_pid = root / "holding.pid"
-        holding = helper(
-            "holding-stdout-security",
-            f"sleep 30 & echo $! > '{holding_pid}'; exit 0",
+        marker = Path(str(keychain) + ".locked")
+        marker.write_bytes(b"")
+        locked = login()
+        marker.unlink()
+        keychain.rename(str(keychain) + ".away")
+        missing = login()
+        Path(str(keychain) + ".away").rename(keychain)
+        refused = (
+            locked.returncode == 27 and UNLOCK_COMMAND in locked.stderr
+            and missing.returncode == 27 and str(keychain) in missing.stderr
+            and not record.exists()
         )
-        closes_pid = root / "closed.pid"
-        closes = helper(
-            "closed-stdout-security",
-            f"sleep 30 >/dev/null 2>&1 & echo $! > '{closes_pid}'; "
-            f"printf '\"%s\"\\n' '{database}'; exit 0",
+        ok = login()
+        lines = record.read_text(encoding="utf-8").splitlines()
+        failed = login(FAKE_AGY_EXIT="3")
+        return (
+            refused and ok.returncode == 0 and failed.returncode == 3
+            and lines[0] != environment["HOME"] and lines[0] == lines[1].replace("/cwd", "/home")
+            and lines[2] == "-p Reply with OK" and lines[3:] == ["Library", "plist"]
+            and not Path(lines[0]).exists() and not Path(lines[1]).exists()
+            and leftovers() == []
         )
-        holding_rejected = run(holding)
-        holding_gone = gone(holding_pid)
-        closed_rejected = run(closes)
-        closed_gone = gone(closes_pid)
-        passed, detail = _diagnose_locator_reap_conditions(
-            holding_rejected=holding_rejected,
-            holding_gone=holding_gone,
-            closed_rejected=closed_rejected,
-            closed_gone=closed_gone,
-        )
-        if not passed:
-            raise AssertionError(detail)
-        return True
     finally:
-        MODULE.SECURITY_HELPER = original_helper
-        MODULE.KEYCHAIN_LOCATOR_DEADLINE_SECONDS = original_deadline
-        MODULE.KEYCHAIN_LOCATOR_TERM_GRACE_SECONDS = original_grace
-        shutil.rmtree(root)
-
-
-def keychain_locator_reap_diagnostics_report_sanitized_conditions() -> bool:
-    """Diagnostic reporter emits sanitized labels without paths, PIDs, raw output, or credentials."""
-    if sys.platform != "darwin":
-        return None
-    # 1. Conjunction pass returns empty detail
-    passed, detail = _diagnose_locator_reap_conditions(
-        holding_rejected=True, holding_gone=True, closed_rejected=True, closed_gone=True,
-    )
-    if not passed or detail != "":
-        raise AssertionError(f"expected pass with empty detail, got passed={passed} detail={detail!r}")
-
-    # 2. Each condition failure reports its sanitized label without secrets or paths
-    for name in ("holding_rejected", "holding_gone", "closed_rejected", "closed_gone"):
-        kwargs = {
-            "holding_rejected": True,
-            "holding_gone": True,
-            "closed_rejected": True,
-            "closed_gone": True,
-        }
-        kwargs[name] = False
-        passed, detail = _diagnose_locator_reap_conditions(**kwargs)
-        if passed:
-            raise AssertionError(f"expected failure when {name}=False")
-        if name not in detail:
-            raise AssertionError(f"expected condition label {name!r} in detail {detail!r}")
-        if "/" in detail or "\\" in detail:
-            raise AssertionError(f"path detected in diagnostic detail: {detail!r}")
-        if any(token in detail.lower() for token in ("keychain", "password", "secret", "token", "credential", "stdout", "stderr")):
-            raise AssertionError(f"sensitive token detected in diagnostic detail: {detail!r}")
-
-    # 3. All failed conjunction reports all labels
-    passed, detail = _diagnose_locator_reap_conditions(
-        holding_rejected=False, holding_gone=False, closed_rejected=False, closed_gone=False,
-    )
-    if passed:
-        raise AssertionError("expected failure when all conditions are False")
-    for name in ("holding_rejected", "holding_gone", "closed_rejected", "closed_gone"):
-        if name not in detail:
-            raise AssertionError(f"expected {name!r} in multi-failure detail {detail!r}")
-
-    # 4. Exercise existing synthetic fixture mechanics to verify real diagnostic outcome evaluation
-    root, _job, _stage, _checkout, _ambient = fixture("locator-diag-coverage")
-    original_helper = MODULE.SECURITY_HELPER
-    try:
-        database = root / "default.keychain-db"
-        database.write_bytes(b"metadata only\n")
-        database.chmod(0o644)
-        clean = root / "clean-security"
-        clean.write_text(
-            f"#!/bin/sh\nprintf '\"%s\"\\n' '{database}'; exit 0\n",
-            encoding="utf-8",
-        )
-        clean.chmod(0o755)
-        MODULE.SECURITY_HELPER = clean
-        clean_rejected = rejects(MODULE._discover_default_keychain)
-        passed, detail = _diagnose_locator_reap_conditions(
-            holding_rejected=clean_rejected,
-            holding_gone=True,
-            closed_rejected=True,
-            closed_gone=True,
-        )
-        if passed or "holding_rejected" not in detail:
-            raise AssertionError(f"synthetic fixture did not trigger holding_rejected diagnostic: {detail!r}")
-        return True
-    finally:
-        MODULE.SECURITY_HELPER = original_helper
         shutil.rmtree(root)
 
 
@@ -1504,14 +1543,14 @@ def self_verify_never_runs_keychain_discovery() -> bool:
     if sys.platform != "darwin":
         return None
     root, job, stage, _checkout, _ambient = fixture("no-self-verify-keychain")
-    original_discovery = MODULE._discover_default_keychain
+    original_discovery = MODULE._dedicated_keychain
     calls = 0
     try:
         def unavailable() -> object:
             nonlocal calls
             calls += 1
             raise AssertionError("self-verification must not discover a Keychain")
-        MODULE._discover_default_keychain = unavailable
+        MODULE._dedicated_keychain = unavailable
         prepared = MODULE.prepare_contained_launch(
             role=MODULE.ROLE_SELF_VERIFY, network_policy=MODULE.NETWORK_DENY_ALL,
             job_dir=job, attempt=1, stage_dir=stage,
@@ -1520,7 +1559,7 @@ def self_verify_never_runs_keychain_discovery() -> bool:
         )
         return calls == 0 and prepared.keychain is None and prepared.keychain_preferences is None
     finally:
-        MODULE._discover_default_keychain = original_discovery
+        MODULE._dedicated_keychain = original_discovery
         shutil.rmtree(root)
 
 
@@ -1929,8 +1968,8 @@ def integrated_stage_rebind_and_outside_write_denial() -> bool:
         synthetic_keychain = root / "synthetic-default.keychain-db"
         synthetic_keychain.write_bytes(b"integration metadata fixture\n")
         synthetic_keychain.chmod(0o600)
-        original_discovery = target._discover_default_keychain
-        target._discover_default_keychain = lambda: target._bind_keychain(synthetic_keychain)
+        original_discovery = target._dedicated_keychain
+        target._dedicated_keychain = lambda: target._bind_keychain(synthetic_keychain)
         python = CLT_PYTHON_EXECUTABLE
         script = (
             "import errno,os,time\n"
@@ -2058,7 +2097,7 @@ def integrated_stage_rebind_and_outside_write_denial() -> bool:
         return True
     finally:
         if "target" in locals() and "original_discovery" in locals():
-            target._discover_default_keychain = original_discovery
+            target._dedicated_keychain = original_discovery
         if "inherited_fd" in locals() and inherited_fd >= 0:
             os.close(inherited_fd)
         shutil.rmtree(root)
@@ -2313,7 +2352,7 @@ def two_turn_native_boundary_enforces_stage_isolation_and_settings_reuse() -> bo
     if sys.platform != "darwin":
         return None
     root, job, stage1, checkout, ambient = fixture("two-turn-native")
-    original_discovery = MODULE._discover_default_keychain
+    original_discovery = MODULE._dedicated_keychain
     try:
         stage2 = job / "stage-002"
         stage2.mkdir(mode=0o700)
@@ -2340,7 +2379,7 @@ def two_turn_native_boundary_enforces_stage_isolation_and_settings_reuse() -> bo
         synthetic_keychain = root / "synthetic-default.keychain-db"
         synthetic_keychain.write_bytes(b"two-turn synthetic keychain\n")
         synthetic_keychain.chmod(0o600)
-        MODULE._discover_default_keychain = lambda: MODULE._bind_keychain(synthetic_keychain)
+        MODULE._dedicated_keychain = lambda: MODULE._bind_keychain(synthetic_keychain)
 
         python = CLT_PYTHON_EXECUTABLE
         selectors = ({"kind": "file", "path": "candidate.py"},)
@@ -2448,7 +2487,7 @@ def two_turn_native_boundary_enforces_stage_isolation_and_settings_reuse() -> bo
             raise AssertionError("ambient file was modified")
         return True
     finally:
-        MODULE._discover_default_keychain = original_discovery
+        MODULE._dedicated_keychain = original_discovery
         shutil.rmtree(root)
 
 
@@ -2487,9 +2526,13 @@ check("native policy literal denies preserve mutable siblings, logs, crashes and
 check("exact policy rebind rejects identical replacement inode, hardlink and HOME replacement", provider_settings_exact_rebind_rejects_aliases_and_replacement)
 check("default keychain identity is metadata-only and allows content churn only", keychain_binding_is_metadata_only_and_rebinds_identity)
 check("Keychain read authority is helper-only and self-verification has none", keychain_policy_is_helper_only_and_self_verify_never_discovers)
-check("synthetic default-Keychain locator is closed, bounded, and strict", keychain_locator_is_bounded_closed_and_strict)
-check("locator cleanup reaps descendants after leader exit on timeout and apparent success", keychain_locator_reaps_leaderless_descendants)
-check("locator cleanup diagnostics report sanitized condition labels on failure", keychain_locator_reap_diagnostics_report_sanitized_conditions)
+check("dedicated Keychain path derives from the passwd HOME and never names the login keychain", dedicated_keychain_path_comes_from_passwd_home_only)
+check("missing dedicated Keychain fails closed with its path before any job state", missing_dedicated_keychain_fails_closed_before_job_state)
+check("locked dedicated Keychain fails closed with the unlock command before any job state", locked_dedicated_keychain_fails_closed_with_the_unlock_command)
+check("unlocked dedicated Keychain is the only bound Keychain and a later lock is caught at confirm", unlocked_dedicated_keychain_is_the_only_bound_keychain)
+check("Keychain lock probe parses status and fails closed on garbage, errors and timeouts", keychain_lock_probe_reads_status_and_fails_closed)
+check("Keychain preflight CLI exits 27 when unavailable and prepares the sign-in HOME when ready", keychain_cli_fails_closed_with_exit_27_and_prepares_the_login_home)
+check("native-keychain-login refuses unavailable Keychains and cleans up its private HOME", native_keychain_login_helper_uses_a_private_throwaway_home)
 check("private Keychain preference publication failures are sanitized before launch", private_keychain_publication_failures_are_sanitized)
 check("self-verification skips all Keychain discovery and preference state", self_verify_never_runs_keychain_discovery)
 check("unsupported hosts fail before creating containment state", unsupported_host_fails_before_creation)

@@ -1890,6 +1890,16 @@ else
     bad "stored self-verification continue routing boundary"
 fi
 
+# Native isolation needs the dedicated keychain; run native cases against a skill copy whose
+# keychain seams name a synthetic file (a ".locked" sibling marks it locked).
+NATIVE_KEYCHAIN_DIR="$(cd "$TMP" && pwd -P)/native-keychain"
+NATIVE_KEYCHAIN="$NATIVE_KEYCHAIN_DIR/agy-worker-provider.keychain-db"
+mkdir -p "$NATIVE_KEYCHAIN_DIR"
+chmod 0700 "$NATIVE_KEYCHAIN_DIR"
+printf 'synthetic keychain metadata\n' > "$NATIVE_KEYCHAIN"
+chmod 0600 "$NATIVE_KEYCHAIN"
+NATIVE_FIXTURE_WORKER="$(python3 -I -S -B "$ROOT/tests/native_keychain_fixture.py" "$TMP/native-skill" "$NATIVE_KEYCHAIN")"
+
 printf 'normal scoped root target\n' > "$TMP/repo/normal-root-target.txt"
 NORMAL_ROOT_SCOPE="$TMP/normal-root.scope.json"
 NORMAL_ROOT_PROVIDER_HOME="$LOGS_REAL/normal-root-prompt/provider-home"
@@ -1912,6 +1922,7 @@ NORMAL_ROOT_SESSION_TRANSMISSION_SHA="$(
 )"
 printf 'mode-bound scoped approval mismatch\n' | \
     FAKE_CALLED_FILE="$TMP/normal-root-mode-mismatch.called" \
+    AGY_TEST_WORKER="$NATIVE_FIXTURE_WORKER" \
     run_worker normal-root-mode-mismatch --workflow task --max-cycles 1 --provider-isolation native \
     --provider-scope "$NORMAL_ROOT_SCOPE" --approve-transmission-sha "$NORMAL_ROOT_SESSION_TRANSMISSION_SHA" \
     > "$TMP/normal-root-mode-mismatch.out" 2> "$TMP/normal-root-mode-mismatch.err"
@@ -1933,6 +1944,7 @@ printf 'normal scoped root prompt\n' | \
     FAKE_HOME_OBSERVED_FILE="$NORMAL_ROOT_PROVIDER_HOME/home" \
     HOME="$NORMAL_ROOT_CALLER_HOME" \
     FAKE_EDIT_FROM_BOUND_ROOT=normal-root-target.txt FAKE_EDIT_CONTENT='normal scoped changed' \
+    AGY_TEST_WORKER="$NATIVE_FIXTURE_WORKER" \
     run_worker normal-root-prompt \
     --workflow task --max-cycles 1 --provider-isolation native \
     --provider-scope "$NORMAL_ROOT_SCOPE" --approve-transmission-sha "$NORMAL_ROOT_TRANSMISSION_SHA" \
@@ -2608,6 +2620,7 @@ native_capability_sha="$("$WORKER" transmission-preview --task fixture --workdir
     --provider-scope "$native_capability_scope" --provider-isolation native --format json \
     | python3 -B -c 'import json,sys; print(json.load(sys.stdin)["transmission_sha256"])')"
 printf 'must remain unread\n' | AGY_TEST_WORKDIR="$CORE_WORKDIR" FAKE_HELP_MODE=missing---sandbox \
+    AGY_TEST_WORKER="$NATIVE_FIXTURE_WORKER" \
     run_worker required-native --workflow task --provider-isolation native \
     --provider-scope "$native_capability_scope" --approve-transmission-sha "$native_capability_sha" \
     > "$TMP/required-native.out" 2> "$TMP/required-native.err"
@@ -2616,6 +2629,30 @@ if [[ "$rc" == 8 && ! -e "$TMP/logs/required-native" && ! -s "$TMP/required-nati
         && grep -Fq -- '--sandbox' "$TMP/required-native.err"; then
     ok "native requires sandbox capability before task consumption or containment"
 else bad "native capability boundary (exit $rc)"; fi
+mv "$NATIVE_KEYCHAIN" "$NATIVE_KEYCHAIN.away"
+printf 'must remain unread\n' | AGY_TEST_WORKDIR="$CORE_WORKDIR" \
+    AGY_TEST_WORKER="$NATIVE_FIXTURE_WORKER" \
+    run_worker native-keychain-missing --workflow task --provider-isolation native \
+    --provider-scope "$native_capability_scope" --approve-transmission-sha "$native_capability_sha" \
+    > "$TMP/native-keychain-missing.out" 2> "$TMP/native-keychain-missing.err"
+native_keychain_rc=$?
+mv "$NATIVE_KEYCHAIN.away" "$NATIVE_KEYCHAIN"
+{ [[ ! -e "$TMP/logs/native-keychain-missing" && ! -s "$TMP/native-keychain-missing.worker-calls" ]] \
+    && grep -Fq -- "$NATIVE_KEYCHAIN" "$TMP/native-keychain-missing.err" \
+    && grep -Fq -- 'TROUBLESHOOTING.md' "$TMP/native-keychain-missing.err"; } || native_keychain_rc=1
+expect_exit "native missing dedicated keychain fails closed before task consumption or job creation" 27 "$native_keychain_rc"
+: > "$NATIVE_KEYCHAIN.locked"
+printf 'must remain unread\n' | AGY_TEST_WORKDIR="$CORE_WORKDIR" \
+    AGY_TEST_WORKER="$NATIVE_FIXTURE_WORKER" \
+    run_worker native-keychain-locked --workflow task --provider-isolation native \
+    --provider-scope "$native_capability_scope" --approve-transmission-sha "$native_capability_sha" \
+    > "$TMP/native-keychain-locked.out" 2> "$TMP/native-keychain-locked.err"
+native_keychain_rc=$?
+rm -f "$NATIVE_KEYCHAIN.locked"
+{ [[ ! -e "$TMP/logs/native-keychain-locked" && ! -s "$TMP/native-keychain-locked.worker-calls" ]] \
+    && grep -Fq -- 'security unlock-keychain ~/Library/Keychains/agy-worker-provider.keychain-db' \
+        "$TMP/native-keychain-locked.err"; } || native_keychain_rc=1
+expect_exit "native locked dedicated keychain fails closed before task consumption or job creation" 27 "$native_keychain_rc"
 rm -f "$native_capability_target" "$native_capability_scope"
 
 for route in default direct; do

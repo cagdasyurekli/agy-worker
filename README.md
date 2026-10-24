@@ -154,7 +154,9 @@ there is no Node runtime, MCP daemon or shared controller service.
 - `session` mode retains normal user host access. Selected-content staging limits
   what is staged and reconciled; it is not host isolation.
 - Explicit native mode requires supported macOS scoped containment and has documented
-  network/Keychain exposure. It never falls back to session. See
+  network/Keychain exposure. It never falls back to session and needs a
+  [dedicated agy keychain](skills/agy-worker/references/TROUBLESHOOTING.md#dedicated-agy-keychain-for-native-isolation)
+  set up once. See
   [execution boundaries](skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#execution-boundaries).
 - Each launch checks required AGY capabilities and the executable binding. Version
   text is diagnostic; readiness does not prove authentication, model availability,

@@ -176,6 +176,9 @@ session from working. Run with the host permissions already approved for the tas
 Native containment also needs a host that permits nested Seatbelt. A Codex
 `workspace-write` host denied `sandbox_apply` in a live attempt; keep the requested
 native mode and resolve the host prerequisite instead of falling back to session.
+Native mode also needs a one-time
+[dedicated agy keychain](../skills/agy-worker/references/TROUBLESHOOTING.md#dedicated-agy-keychain-for-native-isolation);
+`doctor` does not check it.
 Observation (Codex desktop, 2026-10-14–16): refusals for agy's `~/.gemini` writes,
 language-server socket and nested `sandbox-exec` were resolved by approving the
 exact refused command; this recorded host behavior is not a guarantee for another

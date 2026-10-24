@@ -1019,6 +1019,29 @@ def run(context: dict[str, object]) -> None:
         narrow_provider_launch_is_gitless_and_reconciles_exact_bytes_and_modes,
     )
 
+    def unavailable_dedicated_keychain_stops_the_controller_before_the_provider() -> None:
+        """A missing or locked keychain is a host prerequisite (exit 27) with an actionable stderr."""
+        if scoped_controller_uses_portable_fixture():
+            return
+        from unittest import mock
+        _repo, job, bin_dir, sentinel, _payload, _tool = scoped_controller_fixture(
+            "keychain-unavailable", "positive",
+        )
+        unlock = "security unlock-keychain ~/Library/Keychains/agy-worker-provider.keychain-db"
+        refusal = MODULE.CONTAINMENT.KeychainUnavailableError(f"keychain is locked; unlock it with: {unlock}")
+        with mock.patch.object(MODULE.CONTAINMENT, "prepare_contained_launch", side_effect=refusal):
+            rc = run_scoped_controller(job, bin_dir)
+        state, _raw, _sha = MODULE.load_state(job)
+        assert rc == MODULE.EXIT_BY_REASON["native_host_sandbox_unavailable"] == 27
+        assert (state["status"], state["reason"]) == ("failed", "native_host_sandbox_unavailable")
+        assert unlock in (job / "stderr.txt").read_text(encoding="utf-8")
+        assert not sentinel.exists()
+
+    check(
+        "unavailable dedicated keychain stops the controller with the native host prerequisite exit",
+        unavailable_dedicated_keychain_stops_the_controller_before_the_provider,
+    )
+
     def scoped_init_cwd_binds_the_actual_launch_directory_when_present() -> None:
         """Optional provider cwd evidence is exact when the protocol supplies it."""
         repo, job, bin_dir, sentinel, _payload, _tool = scoped_controller_fixture(

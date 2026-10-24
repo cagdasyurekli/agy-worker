@@ -344,6 +344,8 @@ CASE_LABELS: dict[str, tuple[str, ...]] = {
         'cli effort requires its capability before task consumption',
         'environment effort requires its capability before task consumption',
         'native requires sandbox capability before task consumption or containment',
+        'native missing dedicated keychain fails closed before task consumption or job creation (exit 27)',
+        'native locked dedicated keychain fails closed before task consumption or job creation (exit 27)',
         'non-semver diagnostic permits default launch with literal caller choices',
         'non-semver diagnostic permits direct launch with literal caller choices',
         'standalone base probe uses its own effort context',
@@ -624,6 +626,7 @@ CASE_LABELS: dict[str, tuple[str, ...]] = {
         'cleanup failure is visible and fail closed',
         'narrow stage rejects unselected writes and reconciles an authorized replacement',
         'narrow launch stays Gitless while opt-in repair binds descendants and rejects external drift',
+        'unavailable dedicated keychain stops the controller with the native host prerequisite exit',
         'optional provider init cwd accepts only the exact canonical launch directory',
         'scoped files_changed must declare each reconciled mutation exactly once',
         'scoped absolute stage declarations reconcile only exact canonical stage children',
@@ -869,6 +872,8 @@ SHELL_DECLARATIONS: dict[str, tuple[tuple[str, str, str], ...]] = {
         ('dispatcher-a', 'assertion', 'else bad "$effort_source effort capability boundary (exit $rc)"; fi'),
         ('dispatcher-a', 'assertion', 'ok "native requires sandbox capability before task consumption or containment"'),
         ('dispatcher-a', 'assertion', 'else bad "native capability boundary (exit $rc)"; fi'),
+        ('dispatcher-a', 'assertion', 'expect_exit "native missing dedicated keychain fails closed before task consumption or job creation" 27 "$native_keychain_rc"'),
+        ('dispatcher-a', 'assertion', 'expect_exit "native locked dedicated keychain fails closed before task consumption or job creation" 27 "$native_keychain_rc"'),
         ('dispatcher-a', 'loop', 'for route in default direct; do'),
         ('dispatcher-a', 'assertion', 'then ok "non-semver diagnostic permits $route launch with literal caller choices"'),
         ('dispatcher-a', 'assertion', 'else bad "non-semver diagnostic $route launch boundary"; fi'),
@@ -1301,8 +1306,8 @@ def all_case_ids() -> tuple[str, ...]:
 
 def validate_case_inventory() -> None:
     identities = all_case_ids()
-    if len(identities) != 410 or len(set(identities)) != len(identities):
-        raise ValueError("case inventory must contain 410 unique assigned identities")
+    if len(identities) != 413 or len(set(identities)) != len(identities):
+        raise ValueError("case inventory must contain 413 unique assigned identities")
     if set(CASE_LABELS) != {stage.id for stage in STAGES if stage.id.startswith("dispatcher-")}:
         raise ValueError("case inventory assignment mismatch")
     for stage_id, labels in CASE_LABELS.items():

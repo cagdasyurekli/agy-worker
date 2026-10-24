@@ -67,11 +67,12 @@ private AGY settings file. It copies no user settings and grants no commands,
 URLs, MCP tools, or ambient paths; the native filesystem boundary remains in force.
 
 The exact `/usr/bin/security` helper shares the reviewed Keychain service access
-and can read the bound default Keychain file. This file rule grants no provider,
-other-executable, directory, write, or additional network access. Before native
-launch, the driver reads only the default Keychain locator and file identity, then
-creates a minimal locator preference in the private provider HOME; it does not copy
-owner preferences or credentials. The existing service permission cannot be limited
+and can read the dedicated agy Keychain file
+(`~/Library/Keychains/agy-worker-provider.keychain-db`), never the login Keychain.
+This file rule grants no provider, other-executable, directory, write, or additional
+network access. Before native launch, the driver reads only that file's identity and
+lock state, then creates a minimal locator preference in the private provider HOME; it
+does not copy owner preferences or credentials. The existing service permission cannot be limited
 to one token or operation; disclose broader same-user Keychain read/change/delete
 authority and the helper's exact file access in the initial approval package.
 The stage is writable, while reconciliation enforces its approved write subset.

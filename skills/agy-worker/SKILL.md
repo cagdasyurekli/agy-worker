@@ -74,9 +74,8 @@ effort stay caller-owned. Child environment opt-ins require approval per variabl
 name. Installation grants no provider or Git authority.
 
 Read [Security and compatibility](references/SECURITY_AND_COMPATIBILITY.md) before a first
-live dispatch or changing execution exposure. It owns native network/Keychain limits,
-verifier environments and no-follow boundaries. AGY 1.4.2 was observed starting workspace
-MCP commands from `.agents/`, `_agents/`, `.agent/` and `_agent/`. Preview rejects known
+live dispatch or changing execution exposure. It owns native network/Keychain limits (native needs a one-time [dedicated agy keychain](references/TROUBLESHOOTING.md#dedicated-agy-keychain-for-native-isolation)),
+verifier environments and no-follow boundaries. AGY 1.4.2 was observed starting workspace MCP commands from `.agents/`, `_agents/`, `.agent/` and `_agent/`. Preview rejects known
 executable configuration under all four roots. Each launch checks actual cwd ancestry in
 both modes. Prefer scoped mode excluding it, then a disposable worktree without it;
 ancestors must be clear. Session mode can start enabled user-plugin MCP servers and run
