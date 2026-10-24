@@ -75,7 +75,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 60}
+GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 61}
 
 
 def selected_group(arguments: list[str]):
@@ -287,7 +287,8 @@ def run_controller(job: Path, bin_dir: Path) -> int:
             keychain.chmod(0o600)
         return MODULE.CONTAINMENT._bind_keychain(keychain)
     try:
-        with mock.patch.object(MODULE.CONTAINMENT, "_discover_default_keychain", side_effect=fixture_keychain):
+        with mock.patch.object(MODULE.CONTAINMENT, "_dedicated_keychain", side_effect=fixture_keychain), \
+                mock.patch.object(MODULE.CONTAINMENT, "_keychain_is_unlocked", return_value=True):
             result = MODULE.controller(job, descriptor)
         descriptor = -1
         return result

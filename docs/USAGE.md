@@ -65,7 +65,9 @@ for the current format policy and authoritative runtime constants. Older jobs ar
 rejected; finish or discard them with the release that created them, without migration.
 
 Use `--provider-isolation native` for scoped macOS containment with
-private HOME/TMP. Native mode never falls back to session mode. Include its bound agy
+private HOME/TMP. Native mode never falls back to session mode and needs the
+[dedicated agy keychain](../skills/agy-worker/references/TROUBLESHOOTING.md#dedicated-agy-keychain-for-native-isolation)
+(one-time setup; a missing or locked one exits 27 before launch). Include its bound agy
 image's TCP 443, local resolver, TCP listener, and Keychain exposure in the initial
 approval package. See [Security and compatibility](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md)
 for the `/usr/bin/security` helper's shared Keychain authority, which cannot be
