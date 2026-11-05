@@ -3047,10 +3047,12 @@ required = {
         "Whole-worktree dispatch remains an explicit `--approve-whole-worktree LAUNCH_APPROVAL_SHA256` exception",
         "--provider-isolation session",
         "never falls back to session mode",
+        "`--provider-isolation session|native`; there is no default.",
     ),
     "SECURITY.md": (
         "Prefer `--provider-scope` for bounded jobs",
         "Whole-worktree dispatch remains an explicit manifest-bound exception",
+        "`--provider-isolation session|native`; there is no default.",
     ),
     "AGENTS.md": (
         "Prefer scoped mode: `--provider-scope` plus full `launch_approval_sha256`.",
