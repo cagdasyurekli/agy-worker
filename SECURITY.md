@@ -40,9 +40,9 @@ raw logs, and controller state from all approved content. Installation alone is 
 provider-transmission consent; scope approval grants no execution, Git, acceptance, or
 publication authority.
 
-A disposable worktree alone is not a security sandbox. New jobs default to
-`--provider-isolation session`: AGY uses the caller's existing session and normal
-filesystem/network authority. Scoped staging selects task inputs and constrains
+A disposable worktree alone is not a security sandbox. Every new job must pass
+`--provider-isolation session|native`; there is no default. `session`: AGY uses the
+caller's existing session and normal filesystem/network authority. Scoped staging selects task inputs and constrains
 reconciliation; it does not prevent access elsewhere on the host. The initial
 approval must disclose this execution mode alongside the selected content.
 Explicit `--provider-isolation native` retains macOS containment with private

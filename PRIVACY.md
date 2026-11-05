@@ -31,9 +31,9 @@ Optional `--provider-scope FILE --approve-transmission-sha SHA256` binds exact r
 read entries, their selected-content digest, and a write subset, then copies only
 selected entries into a fresh owner-private mode-`0700` Gitless provider cwd. The
 controller still locally enumerates and validates the complete worktree path/kind
-surface and scope entries before staging. New jobs default to
-`--provider-isolation session`, using the caller's existing AGY session and normal
-HOME. AGY retains normal user filesystem and network authority: selection and
+surface and scope entries before staging. Every new job must pass
+`--provider-isolation session|native`; there is no default. `session` uses the
+caller's existing AGY session and normal HOME. AGY retains normal user filesystem and network authority: selection and
 reconciliation do not enforce a host read/write boundary. Disclose this mode in the
 initial approval alongside the task and selected content; the job cannot silently
 switch modes later.
