@@ -292,7 +292,7 @@ def run(context: dict[str, object]) -> None:
 
     for unapproved_option in (
         "--dangerously-skip-permissions", "--log-file", "--continue", "-c",
-        "--prompt-interactive", "-i",
+        "--prompt-interactive", "-i", "--settings", "--remote-agent", "--prompt", "-p",
     ):
         check("current commands reject unapproved option " + unapproved_option,
               lambda flag=unapproved_option: current_command_rejects_unapproved_option(flag))

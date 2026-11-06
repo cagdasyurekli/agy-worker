@@ -956,8 +956,8 @@ def _digest_binds_fixture_producer() -> bool:
 
 
 check("fixture producer structure changes inventory digest", _digest_binds_fixture_producer)
-check("413 explicit case identities are unique and assigned", lambda: (
-    len(STAGE_MODULE.all_case_ids()) == len(set(STAGE_MODULE.all_case_ids())) == 413))
+check("417 explicit case identities are unique and assigned", lambda: (
+    len(STAGE_MODULE.all_case_ids()) == len(set(STAGE_MODULE.all_case_ids())) == 417))
 check("all seven receipts stay within the existing fixed artifact size bound", lambda: all(
     len(MODULE.canonical_bytes(receipt)) + 1 <= MODULE.MAX_RECEIPT_BYTES for receipt in valid_aggregate))
 

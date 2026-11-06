@@ -618,6 +618,10 @@ CASE_LABELS: dict[str, tuple[str, ...]] = {
         'current commands reject unapproved option -c',
         'current commands reject unapproved option --prompt-interactive',
         'current commands reject unapproved option -i',
+        'current commands reject unapproved option --settings',
+        'current commands reject unapproved option --remote-agent',
+        'current commands reject unapproved option --prompt',
+        'current commands reject unapproved option -p',
         'actual dispatch launch authority rejects auto mode split and equals',
         'linked preview SHA authorizes exact V11 initial and prelaunch scope binding',
         'mid-write materialization failure removes the partial private stage',
@@ -1306,8 +1310,8 @@ def all_case_ids() -> tuple[str, ...]:
 
 def validate_case_inventory() -> None:
     identities = all_case_ids()
-    if len(identities) != 413 or len(set(identities)) != len(identities):
-        raise ValueError("case inventory must contain 413 unique assigned identities")
+    if len(identities) != 417 or len(set(identities)) != len(identities):
+        raise ValueError("case inventory must contain 417 unique assigned identities")
     if set(CASE_LABELS) != {stage.id for stage in STAGES if stage.id.startswith("dispatcher-")}:
         raise ValueError("case inventory assignment mismatch")
     for stage_id, labels in CASE_LABELS.items():

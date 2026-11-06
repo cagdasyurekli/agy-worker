@@ -62,7 +62,7 @@ def worktree_function_source(name: str) -> str:
 sys.path.insert(0, str(ROOT / "scripts"))
 from ci_stages import CASE_LABELS, case_identity, emit_case_completion  # noqa: E402 -- isolated CI inventory path
 
-EXPECTED_CHECKS = 160
+EXPECTED_CHECKS = 164
 DECLARED_LABELS: list[str] = []
 COMPLETED_LABELS: list[str] = []
 CANONICAL_LABELS = tuple(label for part in "abc" for label in CASE_LABELS[f"dispatcher-remediation-{part}"])
@@ -75,7 +75,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 61}
+GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 65}
 
 
 def selected_group(arguments: list[str]):
@@ -2589,6 +2589,21 @@ with tempfile.TemporaryDirectory() as temporary:
             ("timeout-denied", [], "valid", 0, timeout, "valid", "permission_required"),
             ("timeout-nearmiss", absent, "valid", 0, timeout + b".", "valid", None),
             ("timeout-wrong-bound", absent, "valid", 0, timeout.replace(b"20s", b"21s"), "valid", None),
+            # AGY 1.5 print timeout: ERROR terminal without a report, exit 3.
+            ("print-timeout", absent, "missing", 3, timeout, "valid", "provider_timeout",
+                {"status": "ERROR", "finished_reason": "print_timeout"}),
+            ("print-timeout-no-reason", absent, "missing", 3, timeout, "valid", "invalid_envelope",
+                {"status": "ERROR"}),
+            ("print-timeout-other-reason", absent, "missing", 3, timeout, "valid", "invalid_envelope",
+                {"status": "ERROR", "finished_reason": "error"}),
+            ("print-timeout-nonstring-reason", absent, "missing", 3, timeout, "valid", "invalid_envelope",
+                {"status": "ERROR", "finished_reason": ["print_timeout"]}),
+            ("print-timeout-no-line", absent, "missing", 3, b"", "valid", "invalid_envelope",
+                {"status": "ERROR", "finished_reason": "print_timeout"}),
+            ("print-timeout-wrong-bound", absent, "missing", 3, timeout.replace(b"20s", b"21s"), "valid", "invalid_envelope",
+                {"status": "ERROR", "finished_reason": "print_timeout"}),
+            ("print-timeout-success", absent, "missing", 3, timeout, "valid", "invalid_envelope",
+                {"status": "SUCCESS", "finished_reason": "print_timeout"}),
             ("empty", absent, "missing", 0, b"", "empty", "empty_output"),
             ("duplicate-key", [], "valid", 0, b"", "duplicate-key", "invalid_envelope"),
             ("duplicate-terminal", [], "valid", 0, b"", "duplicate-terminal", "invalid_envelope"),
@@ -2597,7 +2612,7 @@ with tempfile.TemporaryDirectory() as temporary:
             ("invalid-json", [], "valid", 0, b"", "invalid-json", "invalid_envelope"),
             ("conversation-mismatch", [], "valid", 0, b"", "conversation-mismatch", "status_unavailable"),
         ]
-        for label, denial, report_kind, provider_rc, stderr, framing, expected in cases:
+        for label, denial, report_kind, provider_rc, stderr, framing, expected, *extra in cases:
             repo = root / f"policy-{label}-repo"; repo.mkdir(); initialize_linked_fixture(repo)
             job = root / f"policy-{label}-job"; job.mkdir(mode=0o700)
             bin_dir = root / f"policy-{label}-bin"; bin_dir.mkdir()
@@ -2606,6 +2621,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 terminal["structured_output"] = report() if report_kind == "valid" else {"status": "invalid"}
             if denial is not absent:
                 terminal["denied_actions"] = denial
+            terminal.update(extra[0] if extra else {})
             if framing == "conversation-mismatch":
                 terminal["conversation_id"] = "conversation-other"
             init = json.dumps({"event": "init", "init": {}, "conversation_id": "conversation-1"}).encode() + b"\n"
@@ -2636,6 +2652,8 @@ with tempfile.TemporaryDirectory() as temporary:
             assert (actual, state["reason"]) == (expected_code, expected), (label, actual, state["reason"])
             candidate = report_kind == "valid" and framing == "valid"
             assert state["candidate_recognized"] == state["result_available"] == candidate, label
+            if label == "print-timeout":
+                assert state["failure_stage"] is None and state["provider_terminal_status"] == "error", state
             if candidate:
                 _command, raw = MODULE._bound_current_candidate(job, state)
                 assert json.loads(raw)["summary"] == report()["summary"]
