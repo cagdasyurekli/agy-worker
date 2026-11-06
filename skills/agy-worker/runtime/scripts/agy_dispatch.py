@@ -768,7 +768,7 @@ def load_command(job: Path) -> tuple[dict[str, Any], bytes, tuple[int, int, int,
             raise DispatchError("dispatch argv contains a retired feature")
         if option in {
             "--dangerously-skip-permissions", "--log-file", "--continue", "-c",
-            "--prompt-interactive", "-i",
+            "--prompt-interactive", "-i", "--settings", "--remote-agent", "--prompt", "-p",
         }:
             raise DispatchError("dispatch argv contains an unapproved execution option")
         if "=" not in argument and option in {
@@ -5792,6 +5792,19 @@ def _observe_controller_terminal(
                     outcome.reason = "permission_required"
                     if outcome.limit_kind not in {"hard", "max-runtime"}:
                         outcome.limit_kind = None
+                elif (
+                    outcome.result_binding is None
+                    and outcome.reason is None
+                    and outcome.outer_status == "ERROR"
+                    and outcome.failure_stage == "missing_structured_output"
+                    and (terminal := _terminal_result(streams.stream_path, strict=True)) is not None
+                    and terminal.get("finished_reason") == "print_timeout"
+                    and _has_reviewed_provider_timeout(
+                        streams.stderr_path, binding.command["agy_version"], binding.command["max_seconds"],
+                    )
+                ):
+                    # AGY 1.5 reports its own print timeout as an ERROR result without a report.
+                    outcome.reason, outcome.limit_kind, outcome.failure_stage = "provider_timeout", None, None
                 elif outcome.result_binding is None and outcome.reason is None:
                     outcome.reason = "invalid_envelope"
                 elif (
