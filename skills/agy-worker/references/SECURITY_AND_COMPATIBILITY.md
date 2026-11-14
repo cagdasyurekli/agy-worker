@@ -138,19 +138,28 @@ global/plugin hooks. `tests/test-provider-containment.py` cases
 local mechanism; they are not a live AGY 1.3.5 native plugin or hook negative canary.
 
 For each attempt, the controller derives the owning main worktree from the bound
-workdir's Git common directory and compares a bounded source observation against
-one immutable baseline per job, before later launches and before admitting a report
-or retaining an inherited candidate. No-candidate cancellations and failures record
+workdir's Git common directory and compares a bounded source observation against one
+immutable baseline per job, before later launches and before admitting a report or
+retaining an inherited candidate. No-candidate cancellations and failures record
 `deferred`; their next resume/continue/repair/restart must pass the comparison. A
 cancelled repair also records `deferred` while keeping its inherited candidate; result,
-finalize, verification copy, self-verification, and any relaunch compare first. The observation binds HEAD, index, tracked paths, and non-ignored
-untracked paths. Clean tracked files use Git object IDs plus metadata; dirty tracked
-and non-ignored untracked files are hashed from bytes. Ignored untracked files and
-other host paths are excluded. A detected change, including an owner edit, blocks
-candidate recognition and reuse; inspect the source and start a new job. The finite
-before/after observations do not detect changes wholly reverted between them and do
-not confine writes. A verified main-workdir helper skips the comparison; public
-transmission preview still requires a linked disposable worktree.
+finalize, verification copy, self-verification, and any relaunch compare first. The
+observation binds HEAD, index, tracked paths, non-ignored untracked paths, and the
+repository's registered worktrees (path and branch). Clean tracked files use Git object
+IDs plus metadata; dirty tracked and non-ignored untracked files are hashed from bytes.
+Ignored untracked files and other host paths are excluded. A detected change, including
+an owner edit, blocks candidate recognition and reuse; inspect the source and start a
+new job. The finite before/after observations do not detect changes wholly reverted
+between them and do not confine writes. AGY 1.5.9 subagents asked for an isolated copy
+were observed registering a new linked worktree and a `subagent-*` branch in the
+workdir's repository, with the copy under `$HOME/.gemini/antigravity-cli/worktrees`; the
+guard reports that registration after the fact as `source_checkout_changed`, or as
+`source_checkout_guard_unavailable` when its directory is already gone (a prunable
+registration) or the registration changed during the observation. Another job adding or
+removing its own worktree in the same repository during an attempt is reported the same
+way. A new branch without a registered worktree is not observed. A verified main-workdir
+helper skips the comparison; public transmission preview still requires a linked
+disposable worktree.
 
 The observation caps paths, listings, directly read bytes, and elapsed work. If the
 prelaunch observation fails, the provider is not started; if the post-exit observation
@@ -239,6 +248,17 @@ Each launch, including recovery, uses bounded local version/help capability chec
 and rechecks the same executable immediately before launch. Missing flags or required
 mode/output values reject. Version text is diagnostic only; help does not certify
 authentication, model/backend identity, effective mode semantics or task quality.
+
+Bounded synthetic live runs of AGY 1.5.9 (2026-11-14) observed: an `invoke_subagent`
+subagent used the caller's `--model` (one observation; `define_subagent` and swarm model
+overrides were not tested); `run_workflow` needs command permission, so headless runs
+auto-deny it and report `denied_actions` (`permission_required`); a Gitless workspace's
+isolated subagent copy was written under `$HOME/.gemini/antigravity-cli/worktrees`,
+which native's private HOME contains and session mode does not; resumed conversations
+followed the `--mode` given on each launch; and `--mode plan` has no effect when slash
+expansion is disabled, which is why plan launches keep expansion enabled for their fixed
+staged prompt. The AGY 1.5.7 Auto default was not observable because Auto was
+unavailable for the test account; every launch passes `--mode` explicitly.
 
 Run `"$PIPELINE/ground-truth.sh"` before changing AGY-facing claims. Its default phase
 is version/help only; `--account` explicitly inspects models, agents, plugins and

@@ -585,6 +585,7 @@ CASE_LABELS: dict[str, tuple[str, ...]] = {
         'source guard checks exception reaps and blocks orphan or transplanted baselines',
         'source guard uses fixed hardened Git rejects effective filters and never follows content parents',
         'source guard bounds metadata and listings without rereading clean large tracked bytes',
+        'source guard detects a worktree registered from inside the job worktree',
         'source guard schema veto rejects forged authority and old state without recovery writes',
         'initial resume restart and continue rebind queued worktree before provider Popen',
         'empty directory create remove and metadata changes bind snapshot digest and entries',
@@ -1310,8 +1311,8 @@ def all_case_ids() -> tuple[str, ...]:
 
 def validate_case_inventory() -> None:
     identities = all_case_ids()
-    if len(identities) != 417 or len(set(identities)) != len(identities):
-        raise ValueError("case inventory must contain 417 unique assigned identities")
+    if len(identities) != 418 or len(set(identities)) != len(identities):
+        raise ValueError("case inventory must contain 418 unique assigned identities")
     if set(CASE_LABELS) != {stage.id for stage in STAGES if stage.id.startswith("dispatcher-")}:
         raise ValueError("case inventory assignment mismatch")
     for stage_id, labels in CASE_LABELS.items():

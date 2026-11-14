@@ -122,7 +122,15 @@ pair. Check `agy models` and start a new job; the controller never substitutes a
 
 `source_checkout_changed` (28) / `source_checkout_guard_unavailable` (29): the main
 source checkout changed since the job baseline, or could not be observed within limits.
-No candidate or repair reuse is available; inspect the source checkout and start a new job.
+No candidate or repair reuse is available; inspect the source checkout and start a new
+job. A new or removed worktree registration, such as one an AGY subagent creates,
+reports 28 while its directory exists; if the directory is already gone (a prunable
+registration) or the registration changed during the observation, it reports 29. Inspect
+with `git worktree list`; after inspection remove an unwanted registration with
+`git worktree remove <path>` (or `git worktree prune` when its directory is gone) and
+its branch with `git branch -D <branch>`. Another job adding or removing its own
+worktree in the same repository during an attempt has the same effect; run such jobs one
+at a time per repository.
 
 ## Scoped native launch is unavailable
 

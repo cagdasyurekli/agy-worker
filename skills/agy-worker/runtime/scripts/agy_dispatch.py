@@ -340,8 +340,9 @@ SOURCE_GUARD_MESSAGES = {
     ),
     "source_checkout_guard_unavailable": (
         "The source checkout guard could not complete within its bounded checks or its source binding is unavailable. "
-        "Inspect the source checkout and its Git configuration; reduce large dirty or non-ignored untracked content, "
-        "or use a smaller dedicated source checkout, then start a new job."
+        "Inspect the source checkout, its Git configuration and `git worktree list` (a registration whose directory "
+        "is missing or prunable, or one added or removed during the observation, also stops the guard); reduce large "
+        "dirty or non-ignored untracked content, or use a smaller dedicated source checkout, then start a new job."
     ),
 }
 

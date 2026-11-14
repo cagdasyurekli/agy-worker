@@ -75,7 +75,7 @@ PORTABLE_SCOPED_FIXTURE = os.environ.get(
 ) == "1"
 # The prior partition labels were transposed; keep these explicit inventories
 # synchronized with the canonical grouped and ungrouped suite runs.
-GROUP_CHECKS = {"core": 81, "runtime": 19, "recovery": 65}
+GROUP_CHECKS = {"core": 81, "runtime": 20, "recovery": 65}
 
 
 def selected_group(arguments: list[str]):
