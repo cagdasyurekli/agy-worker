@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     root: Path = cast(Path, ...)
     def run_controller(job: Path, bin_dir: Path) -> int: ...
     import shlex
+    import shutil
     import signal
     import subprocess
     import sys
@@ -3300,7 +3301,7 @@ def run(context: dict[str, object]) -> None:
         origin, _candidate, job, _bin, _calls = source_fixture("orphan")
         observed = MODULE._observe_source_checkout(MODULE.load_state(job)[0]["workdir"])
         state, raw, _sha = MODULE.load_state(job)
-        guard = {"algorithm": "source-checkout-v1", "attempt": 1, "status": "armed", "before_sha256": observed["sha256"], "after_sha256": None,
+        guard = {"algorithm": "source-checkout-v2", "attempt": 1, "status": "armed", "before_sha256": observed["sha256"], "after_sha256": None,
                  **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
         MODULE.transition(job, state, raw, {"status": "running", "controller_pid": 123, "source_checkout_guard": guard})
         with mock.patch.object(MODULE, "print_control_status"):
@@ -3333,7 +3334,7 @@ def run(context: dict[str, object]) -> None:
         # An unconfirmed process-group exit cannot authorize a post observation.
         observed = MODULE._observe_source_checkout(MODULE.load_state(root / "source-guard-transplant-job")[0]["workdir"])
         binding = MODULE._ControllerBinding(state={"attempt": 1}, command={"workdir": str(root / "source-guard-transplant-candidate")})
-        baseline = {"algorithm": "source-checkout-v1", "attempt": 1, "status": "armed", "before_sha256": observed["sha256"], "after_sha256": None,
+        baseline = {"algorithm": "source-checkout-v2", "attempt": 1, "status": "armed", "before_sha256": observed["sha256"], "after_sha256": None,
                     **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
         execution = MODULE._ProviderExecution(started_mono=1.0, process=mock.Mock(), source_guard_baseline=baseline)
         with mock.patch.object(MODULE, "_observe_source_checkout", side_effect=AssertionError("unreaped provider scanned")):
@@ -3574,6 +3575,38 @@ def run(context: dict[str, object]) -> None:
                     raise AssertionError("hanging or oversized source Git accepted")
             assert time.monotonic() - started < 3.0
     check("source guard bounds metadata and listings without rereading clean large tracked bytes", source_scale_and_race_boundaries)
+
+    def source_registered_worktree_set() -> None:
+        _origin, candidate, _job, _bin, _calls = source_fixture("registrations")
+        observed = MODULE._observe_source_checkout(str(candidate))
+        baseline = {"algorithm": MODULE.CANDIDATE_STATE.SOURCE_CHECKOUT_ALGORITHM, "attempt": 1, "status": "armed",
+                    "before_sha256": observed["sha256"], "after_sha256": None,
+                    **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
+        git = ["/usr/bin/git", "-C", str(candidate), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+        # A commit inside the disposable worktree is the job's own work, not a source change.
+        (candidate / "job.txt").write_text("job\n")
+        subprocess.run([*git, "add", "job.txt"], check=True)
+        subprocess.run([*git, "commit", "-qm", "job"], check=True)
+        assert MODULE._compare_source_baseline(baseline, str(candidate))["status"] == "unchanged"
+        # A subagent registering a new linked worktree and branch changes the shared Git dir.
+        outside = root / "source-guard-registrations-subagent"
+        subprocess.run([*git, "worktree", "add", "-q", "-b", "subagent-x", str(outside), "HEAD"], check=True)
+        assert MODULE._compare_source_baseline(baseline, str(candidate))["status"] == "changed"
+        # Removing a registration that existed at baseline time is also a change.
+        observed = MODULE._observe_source_checkout(str(candidate))
+        baseline = {**baseline, "before_sha256": observed["sha256"], **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
+        subprocess.run([*git, "worktree", "remove", "--force", str(outside)], check=True)
+        assert MODULE._compare_source_baseline(baseline, str(candidate))["status"] == "changed"
+        # A registration whose directory vanished without pruning is unobservable: the guard fails closed.
+        observed = MODULE._observe_source_checkout(str(candidate))
+        baseline = {**baseline, "before_sha256": observed["sha256"], **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
+        gone = root / "source-guard-registrations-gone"
+        subprocess.run([*git, "worktree", "add", "-q", "-b", "subagent-y", str(gone), "HEAD"], check=True)
+        observed = MODULE._observe_source_checkout(str(candidate))
+        baseline = {**baseline, "before_sha256": observed["sha256"], **{key: observed[key] for key in MODULE._SOURCE_BINDING_KEYS}}
+        shutil.rmtree(gone)
+        assert MODULE._compare_source_baseline(baseline, str(candidate))["status"] == "unavailable"
+    check("source guard detects a worktree registered from inside the job worktree", source_registered_worktree_set)
 
     def source_schema_veto_and_old_state() -> None:
         _origin, _candidate, job, bin_dir, _calls = source_fixture("schema", mutations["untracked"])

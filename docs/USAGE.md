@@ -58,7 +58,7 @@ Source-checkout controller reasons and normal result exit codes:
 | Reason | Exit | Status and next step |
 |---|---:|---|
 | `source_checkout_changed` | 28 | The source checkout changed since the job baseline, by the provider or another process. No candidate or repair reuse is available; inspect the source and start a new job. |
-| `source_checkout_guard_unavailable` | 29 | The source observation or binding could not be verified within its limits. Inspect the source checkout and Git configuration, reduce large dirty or non-ignored untracked content, or use a smaller dedicated source checkout before starting a new job. |
+| `source_checkout_guard_unavailable` | 29 | The source observation or binding could not be verified within its limits. Inspect the source checkout and Git configuration, reduce large dirty or non-ignored untracked content, or use a smaller dedicated source checkout before starting a new job. A worktree registration whose directory is missing (prunable), or one added or removed during the observation, also stops the guard; check `git worktree list`. |
 
 See [Retired job formats and flags](PROJECT_WORKFLOW.md#retired-job-formats-and-flags)
 for the current format policy and authoritative runtime constants. Older jobs are

@@ -431,7 +431,7 @@ def git_commit_state(
 
 
 
-SOURCE_CHECKOUT_ALGORITHM = "source-checkout-v1"
+SOURCE_CHECKOUT_ALGORITHM = "source-checkout-v2"
 SOURCE_CHECKOUT_SECONDS = 5.0
 SOURCE_CHECKOUT_PATH_LIMIT = 100000
 SOURCE_CHECKOUT_LIST_LIMIT = 8 * 1024 * 1024
@@ -494,6 +494,8 @@ def _source_binding(
     if not records.endswith(b"\0\0"):
         raise CandidateStateError("source registrations are incomplete")
     registrations: list[Path] = []
+    # Path and branch only: HEAD commits in the job worktree must not trip the guard.
+    registered: list[list[str | None]] = []
     for record in records[:-2].split(b"\0\0"):
         fields = record.split(b"\0")
         if (not fields or not fields[0].startswith(b"worktree ")
@@ -502,6 +504,8 @@ def _source_binding(
         root = Path(fields[0][9:].decode("utf-8", "strict"))
         source_directory_identity(root)
         registrations.append(root)
+        branch = next((f[7:].decode("utf-8", "strict") for f in fields if f.startswith(b"branch ")), None)
+        registered.append([str(root), branch])
     if not registrations or len(set(registrations)) != len(registrations) or workdir not in registrations:
         raise CandidateStateError("source registration is ambiguous")
     source = registrations[0]
@@ -513,7 +517,8 @@ def _source_binding(
             or (workdir == source) != (work_git == common)):
         raise CandidateStateError("source main authority is redirected")
     return {"source_path": str(source), "source_identity": source_directory_identity(source),
-            "common_dir": str(common), "common_identity": source_directory_identity(common)}
+            "common_dir": str(common), "common_identity": source_directory_identity(common),
+            "registrations": sorted(registered, key=lambda pair: (pair[0] or "", pair[1] or ""))}
 
 
 def source_checkout_observation(

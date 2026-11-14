@@ -265,9 +265,12 @@ combination. The Codex-host live smoke used the installed v0.24.3 plugin with AG
 verification. A later bounded synthetic live run of AGY **1.5.2** (2026-11-06)
 confirmed the base interface; a `--print-timeout` expiry exits 3 with an `ERROR` result
 carrying `finished_reason: "print_timeout"`, which the controller reports as
-`provider_timeout` only together with the reviewed stderr timeout line. These observations
-are informational; they do not gate launches or qualify future versions, authentication
-or task quality.
+`provider_timeout` only together with the reviewed stderr timeout line. Bounded synthetic
+live runs of AGY **1.5.9** (2026-11-14) confirmed the same base interface; subagent,
+`run_workflow` and mode observations are in
+[Security and compatibility](../skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md#model-and-interface-compatibility).
+These observations are informational; they do not gate launches or qualify future
+versions, authentication or task quality.
 
 ## agy interface cautions
 
