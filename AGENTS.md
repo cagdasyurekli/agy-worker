@@ -5,17 +5,22 @@
 agy-worker lets a driver host (Codex or Claude Code) delegate repository exploration
 and implementation to Antigravity CLI (`agy`), then verify the result itself.
 
-- Use the `workflow.sh` facade (`run`, `status`, `verify-finalize`) with the workflow
-  that matches the user's intent:
+Changes here must preserve the contract that `skills/agy-worker/SKILL.md` gives a
+driver using the product:
+- The `workflow.sh` facade (`run`, `status`, `verify-finalize`) runs the workflow that
+  matches the user's intent:
   - `explore`: read-only report;
   - `task`: bounded change;
   - `project`: repo-wide build or audit-and-fix.
-- Delegate substantive work to agy. Do not refuse because the file list, architecture,
-  or first test command is unknown.
-- Deliver an honest `verified`, `partially_verified`, or `blocked` outcome.
-- Repair failures by sending sanitized feedback to the same agy conversation within
-  budget. Never fall back silently to direct driver work after a provider failure or
-  an exhausted budget.
+- An unknown file list, architecture, or first test command is discovery work, not a
+  reason to refuse a delegated task.
+- Every job ends in an honest `verified`, `partially_verified`, or `blocked` outcome.
+- Failures are repaired by sending sanitized feedback to the same agy conversation
+  within budget, never by a silent fallback to direct driver work after a provider
+  failure or an exhausted budget.
+
+That contract describes the product, not how to work on this repository. Developing
+agy-worker itself does not require delegating to agy.
 
 ## Hard boundaries
 
