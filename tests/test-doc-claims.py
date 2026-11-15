@@ -17,7 +17,14 @@ security = read("skills/agy-worker/references/SECURITY_AND_COMPATIBILITY.md")
 troubleshooting = read("skills/agy-worker/references/TROUBLESHOOTING.md")
 project = read("docs/PROJECT_WORKFLOW.md")
 installation = read("docs/INSTALLATION.md")
+usage = read("docs/USAGE.md")
 checks = {
+    "approval request discloses fixed delegation overhead": (
+        "fixed agy overhead can make direct work faster" in skill
+        and "let the user choose" in skill
+        and "### When delegation is worth it" in usage
+        and "Do not claim time or token savings" in usage
+    ),
     "approval digest distinguishes whole and scoped bindings": (
         "full file mode bits, symlink target hashes" in skill
         and "scoped mode rejects symlinks and does" in skill

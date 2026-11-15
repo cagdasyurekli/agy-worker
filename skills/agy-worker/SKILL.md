@@ -26,13 +26,14 @@ Use `"$PIPELINE/doctor.sh" --repo /absolute/path/to/target` for offline readines
 
 ## Authorize provider work
 
-Obtain human approval for the task, exact provider-readable content, transmission and
-isolation modes, caller-selected model and budget. One upfront approval may cover
-predictable same-scope repairs and mechanical digest refresh. New scope, content
-exposure, destination, isolation, permissions or budget needs fresh authority.
-SHA values bind the documented controller inputs, not the entire human decision;
-refreshing a still-applicable binding is not another approval request. Goal and
-hand-authored JSON are not ordinary-use prerequisites.
+Obtain human approval for the task, exact provider-readable content, transmission and isolation
+modes, caller-selected model and budget. If the driver could do the task itself (named files, small
+change, known check), say in that request that fixed agy overhead can make direct work faster, and
+let the user choose; never switch on your own. One upfront approval may cover predictable
+same-scope repairs and mechanical digest refresh. New scope, content exposure, destination,
+isolation, permissions or budget needs fresh authority. SHA values bind the documented controller
+inputs, not the entire human decision; refreshing a still-applicable binding is not another
+approval request. Goal and hand-authored JSON are not ordinary-use prerequisites.
 
 Prefer `--provider-scope FILE --approve-transmission-sha SHA256` for bounded jobs. It binds reviewed read entries, their content digest, and a write subset in a fresh owner-private mode-`0700` Gitless stage.
 Whole-worktree dispatch requires `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`. Every disposable-worktree entry is provider-readable and may reach Google/Gemini; `--add-dir`, prompt denylists and gate path policies do not narrow that read boundary.

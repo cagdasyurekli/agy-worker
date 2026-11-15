@@ -125,6 +125,16 @@ advisory feedback when a focused command is known; an unknown first command or
 architecture does not prohibit useful delegation. Keep final Codex independent
 acceptance.
 
+### When delegation is worth it
+
+Each delegation pays a fixed cost: approval preview, staging, provider startup and
+round trip, then driver review and verification. When the driver could finish the task
+itself, because the files are already named, the change is small and a check command
+is known, that cost can make direct work faster. Say so in the approval request and let
+the user choose; the driver never switches on its own, before or after launch. Where
+delegation becomes faster than direct work is not established.
+Do not claim time or token savings.
+
 ### Explicit delegation-first policy
 
 Delegation-first is an opt-in coordinator policy. The standalone evaluator requires
@@ -144,9 +154,9 @@ approval, provider/preflight failure, hard stop, or exhausted cycle budget fails
 closed without silently moving the substantive task to Codex; do not allow silent
 direct-Codex fallback after provider failure or exhausted budget. Failed product checks
 return concrete sanitized feedback to the same AGY conversation for bounded repair.
-Direct-Codex work or second-eye-only use must be an explicit override. Fixed agy overhead
-can make small tasks inefficient, and token observations do not by themselves prove
-billing, quota, cost, or savings.
+Direct-Codex work or second-eye-only use must be an explicit override; see
+[When delegation is worth it](#when-delegation-is-worth-it). Token observations do not
+by themselves prove billing, quota, cost, or savings.
 
 After installation, start a new Codex session and ask in natural language:
 
