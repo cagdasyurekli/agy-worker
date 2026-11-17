@@ -881,6 +881,24 @@ def _state_home() -> Path:
     return _ensure_owner_child(local, "state", "HOME state directory")
 
 
+def _derived_state_path(repo: Path, job_id: str) -> Path:
+    """Compute the facade workflow.json path without creating or validating anything."""
+    if JOB_RE.fullmatch(job_id or "") is None:
+        raise WorkflowError("job ID is invalid")
+    configured = os.environ.get("XDG_STATE_HOME")
+    if configured:
+        state_home = Path(configured)
+        if not state_home.is_absolute():
+            raise WorkflowError("XDG_STATE_HOME must be one absolute path")
+    else:
+        home_text = os.environ.get("HOME")
+        if not home_text or not Path(home_text).is_absolute():
+            raise WorkflowError("HOME must be one absolute path")
+        state_home = Path(home_text) / ".local" / "state"
+    repo_key = sha256_bytes(str(repo).encode("utf-8"))[:24]
+    return state_home / "agy-worker" / "workflows" / repo_key / job_id / "workflow.json"
+
+
 def _derived_bindings(repo: Path, job_id: str) -> dict[str, Path | str]:
     if JOB_RE.fullmatch(job_id or "") is None:
         raise WorkflowError("job ID is invalid")
@@ -896,7 +914,7 @@ def _derived_bindings(repo: Path, job_id: str) -> dict[str, Path | str]:
     logs = _ensure_private_child(job_root, "logs", "job log root")
     branch_key = sha256_bytes(f"{repo_key}\0{job_id}".encode("utf-8"))[:20]
     return {
-        "state": job_root / "workflow.json",
+        "state": _derived_state_path(repo, job_id),
         "job_state": job_root / "job.json",
         "worktree": job_root / "worktree",
         "dispatch_job_dir": logs / job_id,
@@ -1105,7 +1123,11 @@ def build_parser() -> argparse.ArgumentParser:
     status_sources.add_argument("--state", help="Workflow or existing low-level job state file.")
     status_sources.add_argument("--job-state", help="Existing low-level job state file.")
     status_sources.add_argument("--dispatch-state", help="Existing dispatcher state file.")
-    status_sources.add_argument("--job-id", dest="dispatcher_job_id", help="Existing dispatcher job ID.")
+    status_sources.add_argument(
+        "--job-id", dest="dispatcher_job_id",
+        help="Existing dispatcher job ID; with --repo, the workflow job ID.",
+    )
+    status_parser.add_argument("--repo", help="Repository path; only with --job-id (workflow job ID).")
     status_parser.add_argument("--format", choices=("json", "text"), default="json")
 
     # 3. verify-finalize
@@ -1315,6 +1337,8 @@ def _ordinary_run(args: argparse.Namespace, repo: Path) -> int:
         raise WorkflowError("--job-dir and --job-state require advanced mode")
     derived = _derived_bindings(repo, args.job_id)
     state_path = Path(derived["state"])
+    sys.stderr.write(f"workflow-state: {state_path}\n")
+    sys.stderr.flush()
     job_state_path = Path(derived["job_state"])
     worktree = Path(derived["worktree"])
     branch = str(derived["branch"])
@@ -1788,6 +1812,15 @@ def _dispatcher_status(
 
 
 def command_status(args: argparse.Namespace) -> int:
+    if args.repo:
+        if not args.dispatcher_job_id:
+            raise WorkflowError("--repo requires --job-id")
+        repo = real_absolute(Path(args.repo), "repository")
+        derived = _derived_state_path(repo, args.dispatcher_job_id)
+        if not derived.exists() and not derived.is_symlink():
+            raise WorkflowError("no workflow state for this repository and job ID")
+        args.state = str(derived)
+        return _status_from_state(args)
     if args.job_state:
         return _low_level_status(args, real_absolute(Path(args.job_state), "job state"))
     if args.dispatch_state:
@@ -1805,6 +1838,10 @@ def command_status(args: argparse.Namespace) -> int:
             raise WorkflowError("dispatcher job ID is invalid")
         return _dispatcher_status(args, job_id=args.dispatcher_job_id)
 
+    return _status_from_state(args)
+
+
+def _status_from_state(args: argparse.Namespace) -> int:
     state_path = real_absolute(Path(args.state), "state")
     data, _metadata = read_regular(state_path, MAX_STATE_BYTES, "state", private=True)
     value = parse_strict(data, "state")

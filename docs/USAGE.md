@@ -184,7 +184,11 @@ state directory, the ordinary controller path is the portable `workflow.sh` faca
 2. Repeat the same binding with exactly one explicit mode:
    `--approve-whole-worktree LAUNCH_APPROVAL_SHA256`, or `--provider-scope FILE` plus
    `--approve-transmission-sha LAUNCH_APPROVAL_SHA256`.
-3. Use `workflow.sh status ...` for read-only, sanitized progress facts.
+3. Use `workflow.sh status ...` for read-only, sanitized progress facts. An ordinary
+   `run` writes one `workflow-state: <path>` line to stderr (stdout is unchanged); pass
+   that path as `--state`, or use `status --repo REPO --job-id JOB_ID` with the workflow
+   job ID. `--repo` is accepted only with `--job-id`; `--job-id` alone still names a
+   dispatcher job.
 4. Use `workflow.sh verify-finalize ...` with repeatable structured
    `--verify-argv JSON_ARRAY` checks, `--approve-dispatch-sha` set to the exact
    `dispatch.state_sha256` from step 3, and the exact owner-private driver

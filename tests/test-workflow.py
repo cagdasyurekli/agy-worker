@@ -1559,6 +1559,84 @@ check(
 )
 
 
+def _tree(root: Path) -> list[str]:
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+
+def test_run_reports_state_path_and_status_resolves_by_repo() -> bool:
+    f = RepoFixture("state-path-discovery")
+    try:
+        state_home = f.tmp / "xdg-state-discovery"
+        state_home.mkdir(mode=0o700)
+        env = {"XDG_STATE_HOME": str(state_home)}
+        job_id = "discover-job"
+        preview = run_workflow(
+            "run", "--repo", str(f.repo), "--job-id", job_id,
+            "--base", f.base, "--preview", env=env,
+        )
+        assert preview.returncode == 0, preview.stderr
+        json.loads(preview.stdout.decode("utf-8"))
+        lines = [ln for ln in preview.stderr.decode("utf-8").splitlines()
+                 if ln.startswith("workflow-state: ")]
+        assert len(lines) == 1, preview.stderr
+        workflow_state, _job_state, _worktree = _derived_files(state_home, job_id)
+        assert lines[0] == f"workflow-state: {workflow_state}", lines
+
+        by_repo = run_workflow(
+            "status", "--repo", str(f.repo), "--job-id", job_id,
+            "--format", "json", env=env,
+        )
+        by_state = run_workflow(
+            "status", "--state", str(workflow_state), "--format", "json", env=env,
+        )
+        assert by_repo.returncode == 0, by_repo.stderr
+        assert by_state.returncode == 0, by_state.stderr
+        assert by_repo.stdout == by_state.stdout
+        assert json.loads(by_repo.stdout.decode("utf-8"))["job_id"] == job_id
+        return True
+    finally:
+        f.clean()
+
+
+check(
+    "run prints one workflow-state line and status --repo --job-id matches status --state",
+    test_run_reports_state_path_and_status_resolves_by_repo,
+)
+
+
+def test_status_repo_is_read_only_and_usage_checked() -> bool:
+    f = RepoFixture("status-repo-usage")
+    try:
+        state_home = f.tmp / "xdg-state-usage"
+        state_home.mkdir(mode=0o700)
+        env = {"XDG_STATE_HOME": str(state_home)}
+        before = _tree(state_home)
+        unknown = run_workflow(
+            "status", "--repo", str(f.repo), "--job-id", "unknown-job",
+            "--format", "json", env=env,
+        )
+        assert unknown.returncode != 0
+        assert b"no workflow state for this repository and job ID" in unknown.stderr
+        assert _tree(state_home) == before, "status must not create state"
+
+        no_job = run_workflow("status", "--repo", str(f.repo), env=env)
+        assert no_job.returncode != 0
+        with_state = run_workflow(
+            "status", "--repo", str(f.repo), "--state", str(f.state_file), env=env,
+        )
+        assert with_state.returncode != 0
+        assert _tree(state_home) == before
+        return True
+    finally:
+        f.clean()
+
+
+check(
+    "status --repo needs --job-id, rejects other sources, and never creates state",
+    test_status_repo_is_read_only_and_usage_checked,
+)
+
+
 
 
 
