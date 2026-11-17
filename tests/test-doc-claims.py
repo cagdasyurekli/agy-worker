@@ -1,6 +1,11 @@
 """Check the public host, approval, and lifecycle claims as one contract."""
 
 from pathlib import Path
+import contextlib
+import importlib.util
+import io
+import re
+import shlex
 import sys
 
 
@@ -18,6 +23,53 @@ troubleshooting = read("skills/agy-worker/references/TROUBLESHOOTING.md")
 project = read("docs/PROJECT_WORKFLOW.md")
 installation = read("docs/INSTALLATION.md")
 usage = read("docs/USAGE.md")
+def quick_path_contract(text: str) -> bool:
+    """The Quick path must be one ordered cycle whose flags the real CLIs accept."""
+    heading = text.find("Quick path")
+    blocks = re.findall(r"```bash\n(.*?)```", text[heading:], re.S) if heading >= 0 else []
+    if not blocks or "#verification-v2" not in text[heading:]:
+        return False
+    lines = [ln for ln in blocks[0].replace("\\\n", " ").splitlines() if not ln.lstrip().startswith("#")]
+    calls = []
+    for ln in lines:
+        match = re.search(r'"\$PIPELINE/(workflow\.sh|agy-worker\.sh)"\s+(.*)', ln)
+        if match:
+            argv = shlex.split(match.group(2).split(") ||")[0])
+            calls.append((match.group(1), argv[: argv.index(">")] if ">" in argv else argv))
+    seq = [(s, argv[0], set(argv)) for s, argv in calls]
+    expected = [
+        ("workflow.sh", "run", {"--preview"}),
+        ("workflow.sh", "run", {"--approve-transmission-sha"}),
+        ("workflow.sh", "status", {"--repo", "--job-id"}),
+        ("agy-worker.sh", "verification-copy", {"--job-id", "--state", "--destination"}),
+        ("workflow.sh", "verify-finalize", {"--approve-dispatch-sha", "--verification-json"}),
+    ]
+    if len(seq) != len(expected) or any(
+        s != es or c != ec or not flags >= ef for (s, c, flags), (es, ec, ef) in zip(seq, expected)
+    ):
+        return False
+    if "--preview" in seq[1][2] or "--state" in seq[2][2]:
+        return False
+    scripts = root / "skills/agy-worker/runtime/scripts"
+    sys.path.insert(0, str(scripts))
+    spec = importlib.util.spec_from_file_location("workflow_quick_path", scripts / "workflow.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    parser = module.build_parser()
+    for script, argv in calls:
+        if script == "agy-worker.sh":
+            usage = (root / "skills/agy-worker/runtime/agy-worker.sh").read_text(encoding="utf-8")
+            if not all(flag in usage for flag in argv if flag.startswith("--")):
+                return False
+            continue
+        try:  # parse_args rejects unknown flags, missing required ones and bad choices
+            with contextlib.redirect_stderr(io.StringIO()):
+                parser.parse_args(argv)
+        except SystemExit:
+            return False
+    return True
+
+
 checks = {
     "approval request discloses fixed delegation overhead": (
         "fixed agy overhead can make direct work faster" in skill
@@ -63,6 +115,9 @@ checks = {
         in skill
         and "entries sorted by path" in skill
         and "the facade creates the branch-backed disposable worktree" in lifecycle
+    ),
+    "quick path is one ordered cycle with flags the real CLIs accept": (
+        quick_path_contract(skill)
     ),
     "nested Seatbelt host prerequisite": (
         "Codex `workspace-write`" in security

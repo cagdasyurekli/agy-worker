@@ -101,46 +101,46 @@ See [the maximum-runtime observation and cleanup test](references/TROUBLESHOOTIN
 Use `workflow.sh run --preview`, approved `run`, read-only `status`, and `verify-finalize`; the facade does not choose a model, assurance, repair or external action.
 [Project lifecycle and verification](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md) owns copyable commands, Verification v2 candidate bindings and recovery.
 
-Quick path: save the reviewed scope file outside the target repository with mode `0600`, then run the facade with a unique job ID:
+Quick path for the ordinary scoped `task` workflow. Keep the reviewed scope file (entries sorted by path, existing paths only; [example](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#primary-run-status-verify-finalize-path)) outside the target repository with mode `0600`, then run the whole cycle in order:
 
 ```bash
 TARGET=/absolute/path/to/approved-repository
 JOB_ID=job-12345
 SCOPE=/absolute/private/provider-scope.json
 TASK='the exact approved bounded task'
+# 1. Preview: stdout has launch_approval_sha256; stderr has one "workflow-state: <path>" line.
 "$PIPELINE/workflow.sh" run --preview --repo "$TARGET" --job-id "$JOB_ID" --provider-scope "$SCOPE" --provider-isolation session --task "$TASK"
+STATE=/absolute/path/from/the/workflow-state/line
+LAUNCH_SHA='the exact reviewed launch_approval_sha256'
+# 2. Approved run: same arguments; the envelope is saved in the private state directory, never overwritten.
+ENVELOPE="${STATE%/*}/envelope.json"
+test ! -e "$ENVELOPE" || { echo "envelope path already exists" >&2; exit 64; }
+( umask 077
+  "$PIPELINE/workflow.sh" run --repo "$TARGET" --job-id "$JOB_ID" --provider-scope "$SCOPE" \
+    --provider-isolation session --approve-transmission-sha "$LAUNCH_SHA" --workflow task --task "$TASK" > "$ENVELOPE"
+) || exit $?
+test -s "$ENVELOPE" || { echo "approved run produced no envelope" >&2; exit 1; }
+# 3. Status (read-only); copy dispatch.state_sha256 for step 6.
+"$PIPELINE/workflow.sh" status --repo "$TARGET" --job-id "$JOB_ID" --format json
+DISPATCH_SHA='dispatch.state_sha256 from that status'
+# 4. Review the candidate diff read-only in "${STATE%/*}/worktree". 5. Run checks in an isolated copy.
+VERIFY_DIR=/absolute/new/private-parent/candidate
+"$PIPELINE/agy-worker.sh" verification-copy --job-id "$JOB_ID" --state "$STATE" --destination "$VERIFY_DIR" --format text
+( cd "$VERIFY_DIR" && PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m pytest -q )
+# 6. Close: author the Verification v2 file first (guide below), then bind it.
+RECEIPT="${STATE%/*}/evidence-receipt.json"
+test ! -e "$RECEIPT" || { echo "receipt path already exists" >&2; exit 64; }
+"$PIPELINE/workflow.sh" verify-finalize --state "$STATE" --receipt "$RECEIPT" --envelope "$ENVELOPE" \
+  --approve-dispatch-sha "$DISPATCH_SHA" --verify-argv '["/usr/bin/git","diff","--check"]' \
+  --verification-json "${STATE%/*}/verification-v2.json" --assurance verified
 ```
 
-This creates the disposable worktree and private state. Review `launch_approval_sha256`,
-then repeat the same command without `--preview`, adding
-`--approve-transmission-sha "$LAUNCH_SHA"`. A minimal owner-private
-scope file, with entries sorted by path, is:
+Author the Verification v2 file with [this guide](references/PROJECT_LIFECYCLE_AND_VERIFICATION.md#verification-v2).
 
-```json
-{"schema_version":1,"kind":"agy-worker-provider-scope","read":[{"path":"src/parser.py","kind":"file"},{"path":"tests","kind":"tree"}],"write":[{"path":"tests","kind":"tree"}]}
-```
-
-Use paths that exist in the reviewed worktree and keep the scope file outside it
-with mode `0600`. The facade derives an owner-private state path for later
-`status` and `verify-finalize`; see the linked guide for the complete sequence.
-
-Run driver-selected build/test commands and Python imports in an isolated
-verification copy with `PYTHONDONTWRITEBYTECODE=1`. Inspect the bound candidate's
-actual diff and gate binding directly. Never manually edit, delete, or chmod the
-bound candidate; send needed
-repairs to the same worker conversation. Never execute an envelope's
-`commands_run` or `tests_run`; bind only sanitized driver findings to the candidate.
-Gate and `verify-finalize --verify-argv` verifiers run in the bound candidate: choose
-only commands known to be read-only there. Snapshot rejection detects changes to bound candidate state
-after they happen; it does not isolate the candidate. Verifiers run untrusted
-candidate code with the user's authority; the gate does not detect changes outside
-the candidate, including Git hooks and configuration. Feed separate copy test results
-into Verification v2.
-Repair observable failures in the same conversation within budget; never silently
-fall back to direct-driver work after provider failure or exhausted budget.
-Use initial `--allow-scoped-repair` for approved multi-turn scoped work. Without that
-grant, a changed scoped candidate is result/finalize-only. Preserve useful work;
-`restart` requires an explicit user decision.
+Run driver-selected build/test commands and Python imports in an isolated verification copy with `PYTHONDONTWRITEBYTECODE=1`. Inspect the bound candidate's actual diff and gate binding directly. Never manually edit, delete, or chmod the bound candidate; send needed repairs to the same worker conversation. Never execute an envelope's `commands_run` or `tests_run`; bind only sanitized driver findings to the candidate.
+Gate and `verify-finalize --verify-argv` verifiers run in the bound candidate: choose only commands known to be read-only there. Snapshot rejection detects changes to bound candidate state after they happen; it does not isolate the candidate. Verifiers run untrusted candidate code with the user's authority; the gate does not detect changes outside the candidate, including Git hooks and configuration. Feed separate copy test results into Verification v2.
+Repair observable failures in the same conversation within budget; never silently fall back to direct-driver work after provider failure or exhausted budget.
+Use initial `--allow-scoped-repair` for approved multi-turn scoped work. Without that grant, a changed scoped candidate is result/finalize-only. Preserve useful work; `restart` requires an explicit user decision.
 
 Self-verification is optional advisory feedback, not acceptance. An unknown first
 check is not a hard stop. Reuse checks only for unchanged candidate bytes and relevant

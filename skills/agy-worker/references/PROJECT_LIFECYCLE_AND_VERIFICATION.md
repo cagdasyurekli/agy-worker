@@ -116,16 +116,14 @@ TASK='the exact approved bounded task'
   --provider-scope "$SCOPE" --provider-isolation session --task "$TASK"
 ```
 
-The preview gives `launch_approval_sha256`; the facade derives its state path under
-`XDG_STATE_HOME` or `HOME/.local/state` as described below. Review the preview's
-content and selected settings with the user before the approved run. Repeat the same
-binding without `--preview`, supplying the exact approved digest and task:
+The preview gives `launch_approval_sha256` on stdout and one
+`workflow-state: <absolute path>` line on stderr (an approved `run` writes the same
+line). Review the preview's content and selected settings with the user before the
+approved run. Repeat the same binding without `--preview`, supplying the exact
+approved digest and task:
 
 ```bash
-STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
-STATE_HOME="$(cd "$STATE_HOME" && pwd -P)" || exit $?
-REPO_KEY="$(python3 -c 'import hashlib,pathlib,sys; p=str(pathlib.Path(sys.argv[1]).resolve(strict=True)); print(hashlib.sha256(p.encode()).hexdigest()[:24])' "$TARGET")"
-STATE="$STATE_HOME/agy-worker/workflows/$REPO_KEY/$JOB_ID/workflow.json"
+STATE=/absolute/path/from/the/workflow-state/line
 TRANSMISSION_SHA='paste the exact reviewed launch_approval_sha256'
 TASK='paste the exact privately reviewed task text'
 ENVELOPE="$(dirname "$STATE")/envelope.json"
@@ -136,9 +134,11 @@ test ! -e "$ENVELOPE" || { echo "envelope path already exists" >&2; exit 64; }
     --workflow task --task "$TASK" > "$ENVELOPE"
 ) || exit $?
 test -s "$ENVELOPE" || { echo "approved run produced no envelope" >&2; exit 1; }
-"$PIPELINE/workflow.sh" status --state "$STATE" --format json
+"$PIPELINE/workflow.sh" status --repo "$TARGET" --job-id "$JOB_ID" --format json
 ```
 
+`status --repo "$TARGET" --job-id "$JOB_ID"` finds the same state read-only if the
+`workflow-state:` line was lost; `--job-id` alone still names a dispatcher job.
 This path creates the worktree; do not create one manually for ordinary use. The
 preview starts no provider process and grants no approval. Record the returned state
 path, keep it owner-private and outside the worktree, and emit the provider notice
