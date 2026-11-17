@@ -71,6 +71,12 @@ def quick_path_contract(text: str) -> bool:
 
 
 checks = {
+    "Verification v2 guide shows the facade verify-finalize binding": (
+        "On the facade path the same object is the owner-private `--verification-json` file for"
+        in lifecycle
+        and "Take `candidate_sha256` from `dispatch.candidate_sha256`" in lifecycle
+        and "`--approve-dispatch-sha` instead of calling `continue`" in lifecycle
+    ),
     "approval request discloses fixed delegation overhead": (
         "fixed agy overhead can make direct work faster" in skill
         and "let the user choose" in skill

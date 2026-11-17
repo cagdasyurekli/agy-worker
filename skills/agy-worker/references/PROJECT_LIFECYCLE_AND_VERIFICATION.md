@@ -397,6 +397,15 @@ silent direct-driver fallback after provider failure or exhausted budget. It mus
 continue the same conversation while budget remains and must be preceded by the
 provider notice.
 
+On the facade path the same object is the owner-private `--verification-json` file for
+`workflow.sh verify-finalize`. Take `candidate_sha256` from `dispatch.candidate_sha256`
+in `workflow.sh status --repo "$TARGET" --job-id "$JOB_ID" --format json` (present only
+while a result is available), and pass that status's `dispatch.state_sha256` as
+`--approve-dispatch-sha` instead of calling `continue`. `verify-finalize` rejects
+`--assurance verified` unless the file records at least one passed check, no failed or
+missing checks and a completed diff review; `explore` instead needs complete coverage
+and no unresolved gaps.
+
 ## Material planning governance
 
 For trust-boundary changes, write a short design note covering options considered and residual risk, and obtain independent review.
